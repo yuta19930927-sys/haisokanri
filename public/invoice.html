@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>請求書</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Noto+Serif+JP:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Noto Sans JP', sans-serif; background: #f0ede8; display: flex; flex-direction: column; align-items: center; padding: 40px 20px; gap: 20px; }
+  .print-bar { width: 100%; max-width: 780px; display: flex; justify-content: flex-end; gap: 12px; }
+  .btn { padding: 12px 28px; border-radius: 8px; border: none; font-family: 'Noto Sans JP', sans-serif; font-size: 14px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+  .btn-print { background: #1a1a2e; color: #fff; box-shadow: 0 4px 16px rgba(26,26,46,0.25); }
+  .btn-print:hover { background: #16213e; transform: translateY(-1px); }
+  .btn-edit { background: #fff; color: #1a1a2e; border: 1.5px solid #d0c8b8; }
+  .invoice { width: 100%; max-width: 780px; background: #fff; box-shadow: 0 8px 40px rgba(0,0,0,0.12); position: relative; overflow: hidden; }
+  .invoice::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 6px; background: linear-gradient(90deg, #1a1a2e, #c8a96e, #1a1a2e); }
+  .invoice-inner { padding: 52px 56px 56px; }
+
+  /* ヘッダー */
+  .invoice-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 48px; }
+  .company-brand { display: flex; flex-direction: column; gap: 4px; }
+  .company-name-ja { font-family: 'Noto Serif JP', serif; font-size: 22px; font-weight: 700; color: #1a1a2e; letter-spacing: 0.08em; }
+  .company-sub { font-size: 11px; color: #aaa; letter-spacing: 0.08em; margin-top: 4px; }
+  .invoice-meta { text-align: right; }
+  .invoice-title { font-family: 'Noto Serif JP', serif; font-size: 32px; font-weight: 700; color: #1a1a2e; letter-spacing: 0.1em; margin-bottom: 12px; }
+  .invoice-num { font-size: 12px; color: #888; margin-bottom: 4px; }
+  .invoice-num span { color: #1a1a2e; font-weight: 700; font-size: 13px; }
+  .invoice-date { font-size: 12px; color: #888; }
+  .invoice-date span { color: #1a1a2e; font-weight: 500; }
+
+  .divider { height: 1px; background: linear-gradient(90deg, #1a1a2e 0%, #c8a96e 50%, transparent 100%); margin-bottom: 36px; }
+
+  /* 宛先・自社 */
+  .parties { display: flex; justify-content: space-between; margin-bottom: 40px; gap: 40px; }
+  .bill-to { flex: 1; }
+  .bill-from { text-align: right; }
+  .party-label { font-size: 10px; font-weight: 700; color: #c8a96e; letter-spacing: 0.15em; text-transform: uppercase; margin-bottom: 10px; }
+  .party-name { font-size: 20px; font-weight: 700; color: #1a1a2e; margin-bottom: 6px; font-family: 'Noto Serif JP', serif; }
+  .party-sub { font-size: 13px; color: #666; margin-bottom: 8px; }
+  .party-info { font-size: 12px; color: #888; line-height: 1.8; }
+
+  /* 請求金額（控えめ版） */
+  .amount-box {
+    border: 1.5px solid #e0dbd0;
+    border-radius: 12px;
+    padding: 22px 32px;
+    margin-bottom: 36px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #fdfcfa;
+  }
+  .amount-label { font-size: 11px; color: #aaa; letter-spacing: 0.08em; margin-bottom: 6px; }
+  .amount-value { font-family: 'Noto Serif JP', serif; font-size: 34px; font-weight: 700; color: #1a1a2e; letter-spacing: 0.02em; }
+  .amount-value small { font-size: 16px; margin-right: 4px; color: #c8a96e; }
+  .amount-due { text-align: right; }
+  .due-label { font-size: 11px; color: #aaa; margin-bottom: 4px; }
+  .due-date { font-size: 14px; font-weight: 700; color: #555; }
+
+  /* 明細テーブル */
+  .items-table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  .items-table thead tr { border-bottom: 2px solid #1a1a2e; }
+  .items-table th { font-size: 10px; font-weight: 700; color: #888; letter-spacing: 0.1em; padding: 0 0 12px; text-align: left; }
+  .items-table th:nth-child(2), .items-table th:nth-child(3), .items-table th:nth-child(4) { text-align: right; }
+  .items-table tbody tr { border-bottom: 1px solid #f0ede8; }
+  .items-table tbody tr:last-child { border-bottom: none; }
+  .items-table td { padding: 13px 0; font-size: 13px; color: #333; vertical-align: middle; }
+  .items-table td:nth-child(2), .items-table td:nth-child(3), .items-table td:nth-child(4) { text-align: right; }
+  .item-name { font-weight: 500; color: #1a1a2e; }
+
+  /* 合計 */
+  .totals { border-top: 1px solid #e0dbd0; padding-top: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; margin-bottom: 40px; }
+  .total-row { display: flex; gap: 48px; align-items: center; }
+  .total-label { font-size: 12px; color: #888; min-width: 80px; text-align: right; }
+  .total-value { font-size: 13px; color: #333; min-width: 100px; text-align: right; }
+  .total-row.grand { border-top: 2px solid #1a1a2e; padding-top: 12px; margin-top: 4px; }
+  .total-row.grand .total-label { font-size: 13px; font-weight: 700; color: #1a1a2e; }
+  .total-row.grand .total-value { font-size: 18px; font-weight: 700; color: #1a1a2e; font-family: 'Noto Serif JP', serif; }
+
+  /* 振込先 */
+  .bank-section { background: #f8f6f2; border-radius: 10px; border-left: 4px solid #c8a96e; padding: 20px 24px; margin-bottom: 32px; }
+  .bank-label { font-size: 10px; font-weight: 700; color: #c8a96e; letter-spacing: 0.15em; margin-bottom: 12px; }
+  .bank-info { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 32px; }
+  .bank-item { display: flex; gap: 8px; align-items: baseline; }
+  .bank-key { font-size: 11px; color: #888; white-space: nowrap; min-width: 64px; }
+  .bank-val { font-size: 13px; font-weight: 500; color: #1a1a2e; }
+
+  /* 備考 */
+  .notes { font-size: 12px; color: #999; line-height: 1.8; border-top: 1px dashed #ddd; padding-top: 20px; }
+  .notes-title { font-size: 10px; font-weight: 700; color: #bbb; letter-spacing: 0.1em; margin-bottom: 6px; }
+  .invoice-footer { text-align: center; margin-top: 32px; padding-top: 20px; border-top: 1px solid #f0ede8; font-size: 11px; color: #bbb; letter-spacing: 0.05em; }
+
+  /* 編集モード */
+  .editable-on { outline: 2px dashed #c8a96e !important; border-radius: 4px; padding: 2px 4px; }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    .print-bar { display: none; }
+    .invoice { box-shadow: none; max-width: 100%; }
+    .invoice-inner { padding: 32px 40px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="print-bar">
+  <button class="btn btn-edit" onclick="toggleEdit()">✏️ 編集モード</button>
+  <button class="btn btn-print" onclick="window.print()">🖨️ PDF印刷</button>
+</div>
+
+<div class="invoice">
+  <div class="invoice-inner">
+
+    <!-- ヘッダー -->
+    <div class="invoice-header">
+      <div class="company-brand">
+        <div class="company-name-ja" contenteditable="false">T-LINK</div>
+        <div class="company-sub" contenteditable="false">LOGISTICS & DELIVERY SOLUTIONS</div>
+      </div>
+      <div class="invoice-meta">
+        <div class="invoice-title">請求書</div>
+        <div class="invoice-num">請求書番号　<span contenteditable="false">NO.1</span></div>
+        <div class="invoice-date">発行日　<span contenteditable="false">2026年4月1日</span></div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- 宛先・自社 -->
+    <div class="parties">
+      <div class="bill-to">
+        <div class="party-label">請求先</div>
+        <div class="party-name" contenteditable="false">〇〇 御中</div>
+        <div class="party-sub" contenteditable="false">下記の通りご請求申し上げます。</div>
+      </div>
+      <div class="bill-from">
+        <div class="party-label">請求元</div>
+        <div class="party-info" style="text-align:right;" contenteditable="false">
+          T-LINK代表　坪倉<br>
+          〒615-0924<br>
+          京都府京都市右京区梅津尻溝町65<br>
+          グレイスランザン402<br>
+          TEL: 090-9052-4517<br>
+          yuta.19930927@gmail.com
+        </div>
+      </div>
+    </div>
+
+    <!-- 請求金額（控えめ） -->
+    <div class="amount-box">
+      <div>
+        <div class="amount-label">ご請求金額（税込）</div>
+        <div class="amount-value"><small>¥</small><span id="totalDisplay">22,220</span></div>
+      </div>
+      <div class="amount-due">
+        <div class="due-label">お支払期限</div>
+        <div class="due-date" contenteditable="false">2026年5月1日</div>
+      </div>
+    </div>
+
+    <!-- 明細 -->
+    <table class="items-table">
+      <thead>
+        <tr>
+          <th style="width:45%">請求内容</th>
+          <th style="width:15%">数量</th>
+          <th style="width:15%">単価</th>
+          <th style="width:15%">金額</th>
+        </tr>
+      </thead>
+      <tbody id="itemsBody">
+        <tr>
+          <td><div class="item-name" contenteditable="false">配送個数</div></td>
+          <td contenteditable="false">1個</td>
+          <td contenteditable="false">¥200</td>
+          <td class="amount-cell" contenteditable="false">200</td>
+        </tr>
+        <tr>
+          <td><div class="item-name" contenteditable="false">日当</div></td>
+          <td contenteditable="false">1日</td>
+          <td contenteditable="false">¥20,000</td>
+          <td class="amount-cell" contenteditable="false">20000</td>
+        </tr>
+        <tr>
+          <td><div class="item-name" contenteditable="false">高速代立替</div></td>
+          <td contenteditable="false">－</td>
+          <td contenteditable="false">－</td>
+          <td class="amount-cell" contenteditable="false">0</td>
+        </tr>
+        <tr>
+          <td><div class="item-name" contenteditable="false">その他</div></td>
+          <td contenteditable="false">－</td>
+          <td contenteditable="false">－</td>
+          <td class="amount-cell" contenteditable="false">0</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- 合計 -->
+    <div class="totals">
+      <div class="total-row">
+        <div class="total-label">小計</div>
+        <div class="total-value">¥<span id="subtotalDisplay">20,200</span></div>
+      </div>
+      <div class="total-row">
+        <div class="total-label">消費税（10%）</div>
+        <div class="total-value">¥<span id="taxDisplay">2,020</span></div>
+      </div>
+      <div class="total-row grand">
+        <div class="total-label">合計金額</div>
+        <div class="total-value">¥<span id="grandDisplay">22,220</span></div>
+      </div>
+    </div>
+
+    <!-- 振込先 -->
+    <div class="bank-section">
+      <div class="bank-label">お振込先</div>
+      <div class="bank-info">
+        <div class="bank-item"><span class="bank-key">銀行名</span><span class="bank-val" contenteditable="false">三井住友銀行</span></div>
+        <div class="bank-item"><span class="bank-key">支店名</span><span class="bank-val" contenteditable="false">京都支店</span></div>
+        <div class="bank-item"><span class="bank-key">口座種別</span><span class="bank-val">普通</span></div>
+        <div class="bank-item"><span class="bank-key">口座番号</span><span class="bank-val" contenteditable="false">1140140</span></div>
+        <div class="bank-item"><span class="bank-key">口座名義</span><span class="bank-val" contenteditable="false">ツボクラ ユウタ</span></div>
+      </div>
+    </div>
+
+    <!-- 備考 -->
+    <div class="notes">
+      <div class="notes-title">備考</div>
+      <span contenteditable="false">
+        ※上記明細をご確認後、上記の口座にお振込みお願いいたします。<br>
+        ※振込手数料はご負担をお願いします。
+      </span>
+    </div>
+
+    <div class="invoice-footer">T-LINK　|　このたびはご利用ありがとうございます</div>
+
+  </div>
+</div>
+
+<script>
+  let editMode = false;
+
+  function fmt(n) {
+    return Number(n).toLocaleString('ja-JP');
+  }
+
+  function calcTotals() {
+    const cells = document.querySelectorAll('.amount-cell');
+    let subtotal = 0;
+    cells.forEach(cell => {
+      const raw = cell.textContent.replace(/[^0-9]/g, '');
+      const val = parseInt(raw) || 0;
+      subtotal += val;
+      // 表示を¥付きに
+      if (val > 0) {
+        cell.dataset.raw = val;
+      }
+    });
+    const tax = Math.round(subtotal * 0.1);
+    const grand = subtotal + tax;
+    document.getElementById('subtotalDisplay').textContent = fmt(subtotal);
+    document.getElementById('taxDisplay').textContent = fmt(tax);
+    document.getElementById('grandDisplay').textContent = fmt(grand);
+    document.getElementById('totalDisplay').textContent = fmt(grand);
+  }
+
+  function toggleEdit() {
+    editMode = !editMode;
+    const editables = document.querySelectorAll('[contenteditable]');
+    editables.forEach(el => {
+      el.contentEditable = editMode ? 'true' : 'false';
+      if (editMode) {
+        el.classList.add('editable-on');
+        // amount-cellは数字のみ表示
+        if (el.classList.contains('amount-cell')) {
+          const raw = el.textContent.replace(/[^0-9]/g, '');
+          el.textContent = raw || '0';
+        }
+        el.addEventListener('input', () => {
+          if (el.classList.contains('amount-cell')) calcTotals();
+        });
+      } else {
+        el.classList.remove('editable-on');
+        // amount-cell: ¥表示に戻す
+        if (el.classList.contains('amount-cell')) {
+          const val = parseInt(el.textContent.replace(/[^0-9]/g, '')) || 0;
+          el.textContent = val === 0 ? '－' : '¥' + fmt(val);
+        }
+        calcTotals();
+      }
+    });
+    document.querySelector('.btn-edit').textContent = editMode ? '✅ 完了' : '✏️ 編集モード';
+  }
+
+  // 初期表示
+  document.querySelectorAll('.amount-cell').forEach(cell => {
+    const val = parseInt(cell.textContent) || 0;
+    cell.textContent = val === 0 ? '－' : '¥' + fmt(val);
+  });
+  calcTotals();
+</script>
+</body>
+</html>
