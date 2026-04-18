@@ -1,0 +1,1108 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>LOGI CONNECT</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+// jsQRを複数CDNで読み込む
+(function() {
+  var urls = [
+    'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js',
+    'https://unpkg.com/jsqr@1.4.0/dist/jsQR.js'
+  ];
+  function tryLoad(i) {
+    if (i >= urls.length) return;
+    var s = document.createElement('script');
+    s.src = urls[i];
+    s.onerror = function() { tryLoad(i+1); };
+    document.head.appendChild(s);
+  }
+  tryLoad(0);
+})();
+</script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=Inter:wght@500;700;800;900&display=swap');
+
+:root {
+  --d1: #00C2FF; --d2: #0077FF;
+  --p1: #FF6B00; --p2: #FF3D77;
+  --ok: #00E096; --warn: #FFB300; --err: #FF4D6D;
+  --bg: #0A0F1E; --bg2: #0F1729; --bg3: #162035;
+  --border: rgba(80,140,255,0.12);
+  --text: #F0F6FF; --text2: #8B96A8; --text3: #3D5070;
+  --a1: var(--d1); --a2: var(--d2);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { overscroll-behavior: none; -webkit-font-smoothing: antialiased; }
+
+body {
+  font-family: 'Noto Sans JP', 'Inter', sans-serif;
+  background: linear-gradient(160deg, #0A0F1E 0%, #0C1428 50%, #0A1235 100%);
+  color: var(--text); min-height: 100vh; padding-bottom: 56px;
+}
+
+header { background: linear-gradient(180deg, #0D1A3A, #0F1729); border-bottom: 1px solid rgba(100,160,255,0.12); position: sticky; top: 0; z-index: 200; }
+.header-top { padding: 14px 18px 12px; display: flex; align-items: center; gap: 12px; }
+.logo-mark { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, var(--a1), var(--a2)); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 20px rgba(0,194,255,0.35); flex-shrink: 0; transition: all 0.4s; }
+.header-titles { flex: 1; min-width: 0; }
+.header-titles h1 { font-family: 'Inter', sans-serif; font-size: 17px; font-weight: 900; letter-spacing: 0.08em; background: linear-gradient(90deg, var(--a1), var(--a2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.header-titles p { font-size: 10px; color: var(--text2); margin-top: 2px; letter-spacing: 0.04em; }
+.mode-pill { font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 800; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.08em; background: linear-gradient(90deg, var(--a1), var(--a2)); color: #000; white-space: nowrap; transition: all 0.4s; }
+
+.tab-bar { display: flex; border-top: 1px solid rgba(80,140,255,0.12); }
+.tab-btn { flex: 1; height: 48px; background: transparent; border: none; color: var(--text3); font-size: 13px; font-weight: 700; font-family: 'Noto Sans JP', sans-serif; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; border-bottom: 2px solid transparent; transition: all 0.25s; }
+.tab-btn.active { color: var(--a1); border-bottom-color: var(--a1); }
+.tab-btn svg { transition: stroke 0.25s; }
+.tab-btn.active svg { stroke: var(--a1) !important; }
+
+.container { max-width: 480px; margin: 0 auto; padding: 16px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+.slabel { font-size: 10px; font-weight: 700; color: var(--text3); letter-spacing: 0.14em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; padding: 4px 2px; }
+.slabel::after { content:''; flex:1; height:1px; background: rgba(80,140,255,0.12); }
+
+.card { background: linear-gradient(160deg, #0F1A35, #0D1628); border: 1px solid rgba(80,140,255,0.14); border-radius: 16px; overflow: hidden; }
+.card-inner { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+.field-label { font-size: 11px; font-weight: 700; color: var(--text2); margin-bottom: 7px; display: flex; align-items: center; gap: 6px; letter-spacing: 0.04em; }
+.badge { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+.badge-req { background: rgba(255,77,109,0.15); color: var(--err); }
+.badge-opt { background: rgba(255,255,255,0.06); color: var(--text3); }
+
+input[type="text"], input[type="number"], input[type="date"] {
+  width: 100%; height: 52px;
+  background: rgba(10,20,50,0.6); border: 1.5px solid rgba(80,140,255,0.12);
+  border-radius: 12px; font-size: 16px;
+  font-family: 'Noto Sans JP', sans-serif; font-weight: 500;
+  padding: 0 16px; color: var(--text);
+  transition: all 0.2s; outline: none; -webkit-appearance: none;
+}
+input[type="date"] { color-scheme: dark; }
+input::placeholder { color: var(--text3); }
+input:focus { border-color: var(--a1); box-shadow: 0 0 0 3px rgba(0,194,255,0.1); background: rgba(15,25,60,0.8); }
+input.error { border-color: var(--err); }
+
+.status-group { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.status-btn { height: 74px; background: rgba(10,20,50,0.5); border: 1.5px solid rgba(80,140,255,0.12); border-radius: 14px; font-size: 12px; font-weight: 700; font-family: 'Noto Sans JP', sans-serif; color: var(--text2); cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; transition: all 0.18s; -webkit-appearance: none; }
+.status-btn:active { transform: scale(0.93); }
+.status-btn.sel-kanryo { background: rgba(0,224,150,0.07); border-color: var(--ok); border-width: 2px; color: var(--ok); box-shadow: 0 0 20px rgba(0,224,150,0.12); }
+.status-btn.sel-fuzai { background: rgba(255,179,0,0.07); border-color: var(--warn); border-width: 2px; color: var(--warn); box-shadow: 0 0 20px rgba(255,179,0,0.12); }
+.status-btn.sel-mochi { background: rgba(255,77,109,0.07); border-color: var(--err); border-width: 2px; color: var(--err); box-shadow: 0 0 20px rgba(255,77,109,0.12); }
+
+/* 写真エリア */
+.photo-tap { background: rgba(10,20,50,0.5); border: 1.5px dashed rgba(80,140,255,0.18); border-radius: 14px; min-height: 140px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; cursor: pointer; transition: all 0.2s; overflow: hidden; position: relative; }
+.photo-tap:active { background: rgba(15,25,60,0.8); }
+.photo-tap.has-photo { border-style: solid; border-color: var(--a1); }
+.photo-tap-label { font-size: 14px; color: var(--text2); font-weight: 700; }
+.photo-tap-sub { font-size: 11px; color: var(--text3); }
+.photo-preview-img { width: 100%; display: none; object-fit: cover; max-height: 260px; border-radius: 12px; }
+
+/* 必須写真エリア（大きめ） */
+.photo-tap-required { min-height: 180px; border-color: rgba(255,107,0,0.3); }
+.photo-tap-required.has-photo { border-color: var(--ok); }
+
+.sign-tap { background: rgba(10,20,50,0.5); border: 1.5px dashed rgba(80,140,255,0.18); border-radius: 14px; min-height: 88px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: all 0.2s; overflow: hidden; }
+.sign-tap:active { opacity: 0.8; }
+.sign-tap.done { border-style: solid; border-color: var(--ok); background: rgba(0,224,150,0.04); }
+.sign-tap img { max-height: 110px; max-width: 100%; border-radius: 10px; display: none; }
+.sign-tap-label { font-size: 13px; color: var(--text2); font-weight: 600; }
+.sign-done-tag { display: none; font-size: 11px; font-weight: 700; color: var(--ok); align-items: center; gap: 5px; margin-top: 8px; }
+
+.error-msg { font-size: 11px; font-weight: 700; color: var(--err); margin-top: 5px; display: none; align-items: center; gap: 4px; }
+.error-msg.show { display: flex; }
+
+.btn-submit { width: 100%; height: 60px; background: linear-gradient(90deg, var(--d1), var(--d2)); color: #000; border: none; border-radius: 16px; font-size: 16px; font-weight: 900; font-family: 'Noto Sans JP', sans-serif; letter-spacing: 0.06em; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; box-shadow: 0 4px 24px rgba(0,194,255,0.28); transition: all 0.18s; margin-top: 4px; -webkit-appearance: none; }
+.btn-submit:active { transform: scale(0.97); }
+.btn-submit-p { background: linear-gradient(90deg, var(--p1), var(--p2)); color: #fff; box-shadow: 0 4px 24px rgba(255,107,0,0.28); }
+
+/* サインモーダル */
+#signModal { display: none; position: fixed; inset: 0; z-index: 500; background: linear-gradient(160deg, #0A0F1E, #0C1428); flex-direction: column; }
+#signModal.open { display: flex; }
+.sign-modal-bar { background: linear-gradient(180deg, #0D1A3A, #0F1729); border-bottom: 1px solid rgba(80,140,255,0.15); padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.sign-modal-title { font-size: 15px; font-weight: 900; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.sign-modal-clear { background: rgba(10,20,50,0.6); border: 1px solid rgba(80,140,255,0.2); color: var(--text2); font-size: 12px; font-weight: 700; font-family: 'Noto Sans JP', sans-serif; padding: 7px 16px; border-radius: 8px; cursor: pointer; }
+.sign-canvas-wrap { flex: 1; position: relative; }
+#signCanvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; background: #fff; -webkit-user-select: none; user-select: none; }
+.sign-guide { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 11px; color: #bbb; pointer-events: none; }
+#signLockOverlay { display: none; position: absolute; inset: 0; z-index: 10; }
+.sign-modal-footer { display: flex; gap: 10px; padding: 12px 16px; background: linear-gradient(180deg, #0D1A3A, #0F1729); border-top: 1px solid rgba(80,140,255,0.15); flex-shrink: 0; }
+.btn-sign-cancel { flex: 1; height: 52px; background: rgba(10,20,50,0.6); border: 1px solid rgba(80,140,255,0.2); border-radius: 12px; font-size: 14px; font-weight: 700; font-family: 'Noto Sans JP', sans-serif; color: var(--text2); cursor: pointer; }
+.btn-sign-done { flex: 2; height: 52px; background: linear-gradient(90deg, #00E096, #00B86B); border: none; border-radius: 12px; font-size: 15px; font-weight: 900; font-family: 'Noto Sans JP', sans-serif; color: #000; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 4px 16px rgba(0,224,150,0.25); }
+
+/* ローディング */
+.sending-overlay { position: fixed; inset: 0; background: rgba(5,10,30,0.88); backdrop-filter: blur(8px); z-index: 600; display: none; align-items: center; justify-content: center; }
+.sending-overlay.show { display: flex; }
+.send-box { background: linear-gradient(160deg, #0F1A35, #0D1628); border: 1px solid rgba(80,140,255,0.18); border-radius: 20px; padding: 32px 44px; text-align: center; }
+.spinner { width: 40px; height: 40px; margin: 0 auto 16px; border: 3px solid rgba(80,140,255,0.12); border-top-color: var(--d1); border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.send-label { font-size: 14px; font-weight: 700; color: var(--text); }
+.send-sub { font-size: 11px; color: var(--text2); margin-top: 4px; }
+
+/* QRオーバーレイ */
+#qrOverlay { display: none; position: fixed; inset: 0; z-index: 700; background: linear-gradient(160deg, #080D1A, #0A1228); overflow-y: auto; }
+#qrOverlay.show { display: block; }
+.qr-screen { max-width: 480px; margin: 0 auto; padding: 20px 16px 60px; }
+.qr-top { padding: 16px 0 20px; }
+.qr-title { font-family: 'Inter', sans-serif; font-size: 20px; font-weight: 900; color: var(--text); }
+.qr-tracking-display { font-family: 'Inter', sans-serif; font-size: 28px; font-weight: 900; color: var(--p1); letter-spacing: 0.06em; margin-top: 6px; }
+.qr-sub { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+.qr-cards-wrap { display: flex; flex-direction: column; gap: 16px; margin-bottom: 20px; }
+
+/* ラベルカード1：QRコード */
+.qr-label-card { background: white; border-radius: 16px; padding: 20px 20px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.qr-label-header { width: 100%; display: flex; justify-content: space-between; align-items: center; }
+.qr-label-logo { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 900; color: #0F172A; letter-spacing: 0.08em; }
+.qr-label-type { font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 20px; background: #DBEAFE; color: #1D4ED8; }
+.qr-label-divider { width: 100%; height: 1px; background: #E2E8F0; }
+.qr-label-tracking { font-family: 'Inter', sans-serif; font-size: 20px; font-weight: 900; color: #0F172A; letter-spacing: 0.04em; }
+.qr-box { width: 180px; height: 180px; }
+.qr-label-footer { font-size: 10px; color: #94A3B8; text-align: center; }
+
+/* ラベルカード2：お客様控え */
+.customer-label-card { background: white; border-radius: 16px; padding: 24px 20px; display: flex; flex-direction: column; gap: 12px; }
+.customer-label-header { display: flex; justify-content: space-between; align-items: center; }
+.customer-label-logo { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 900; color: #0F172A; letter-spacing: 0.08em; }
+.customer-label-badge { font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 20px; background: #FEF3C7; color: #92400E; }
+.customer-label-divider { height: 1px; background: #E2E8F0; }
+.customer-label-title { font-size: 11px; color: #94A3B8; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.customer-label-number { font-family: 'Inter', sans-serif; font-size: 36px; font-weight: 900; color: #0F172A; letter-spacing: 0.04em; text-align: center; padding: 8px 0; }
+.customer-label-date { font-size: 12px; color: #64748B; text-align: center; }
+
+.btn-print { width: 100%; height: 60px; background: linear-gradient(90deg, #FF6B00, #FF3D77); color: #fff; border: none; border-radius: 16px; font-size: 16px; font-weight: 900; font-family: 'Noto Sans JP', sans-serif; letter-spacing: 0.04em; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; box-shadow: 0 4px 24px rgba(255,107,0,0.28); margin-bottom: 12px; -webkit-appearance: none; }
+.btn-print:active { transform: scale(0.97); }
+.btn-done-qr { width: 100%; height: 52px; background: rgba(10,20,50,0.6); border: 1.5px solid rgba(80,140,255,0.2); color: var(--text2); border-radius: 14px; font-size: 14px; font-weight: 700; font-family: 'Noto Sans JP', sans-serif; cursor: pointer; -webkit-appearance: none; }
+
+/* 成功画面 */
+.success-overlay { position: fixed; inset: 0; z-index: 800; display: none; align-items: center; justify-content: center; flex-direction: column; background: linear-gradient(160deg, #080D1A, #0A1228, #0C1535); }
+.success-overlay.show { display: flex; }
+.success-glow { position: absolute; width: 320px; height: 320px; border-radius: 50%; pointer-events: none; }
+.success-content { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 0 32px; text-align: center; }
+.success-icon-ring { width: 92px; height: 92px; border-radius: 50%; border: 2px solid var(--d1); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 40px rgba(0,194,255,0.2); }
+.success-title { font-family: 'Inter', sans-serif; font-size: 32px; font-weight: 900; color: var(--text); }
+.success-detail { font-size: 13px; color: var(--text2); line-height: 1.8; }
+.btn-next { margin-top: 24px; background: linear-gradient(90deg, var(--d1), var(--d2)); border: none; border-radius: 14px; height: 54px; width: 220px; font-size: 15px; font-weight: 900; font-family: 'Noto Sans JP', sans-serif; cursor: pointer; color: #000; box-shadow: 0 6px 20px rgba(0,194,255,0.2); }
+
+.tab-section { display: none; flex-direction: column; gap: 10px; }
+.tab-section.active { display: flex; }
+
+
+/* スキャンアニメ */
+@keyframes scanAnim {
+  0% { top: 10%; }
+  50% { top: 85%; }
+  100% { top: 10%; }
+}
+/* 配達リストアイテム */
+.d-list-item {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(10,20,50,0.5);
+  border: 1px solid rgba(80,140,255,0.14);
+  border-radius: 12px; padding: 12px 14px;
+}
+.d-list-item .item-num { font-family:Inter,sans-serif; font-size:13px; font-weight:700; color:var(--text3); min-width:20px; }
+.d-list-item .item-tracking { font-family:Inter,sans-serif; font-size:14px; font-weight:700; color:var(--text); flex:1; }
+.d-list-item .item-count { font-size:12px; font-weight:700; color:var(--d1); background:rgba(0,194,255,0.08); padding:3px 10px; border-radius:8px; white-space:nowrap; }
+.d-list-item .item-del { background:none; border:none; color:var(--text3); cursor:pointer; font-size:18px; padding:0 4px; }
+
+@media print {
+  body > *:not(#printArea) { display: none !important; }
+  #printArea { display: flex !important; flex-wrap: wrap; gap: 16px; padding: 16px; background: white; }
+  .print-label { width: 200px; border: 2px solid #ccc; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 8px; page-break-inside: avoid; background: white; }
+  .print-label .pl-logo { font-size: 10px; font-weight: 900; color: #0F172A; letter-spacing: 0.08em; }
+  .print-label .pl-type { font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .print-label .pl-type.qr-type { background: #DBEAFE; color: #1D4ED8; }
+  .print-label .pl-type.cs-type { background: #FEF3C7; color: #92400E; }
+  .print-label .pl-tracking { font-size: 15px; font-weight: 900; color: #0F172A; letter-spacing: 0.04em; }
+  .print-label .pl-number-big { font-size: 28px; font-weight: 900; color: #0F172A; text-align: center; }
+  .print-label .pl-date { font-size: 10px; color: #64748B; }
+  .print-label hr { width: 100%; border: none; border-top: 1px solid #E2E8F0; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-top">
+    <div class="logo-mark" id="logoMark">
+      <svg id="logoSvg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h4l3 5v4h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>
+      </svg>
+    </div>
+    <div class="header-titles">
+      <h1>LOGI CONNECT</h1>
+      <p id="headerSub">配達記録管理システム</p>
+    </div>
+    <span class="mode-pill" id="modePill">DELIVERY</span>
+  </div>
+  <div class="tab-bar">
+    <button class="tab-btn active" id="tabDelivery" onclick="switchTab('delivery')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3D5070" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h4l3 5v4h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+      配達
+    </button>
+    <button class="tab-btn" id="tabPickup" onclick="switchTab('pickup')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3D5070" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+      集荷
+    </button>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- 配達タブ -->
+  <div class="tab-section active" id="sectionDelivery">
+
+    <!-- QRスキャン -->
+    <div class="slabel">QRコード読み込み</div>
+    <div class="card"><div class="card-inner">
+      <div>
+        <div class="field-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>
+          QRコードをスキャン
+        </div>
+        <!-- タップ前：起動ボタン -->
+        <div id="qrStartBtn" onclick="document.getElementById('qrFileInput').click()" style="border:1.5px dashed rgba(0,194,255,0.3);border-radius:14px;min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;cursor:pointer;background:rgba(0,194,255,0.04);transition:all 0.2s;">
+          <div style="width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,var(--d1),var(--d2));display:flex;align-items:center;justify-content:center;box-shadow:0 0 20px rgba(0,194,255,0.3);">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>
+          </div>
+          <div style="text-align:center;">
+            <p style="font-size:15px;font-weight:700;color:var(--text);">タップしてQR読み込み開始</p>
+            <p style="font-size:11px;color:var(--text3);margin-top:4px;">カメラが起動します</p>
+          </div>
+        </div>
+        <input type="file" id="qrFileInput" accept="image/*" capture="environment" style="display:none" onchange="readQRFromFile(event)">
+
+        <!-- カメラ起動後（使用しない） -->
+        <div id="qrScanArea" style="position:relative;border-radius:14px;overflow:hidden;background:#111;min-height:260px;display:none;align-items:center;justify-content:center;">
+          <video id="qrVideo" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:14px;" autoplay playsinline muted></video>
+          <!-- スキャン枠オーバーレイ -->
+          <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;">
+            <div style="width:190px;height:190px;position:relative;">
+              <div style="position:absolute;top:0;left:0;width:28px;height:28px;border-top:4px solid var(--d1);border-left:4px solid var(--d1);border-radius:4px 0 0 0;"></div>
+              <div style="position:absolute;top:0;right:0;width:28px;height:28px;border-top:4px solid var(--d1);border-right:4px solid var(--d1);border-radius:0 4px 0 0;"></div>
+              <div style="position:absolute;bottom:0;left:0;width:28px;height:28px;border-bottom:4px solid var(--d1);border-left:4px solid var(--d1);border-radius:0 0 0 4px;"></div>
+              <div style="position:absolute;bottom:0;right:0;width:28px;height:28px;border-bottom:4px solid var(--d1);border-right:4px solid var(--d1);border-radius:0 0 4px 0;"></div>
+              <div id="scanLine" style="position:absolute;left:4px;right:4px;height:2px;background:linear-gradient(90deg,transparent,var(--d1),transparent);animation:scanAnim 1.8s ease-in-out infinite;top:10%;"></div>
+            </div>
+            <p id="qrScanStatus" style="color:white;font-size:13px;font-weight:600;margin-top:12px;text-shadow:0 1px 4px rgba(0,0,0,0.8);">QRコードをかざしてください</p>
+          </div>
+          <!-- 読み取り成功フラッシュ -->
+          <div id="qrSuccessFlash" style="display:none;position:absolute;inset:0;background:rgba(0,224,150,0.35);border-radius:14px;align-items:center;justify-content:center;flex-direction:column;gap:8px;z-index:10;">
+            <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            <p style="color:white;font-size:15px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,0.5);" id="qrSuccessText">読み取り完了</p>
+          </div>
+          <!-- 停止ボタン -->
+          <button onclick="stopQRScanner()" style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.5);border:none;color:white;font-size:12px;font-weight:700;font-family:'Noto Sans JP',sans-serif;padding:6px 12px;border-radius:8px;cursor:pointer;z-index:5;">停止</button>
+        </div>
+      </div>
+
+      <!-- 個数入力（スキャン後に表示） -->
+      <div id="countInputArea" style="display:none;">
+        <div style="background:rgba(0,224,150,0.07);border:1.5px solid var(--ok);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
+          <div style="font-size:11px;font-weight:700;color:var(--ok);margin-bottom:4px;">読み取り済み伝票番号</div>
+          <div id="scannedTrackingDisplay" style="font-family:Inter,sans-serif;font-size:18px;font-weight:900;color:var(--text);">-</div>
+        </div>
+        <div class="field-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/></svg>
+          この伝票の個数 <span class="badge badge-req">必須</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="number" id="d-itemCount" placeholder="個数" min="1" style="flex:1;" oninput="updateAddBtn()">
+          <button id="addItemBtn" onclick="addDeliveryItem()" style="height:52px;padding:0 20px;background:linear-gradient(90deg,var(--d1),var(--d2));border:none;border-radius:12px;font-size:14px;font-weight:900;font-family:'Noto Sans JP',sans-serif;color:#000;cursor:pointer;white-space:nowrap;-webkit-appearance:none;">追加</button>
+        </div>
+      </div>
+    </div></div>
+
+    <!-- 手入力 -->
+    <div class="slabel">手動入力（QRが読めない場合）</div>
+    <div class="card"><div class="card-inner">
+      <div>
+        <div class="field-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+          伝票番号を手入力
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="d-manualTracking" placeholder="例：20250405-0001" autocomplete="off" style="flex:1;" oninput="onManualInput()">
+        </div>
+        <div id="manualCountArea" style="display:none;margin-top:10px;">
+          <div class="field-label">個数 <span class="badge badge-req">必須</span></div>
+          <div style="display:flex;gap:8px;">
+            <input type="number" id="d-manualCount" placeholder="個数" min="1" style="flex:1;">
+            <button onclick="addManualItem()" style="height:52px;padding:0 20px;background:linear-gradient(90deg,var(--d1),var(--d2));border:none;border-radius:12px;font-size:14px;font-weight:900;font-family:'Noto Sans JP',sans-serif;color:#000;cursor:pointer;-webkit-appearance:none;">追加</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+
+    <!-- 入力済みリスト -->
+    <div class="slabel">入力済み確認</div>
+    <div class="card"><div class="card-inner">
+      <!-- 集計バー -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div style="background:rgba(0,194,255,0.08);border:1.5px solid rgba(0,194,255,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">伝票件数</div>
+          <div style="font-family:Inter,sans-serif;font-size:28px;font-weight:900;color:var(--d1);" id="totalTickets">0</div>
+          <div style="font-size:10px;color:var(--text3);">件</div>
+        </div>
+        <div style="background:rgba(0,194,255,0.08);border:1.5px solid rgba(0,194,255,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">荷物総個数</div>
+          <div style="font-family:Inter,sans-serif;font-size:28px;font-weight:900;color:var(--d1);" id="totalItems">0</div>
+          <div style="font-size:10px;color:var(--text3);">個</div>
+        </div>
+      </div>
+
+      <!-- リスト -->
+      <div id="deliveryList" style="display:flex;flex-direction:column;gap:8px;margin-top:4px;">
+        <div style="text-align:center;padding:20px 0;color:var(--text3);font-size:13px;">
+          QRスキャンまたは手入力で伝票を追加してください
+        </div>
+      </div>
+    </div></div>
+
+    <!-- 受取人サイン -->
+    <div class="slabel">受取人サイン</div>
+    <div class="card"><div class="card-inner">
+      <div>
+        <div class="sign-tap" id="d-signPreviewBox" onclick="openSignModal('d')">
+          <div id="d-signHint" style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+            <span style="color:var(--text3)"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></span>
+            <p class="sign-tap-label">タップしてサインを受け取る</p>
+          </div>
+          <img id="d-signPreviewImg" src="" alt="" style="display:none;">
+        </div>
+        <div id="d-signDoneTag" class="sign-done-tag">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          サイン完了（タップで修正可能）
+        </div>
+      </div>
+    </div></div>
+
+    <div class="error-msg" id="d-err-list" style="margin:0 2px;">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      伝票番号を1件以上入力してください
+    </div>
+
+    <button class="btn-submit" onclick="submitForm('d')">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+      まとめて送信
+    </button>
+  </div>
+
+  <!-- 集荷タブ -->
+  <div class="tab-section" id="sectionPickup">
+
+    <!-- 1. 写真（必須・一番上） -->
+    <div class="slabel">荷物写真 <span style="color:var(--err);font-size:10px;letter-spacing:0;">必須</span></div>
+    <div class="card"><div class="card-inner">
+      <div>
+        <div class="field-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+          荷主の伝票を撮影 <span class="badge badge-req">必須</span>
+        </div>
+        <div class="photo-tap photo-tap-required" id="p-photoArea" onclick="document.getElementById('p-photoInput').click()">
+          <span id="p-photoIcon" style="color:var(--p1)"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg></span>
+          <p class="photo-tap-label" id="p-photoText" style="font-size:15px;">タップして伝票を撮影</p>
+          <small class="photo-tap-sub" id="p-photoSub">荷主が用意した伝票を撮影してください</small>
+          <img class="photo-preview-img" id="p-photoPreview" src="" alt="">
+        </div>
+        <input type="file" id="p-photoInput" accept="image/*" capture="environment" style="display:none" onchange="handlePhoto('p',event)">
+        <div class="error-msg" id="p-err-photo">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          伝票の写真を撮影してください
+        </div>
+      </div>
+    </div></div>
+
+    <!-- 2. 任意項目 -->
+    <div class="slabel">荷物情報（任意）</div>
+    <div class="card"><div class="card-inner">
+      <div>
+        <div class="field-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+          個数 <span class="badge badge-opt">任意</span>
+        </div>
+        <input type="number" id="p-count" placeholder="例：3" min="1">
+      </div>
+      <div>
+        <div class="field-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M3 12h18M3 17h18"/></svg>
+          サイズ <span class="badge badge-opt">任意</span>
+        </div>
+        <input type="text" id="p-size" placeholder="例：60サイズ・大型など" autocomplete="off">
+      </div>
+      <div>
+        <div class="field-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          集荷日 <span class="badge badge-opt">任意</span>
+        </div>
+        <input type="date" id="p-date">
+      </div>
+      <div>
+        <div class="field-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+          品名 <span class="badge badge-opt">任意</span>
+        </div>
+        <input type="text" id="p-itemName" placeholder="例：衣類・書籍・電化製品など" autocomplete="off">
+      </div>
+    </div></div>
+
+    <button class="btn-submit btn-submit-p" onclick="submitForm('p')">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+      送信して伝票番号を発行
+    </button>
+  </div>
+</div>
+
+<!-- サインモーダル -->
+<div id="signModal">
+  <div class="sign-modal-bar">
+    <span class="sign-modal-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--a1)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+      サインしてください
+    </span>
+    <button class="sign-modal-clear" onclick="clearSignCanvas()">クリア</button>
+  </div>
+  <div class="sign-canvas-wrap">
+    <canvas id="signCanvas"></canvas>
+    <div class="sign-guide">指でなぞってサインしてください</div>
+    <div id="signLockOverlay"></div>
+  </div>
+  <div class="sign-modal-footer">
+    <button class="btn-sign-cancel" onclick="closeSignModal()">キャンセル</button>
+    <button class="btn-sign-done" onclick="completeSign()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>完了
+    </button>
+  </div>
+</div>
+
+<!-- ローディング -->
+<div class="sending-overlay" id="sendingOverlay">
+  <div class="send-box">
+    <div class="spinner" id="spinnerEl"></div>
+    <div class="send-label" id="sendLabel">送信中...</div>
+    <div class="send-sub" id="sendSub">データベースに保存しています</div>
+  </div>
+</div>
+
+<!-- QRオーバーレイ -->
+<div id="qrOverlay">
+  <div class="qr-screen">
+    <div class="qr-top">
+      <div class="qr-title">伝票発行完了</div>
+      <div class="qr-tracking-display" id="qrTrackingDisplay">-</div>
+      <div class="qr-sub">ラベルを印刷して荷物に貼ってください</div>
+    </div>
+
+    <div class="qr-cards-wrap">
+      <!-- ラベル1：QRコード（ドライバー用） -->
+      <div class="qr-label-card">
+        <div class="qr-label-header">
+          <span class="qr-label-logo">LOGI CONNECT</span>
+          <span class="qr-label-type">DRIVER</span>
+        </div>
+        <div class="qr-label-divider"></div>
+        <div class="qr-label-tracking" id="qrLabel1Tracking">-</div>
+        <div class="qr-box" id="qrBox1"></div>
+        <div class="qr-label-footer">このQRコードをスキャンして配達完了を記録</div>
+      </div>
+
+      <!-- ラベル2：お客様控え -->
+      <div class="customer-label-card">
+        <div class="customer-label-header">
+          <span class="customer-label-logo">LOGI CONNECT</span>
+          <span class="customer-label-badge">お客様控え</span>
+        </div>
+        <div class="customer-label-divider"></div>
+        <div class="customer-label-title">伝票番号</div>
+        <div class="customer-label-number" id="qrLabel2Number">-</div>
+        <div class="customer-label-date" id="qrLabel2Date">-</div>
+      </div>
+    </div>
+
+    <button class="btn-print" onclick="printLabels()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect width="12" height="8" x="6" y="14"/></svg>
+      ワンタップで印刷（2枚）
+    </button>
+    <button class="btn-done-qr" onclick="doneQR()">完了（次の集荷へ）</button>
+  </div>
+</div>
+
+<!-- 印刷エリア -->
+<div id="printArea" style="display:none;"></div>
+
+<!-- 成功画面（配達用） -->
+<div class="success-overlay" id="successOverlay">
+  <div class="success-glow" id="successGlow"></div>
+  <div class="success-content">
+    <div class="success-icon-ring" id="successRing">
+      <svg id="successSvg" width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--d1)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+    </div>
+    <div class="success-title">配達完了</div>
+    <div class="success-detail" id="successDetail">データベースに<br>記録しました</div>
+    <button class="btn-next" onclick="resetForm()">次の配達へ →</button>
+  </div>
+</div>
+
+<script>
+// ===== Supabase（CDN: esm.sh から動的 import／npm 不使用）=====
+var SB_URL = 'https://qccxztvroptltgaajetd.supabase.co';
+var SB_KEY = 'sb_publishable_UBtr5a7mp1THAyxr5R7Rkw_7hSUWNEC';
+var SB_BUCKET = 'delivery-photos';
+var __sbLoadPromise = null;
+var __sbClient = null;
+
+function loadSupabaseClient() {
+  if (__sbClient) return Promise.resolve(__sbClient);
+  if (!__sbLoadPromise) {
+    __sbLoadPromise = import('https://esm.sh/@supabase/supabase-js@2.49.8').then(function(mod) {
+      __sbClient = mod.createClient(SB_URL, SB_KEY);
+      return __sbClient;
+    });
+  }
+  return __sbLoadPromise;
+}
+
+function dataUrlToBlob(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== 'string') return null;
+  var parts = dataUrl.split(',');
+  if (parts.length < 2) return null;
+  var mimeMatch = parts[0].match(/data:(.*?);/);
+  var mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+  var raw = atob(parts[1]);
+  var len = raw.length;
+  var arr = new Uint8Array(len);
+  for (var i = 0; i < len; i++) arr[i] = raw.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+function randomSuffix() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  return String(Math.floor(Math.random() * 1e9));
+}
+
+function newOrderId(prefix) {
+  var d = new Date();
+  var y = d.getFullYear();
+  var m = String(d.getMonth() + 1).padStart(2, '0');
+  var day = String(d.getDate()).padStart(2, '0');
+  return prefix + '-' + y + m + day + '-' + randomSuffix();
+}
+
+async function uploadDataUrl(sb, orderId, fileKey, dataUrl) {
+  var blob = dataUrlToBlob(dataUrl);
+  if (!blob) return '';
+  var ext = (blob.type && blob.type.indexOf('png') >= 0) ? 'png' : 'jpg';
+  var path = orderId + '/' + fileKey + '.' + ext;
+  var { error } = await sb.storage.from(SB_BUCKET).upload(path, blob, {
+    contentType: blob.type || 'image/jpeg',
+    upsert: true
+  });
+  if (error) throw error;
+  var { data } = sb.storage.from(SB_BUCKET).getPublicUrl(path);
+  return (data && data.publicUrl) ? data.publicUrl : '';
+}
+
+// ===== 配達リスト =====
+var deliveryItems = [];
+var currentScannedTracking = '';
+var scanCooldown = false;
+
+function readQRFromFile(e) {
+  var file = e.target.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(ev) {
+    var img = new Image();
+    img.onload = function() {
+      var canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      var ctx2 = canvas.getContext('2d');
+      ctx2.drawImage(img, 0, 0);
+      var imageData = ctx2.getImageData(0, 0, canvas.width, canvas.height);
+      processQRImage(imageData);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+  // inputリセット
+  e.target.value = '';
+}
+
+function processQRImage(imageData) {
+  if (window.jsQR) {
+    var code = jsQR(imageData.data, imageData.width, imageData.height);
+    if (code && code.data) {
+      onQRDetected(code.data);
+    } else {
+      alert('QRコードが読み取れませんでした\nもう一度撮影してください');
+    }
+  } else {
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+    s.onload = function() {
+      var code = jsQR(imageData.data, imageData.width, imageData.height);
+      if (code && code.data) {
+        onQRDetected(code.data);
+      } else {
+        alert('QRコードが読み取れませんでした\nもう一度撮影してください');
+      }
+    };
+    document.head.appendChild(s);
+  }
+}
+
+function onQRDetected(data) {
+  var trackingNo = data;
+  try {
+    var parsed = JSON.parse(data);
+    trackingNo = parsed.trackingNo || data;
+  } catch(e) {}
+
+  currentScannedTracking = trackingNo;
+  playBeep();
+
+  // 成功フラッシュ
+  var flash = document.getElementById('qrSuccessFlash');
+  if (flash) {
+    document.getElementById('qrSuccessText').textContent = trackingNo;
+    flash.style.display = 'block';
+  }
+
+  // 個数入力エリア表示
+  document.getElementById('scannedTrackingDisplay').textContent = trackingNo;
+  document.getElementById('d-itemCount').value = '';
+  document.getElementById('countInputArea').style.display = 'block';
+  document.getElementById('d-itemCount').focus();
+}
+
+function playBeep() {
+  try {
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.4);
+  } catch(e) {}
+}
+
+function addDeliveryItem() {
+  var count = parseInt(document.getElementById('d-itemCount').value);
+  if (!currentScannedTracking || !count || count < 1) {
+    alert('個数を入力してください');
+    return;
+  }
+  pushItem(currentScannedTracking, count);
+  document.getElementById('countInputArea').style.display = 'none';
+  document.getElementById('qrSuccessFlash').style.display = 'none';
+  document.getElementById('d-itemCount').value = '';
+  currentScannedTracking = '';
+}
+
+function onManualInput() {
+  var val = document.getElementById('d-manualTracking').value.trim();
+  document.getElementById('manualCountArea').style.display = val ? 'block' : 'none';
+}
+
+function addManualItem() {
+  var tracking = document.getElementById('d-manualTracking').value.trim();
+  var count = parseInt(document.getElementById('d-manualCount').value);
+  if (!tracking) { alert('伝票番号を入力してください'); return; }
+  if (!count || count < 1) { alert('個数を入力してください'); return; }
+  pushItem(tracking, count);
+  document.getElementById('d-manualTracking').value = '';
+  document.getElementById('d-manualCount').value = '';
+  document.getElementById('manualCountArea').style.display = 'none';
+}
+
+function pushItem(tracking, count) {
+  deliveryItems.push({ tracking: tracking, count: count });
+  renderDeliveryList();
+  document.getElementById('d-err-list').classList.remove('show');
+}
+
+function removeItem(idx) {
+  deliveryItems.splice(idx, 1);
+  renderDeliveryList();
+}
+
+function renderDeliveryList() {
+  var list = document.getElementById('deliveryList');
+  var totalTickets = deliveryItems.length;
+  var totalCount = deliveryItems.reduce(function(sum, i) { return sum + i.count; }, 0);
+  document.getElementById('totalTickets').textContent = totalTickets;
+  document.getElementById('totalItems').textContent = totalCount;
+
+  if (totalTickets === 0) {
+    list.innerHTML = '<div style="text-align:center;padding:20px 0;color:var(--text3);font-size:13px;">QRスキャンまたは手入力で伝票を追加してください</div>';
+    return;
+  }
+
+  list.innerHTML = deliveryItems.map(function(item, i) {
+    return '<div class="d-list-item">'
+      + '<span class="item-num">' + (i+1) + '</span>'
+      + '<span class="item-tracking">' + item.tracking + '</span>'
+      + '<span class="item-count">' + item.count + '個</span>'
+      + '<button class="item-del" onclick="removeItem(' + i + ')">✕</button>'
+      + '</div>';
+  }).join('');
+}
+
+let currentTab = 'delivery';
+let currentQRTracking = '';
+let currentQRDate = '';
+
+// タブ切替
+function switchTab(tab) {
+  currentTab = tab;
+  const isP = tab === 'pickup';
+  document.getElementById('sectionDelivery').classList.toggle('active', !isP);
+  document.getElementById('sectionPickup').classList.toggle('active', isP);
+  document.getElementById('tabDelivery').classList.toggle('active', !isP);
+  document.getElementById('tabPickup').classList.toggle('active', isP);
+  const a1 = isP ? '#FF6B00' : '#00C2FF', a2 = isP ? '#FF3D77' : '#0077FF';
+  document.documentElement.style.setProperty('--a1', a1);
+  document.documentElement.style.setProperty('--a2', a2);
+  document.getElementById('modePill').textContent = isP ? 'PICKUP' : 'DELIVERY';
+  document.getElementById('headerSub').textContent = isP ? '集荷記録管理システム' : '配達記録管理システム';
+  document.getElementById('logoMark').style.background = `linear-gradient(135deg,${a1},${a2})`;
+  document.getElementById('logoMark').style.boxShadow = isP ? '0 0 20px rgba(255,107,0,0.35)' : '0 0 20px rgba(0,194,255,0.35)';
+  document.getElementById('logoSvg').innerHTML = isP
+    ? '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>'
+    : '<rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h4l3 5v4h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  // タブ切り替え時はスキャナー停止
+  // QR停止不要（file方式）
+}
+
+// 伝票番号生成（日付8桁-連番4桁）
+function generateTrackingNo() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth()+1).padStart(2,'0');
+  const d = String(now.getDate()).padStart(2,'0');
+  const dateStr = `${y}${m}${d}`;
+  const seq = String(Math.floor(Math.random()*9000)+1000); // 1000-9999
+  return `${dateStr}-${seq}`;
+}
+
+const state = {
+  d: { status:'', photoData:'', signHasData:false, savedSignData:null, signLocked:false },
+  p: { photoData:'' }
+};
+
+function selectStatus(prefix, status, btn, cls) {
+  state[prefix].status = status;
+  btn.closest('.status-group').querySelectorAll('.status-btn').forEach(b => b.className = 'status-btn');
+  btn.classList.add(cls);
+  document.getElementById(prefix + '-err-status')?.classList.remove('show');
+}
+
+function handlePhoto(prefix, e) {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    state[prefix].photoData = ev.target.result;
+    document.getElementById(prefix + '-photoPreview').src = ev.target.result;
+    document.getElementById(prefix + '-photoPreview').style.display = 'block';
+    document.getElementById(prefix + '-photoIcon').style.display = 'none';
+    document.getElementById(prefix + '-photoText').style.display = 'none';
+    document.getElementById(prefix + '-photoSub').style.display = 'none';
+    document.getElementById(prefix + '-photoArea').classList.add('has-photo');
+    if (prefix === 'p') document.getElementById('p-err-photo').classList.remove('show');
+  };
+  reader.readAsDataURL(file);
+}
+
+// サイン
+let signCanvas, signCtx, drawing = false, lastX = 0, lastY = 0;
+let eventsAttached = false, currentSignPrefix = 'd';
+
+function openSignModal(prefix) {
+  currentSignPrefix = prefix;
+  document.getElementById('signModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  document.body.style.touchAction = 'none';
+  if (screen.orientation?.lock) screen.orientation.lock('landscape').catch(()=>{});
+  signCanvas = document.getElementById('signCanvas');
+  signCtx = signCanvas.getContext('2d');
+  signCanvas.width = 0; signCanvas.height = 0;
+  requestAnimationFrame(() => {
+    const ratio = window.devicePixelRatio || 1;
+    const w = signCanvas.offsetWidth, h = signCanvas.offsetHeight;
+    signCanvas.width = w * ratio; signCanvas.height = h * ratio;
+    signCtx.scale(ratio, ratio);
+    signCtx.strokeStyle = '#0F172A'; signCtx.lineWidth = 2.5;
+    signCtx.lineCap = 'round'; signCtx.lineJoin = 'round';
+    const s = state[prefix];
+    if (s.signHasData && s.savedSignData) {
+      const img = new Image();
+      img.onload = () => signCtx.drawImage(img, 0, 0, w, h);
+      img.src = s.savedSignData;
+    }
+    state[prefix].signLocked = false;
+    document.getElementById('signLockOverlay').style.display = 'none';
+    if (!eventsAttached) {
+      signCanvas.addEventListener('mousedown', startDraw);
+      signCanvas.addEventListener('touchstart', startDraw, { passive: false });
+      signCanvas.addEventListener('mousemove', moveDraw);
+      signCanvas.addEventListener('touchmove', moveDraw, { passive: false });
+      signCanvas.addEventListener('mouseup', endDraw);
+      signCanvas.addEventListener('touchend', endDraw, { passive: false });
+      eventsAttached = true;
+    }
+  });
+}
+
+function closeSignModal() {
+  document.getElementById('signModal').classList.remove('open');
+  document.body.style.overflow = ''; document.body.style.touchAction = '';
+  if (screen.orientation?.unlock) screen.orientation.unlock();
+}
+
+function getPos(e) {
+  const rect = signCanvas.getBoundingClientRect();
+  if (e.touches?.length > 0) return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+function startDraw(e) {
+  if (state[currentSignPrefix].signLocked) return;
+  e.preventDefault(); drawing = true;
+  const p = getPos(e); lastX = p.x; lastY = p.y;
+}
+function moveDraw(e) {
+  if (!drawing || state[currentSignPrefix].signLocked) return;
+  e.preventDefault();
+  const p = getPos(e);
+  signCtx.beginPath(); signCtx.moveTo(lastX, lastY);
+  signCtx.lineTo(p.x, p.y); signCtx.stroke();
+  lastX = p.x; lastY = p.y;
+  state[currentSignPrefix].signHasData = true;
+}
+function endDraw() { drawing = false; }
+
+function clearSignCanvas() {
+  if (!signCtx || !signCanvas) return;
+  const ratio = window.devicePixelRatio || 1;
+  signCtx.clearRect(0, 0, signCanvas.width / ratio, signCanvas.height / ratio);
+  state[currentSignPrefix].signHasData = false;
+  state[currentSignPrefix].signLocked = false;
+  document.getElementById('signLockOverlay').style.display = 'none';
+}
+
+function completeSign() {
+  const prefix = currentSignPrefix;
+  if (!state[prefix].signHasData) { alert('サインがまだありません'); return; }
+  state[prefix].savedSignData = signCanvas.toDataURL('image/png');
+  state[prefix].signLocked = true;
+  document.getElementById('signLockOverlay').style.display = 'block';
+  document.getElementById(prefix + '-signPreviewImg').src = state[prefix].savedSignData;
+  document.getElementById(prefix + '-signPreviewImg').style.display = 'block';
+  document.getElementById(prefix + '-signHint').style.display = 'none';
+  document.getElementById(prefix + '-signPreviewBox').classList.add('done');
+  document.getElementById(prefix + '-signDoneTag').style.display = 'flex';
+  closeSignModal();
+}
+
+// バリデーション
+function validate(prefix) {
+  var ok = true;
+  if (prefix === 'd') {
+    if (deliveryItems.length === 0) { document.getElementById('d-err-list').classList.add('show'); ok = false; }
+    else { document.getElementById('d-err-list').classList.remove('show'); }
+  } else {
+    if (!state.p.photoData) { document.getElementById('p-err-photo').classList.add('show'); ok = false; }
+    else { document.getElementById('p-err-photo').classList.remove('show'); }
+  }
+  return ok;
+}
+
+// QR表示
+function showQROverlay(trackingNo, photoUrl) {
+  currentQRTracking = trackingNo;
+  const now = new Date();
+  currentQRDate = now.toLocaleDateString('ja-JP', { year:'numeric', month:'long', day:'numeric' });
+
+  document.getElementById('qrTrackingDisplay').textContent = trackingNo;
+  document.getElementById('qrLabel1Tracking').textContent = trackingNo;
+  document.getElementById('qrLabel2Number').textContent = trackingNo;
+  document.getElementById('qrLabel2Date').textContent = `集荷日：${currentQRDate}`;
+
+  // QRコード生成
+  document.getElementById('qrBox1').innerHTML = '';
+  const qrData = JSON.stringify({ trackingNo, photoUrl, date: now.toISOString() });
+  setTimeout(() => {
+    new QRCode(document.getElementById('qrBox1'), {
+      text: qrData, width: 180, height: 180,
+      colorDark: '#0F172A', colorLight: '#FFFFFF',
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  }, 100);
+
+  document.getElementById('qrOverlay').classList.add('show');
+  window.scrollTo({ top: 0 });
+}
+
+// 印刷
+function printLabels() {
+  const printArea = document.getElementById('printArea');
+  printArea.innerHTML = '';
+  printArea.style.display = 'flex';
+
+  // ラベル1：QRコード
+  const label1 = document.createElement('div');
+  label1.className = 'print-label';
+  label1.innerHTML = `
+    <span class="pl-logo">LOGI CONNECT</span>
+    <span class="pl-type qr-type">DRIVER</span>
+    <hr>
+    <span class="pl-tracking">${currentQRTracking}</span>
+    <div id="print-qr" style="width:150px;height:150px;"></div>
+  `;
+  printArea.appendChild(label1);
+
+  // ラベル2：お客様控え
+  const label2 = document.createElement('div');
+  label2.className = 'print-label';
+  label2.innerHTML = `
+    <span class="pl-logo">LOGI CONNECT</span>
+    <span class="pl-type cs-type">お客様控え</span>
+    <hr>
+    <div class="pl-number-big">${currentQRTracking}</div>
+    <div class="pl-date">${currentQRDate}</div>
+  `;
+  printArea.appendChild(label2);
+
+  const qrData = document.getElementById('qrBox1').querySelector('canvas')?.toDataURL() || currentQRTracking;
+
+  setTimeout(() => {
+    new QRCode(document.getElementById('print-qr'), {
+      text: qrData.startsWith('data:') ? currentQRTracking : qrData,
+      width: 150, height: 150,
+      colorDark: '#0F172A', colorLight: '#FFFFFF',
+      correctLevel: QRCode.CorrectLevel.M
+    });
+    setTimeout(() => {
+      window.print();
+      printArea.style.display = 'none';
+    }, 400);
+  }, 100);
+}
+
+function doneQR() {
+  document.getElementById('qrOverlay').classList.remove('show');
+  resetForm();
+}
+
+// 送信（Supabase: orders テーブル + delivery-photos ストレージ）
+async function submitForm(prefix) {
+  if (!validate(prefix)) { document.querySelector('.error-msg.show')?.scrollIntoView({ behavior: 'smooth' }); return; }
+  var isP = prefix === 'p';
+  var orderId = isP ? generateTrackingNo() : newOrderId('DEL');
+
+  var payloadCore = isP ? {
+    type: '集荷',
+    trackingNo: orderId,
+    count: document.getElementById('p-count').value.trim(),
+    size: document.getElementById('p-size').value.trim(),
+    date: document.getElementById('p-date').value,
+    itemName: document.getElementById('p-itemName').value.trim(),
+    timestamp: new Date().toISOString()
+  } : {
+    type: '配達',
+    batchId: orderId,
+    items: deliveryItems.slice(),
+    totalTickets: deliveryItems.length,
+    totalCount: deliveryItems.reduce(function(s, i) { return s + i.count; }, 0),
+    timestamp: new Date().toISOString()
+  };
+
+  document.getElementById('spinnerEl').style.borderTopColor = isP ? '#FF6B00' : '#00C2FF';
+  document.getElementById('sendLabel').textContent = isP ? '写真をアップロード中...' : '送信中...';
+  document.getElementById('sendSub').textContent = 'Supabase に保存しています';
+  document.getElementById('sendingOverlay').classList.add('show');
+
+  var photoUrl = '';
+  try {
+    var sb = await loadSupabaseClient();
+
+    if (isP && state.p.photoData) {
+      photoUrl = await uploadDataUrl(sb, orderId, 'parcel', state.p.photoData);
+    }
+    var signUrl = '';
+    if (!isP && state.d.savedSignData) {
+      signUrl = await uploadDataUrl(sb, orderId, 'signature', state.d.savedSignData);
+    }
+
+    var payload = Object.assign({}, payloadCore, {
+      source: 'delivery-app',
+      photo_url: photoUrl || null,
+      sign_url: signUrl || null
+    });
+
+    var ins = await sb.from('orders').insert({ id: orderId, payload: payload });
+    if (ins.error) throw ins.error;
+
+    document.getElementById('sendingOverlay').classList.remove('show');
+
+    if (isP) {
+      showQROverlay(orderId, photoUrl);
+    } else {
+      document.getElementById('successDetail').innerHTML = 'データベースに<br>記録しました';
+      document.getElementById('successOverlay').classList.add('show');
+    }
+  } catch (err) {
+    console.error(err);
+    document.getElementById('sendingOverlay').classList.remove('show');
+    alert('保存に失敗しました。\n' + (err && err.message ? err.message : String(err)) + '\n\nSupabase の「orders」テーブルと「delivery-photos」バケット・RLS を確認してください。');
+  }
+}
+
+// リセット
+function resetForm() {
+  document.getElementById('successOverlay').classList.remove('show');
+  const prefix = currentTab === 'pickup' ? 'p' : 'd';
+  if (prefix === 'd') {
+    state.d.status = '';
+    document.querySelectorAll('#sectionDelivery .status-btn').forEach(b => b.className = 'status-btn');
+    document.getElementById('d-signPreviewImg').style.display = 'none';
+    document.getElementById('d-signPreviewImg').src = '';
+    document.getElementById('d-signHint').style.display = 'flex';
+    document.getElementById('d-signPreviewBox').classList.remove('done');
+    document.getElementById('d-signDoneTag').style.display = 'none';
+    state.d.signHasData = false; state.d.savedSignData = null; state.d.signLocked = false;
+    deliveryItems = []; renderDeliveryList();
+    currentScannedTracking = ''; scanCooldown = false;
+    // QR停止不要（file方式）
+    document.getElementById('countInputArea').style.display = 'none';
+    document.getElementById('manualCountArea').style.display = 'none';
+  } else {
+    document.getElementById('p-count').value = '';
+    document.getElementById('p-size').value = '';
+    document.getElementById('p-date').value = '';
+    document.getElementById('p-itemName').value = '';
+  }
+  state[prefix].photoData = '';
+  document.getElementById(prefix + '-photoPreview').style.display = 'none';
+  document.getElementById(prefix + '-photoPreview').src = '';
+  document.getElementById(prefix + '-photoIcon').style.display = '';
+  document.getElementById(prefix + '-photoText').style.display = '';
+  document.getElementById(prefix + '-photoSub').style.display = '';
+  document.getElementById(prefix + '-photoArea').classList.remove('has-photo');
+  document.getElementById(prefix + '-photoInput').value = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// スキャナーはタップで起動
+
+</script>
+</body>
+</html>
