@@ -1,0 +1,7 @@
+{
+    "rewrites": [
+      { "source": "/delivery-app", "destination": "/public/delivery-app.html" }
+    ]
+  }
+  
+  
