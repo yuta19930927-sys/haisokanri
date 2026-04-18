@@ -975,7 +975,7 @@ const MenuBtn = ({ icon, label, onClick, active, badge }) => {
   );
 };
 
-export default function App() {
+export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
   const [page, setPage] = useState("dashboard");
   const [data, setData] = useState(initialData);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -1090,9 +1090,15 @@ export default function App() {
         <div style={{ background:"linear-gradient(to right,#000080,#1084d0)", padding:"3px 8px", display:"flex", alignItems:"center", gap:"8px" }}>
           <span style={{ fontSize:"16px" }}>🚚</span>
           <span style={{ color:"#fff", fontFamily:"monospace", fontSize:"13px", fontWeight:"bold", flex:1 }}>配送管理システム</span>
+          <span style={{ color:"#cce0ff", fontSize:"10px", marginRight:"6px", maxWidth:"200px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={authEmail || ""}>
+            {authRole === "admin" ? "管理者" : authRole === "driver" ? "ドライバー" : ""}{authEmail ? ` · ${authEmail}` : ""}
+          </span>
           <span style={{ color:"#cce0ff", fontSize:"11px", marginRight:"10px" }}>
             {now.getFullYear()}年{now.getMonth()+1}月{now.getDate()}日　{now.getHours()}:{String(now.getMinutes()).padStart(2,"0")}
           </span>
+          {typeof onLogout === "function" && (
+            <RetroBtn small onClick={onLogout} color="#ffcfcf" style={{ marginRight:"6px" }}>ログアウト</RetroBtn>
+          )}
           {["－","□","✕"].map((c,i)=><div key={i} style={{ ...raised, background:winBg, width:"16px", height:"14px", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"9px", cursor:"pointer" }}>{c}</div>)}
         </div>
 
