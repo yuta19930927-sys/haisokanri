@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "./lib/supabase";
 import { DeliveryManagementApp } from "../delivery-retro-v2.jsx";
 
@@ -52,6 +52,8 @@ const tabBtn = (active) => ({
 });
 
 const AUTH_INIT_TIMEOUT_MS = 5000;
+const SESSION_RETRY_COUNT = 3;
+const RETRY_DELAY_MS = 800;
 
 function withTimeout(promise, ms) {
   return new Promise((resolve, reject) => {
@@ -78,6 +80,89 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const profileRef = useRef(null);
+  const manualLogoutRef = useRef(false);
+
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const getSessionWithRetry = useCallback(async () => {
+    let lastError = null;
+    for (let i = 0; i < SESSION_RETRY_COUNT; i += 1) {
+      try {
+        const res = await withTimeout(
+          supabase.auth.getSession(),
+          AUTH_INIT_TIMEOUT_MS
+        );
+        if (res.error) throw res.error;
+        return res.data?.session ?? null;
+      } catch (err) {
+        lastError = err;
+        if (i < SESSION_RETRY_COUNT - 1) {
+          await sleep(RETRY_DELAY_MS * (i + 1));
+        }
+      }
+    }
+    throw lastError || new Error("failed to fetch session");
+  }, []);
+
+  const loadProfileWithRetry = useCallback(
+    async (userId) => {
+      let lastError = null;
+      for (let i = 0; i < SESSION_RETRY_COUNT; i += 1) {
+        try {
+          const p = await withTimeout(loadProfile(userId), AUTH_INIT_TIMEOUT_MS);
+          if (p) return p;
+        } catch (err) {
+          lastError = err;
+        }
+        if (i < SESSION_RETRY_COUNT - 1) {
+          await sleep(RETRY_DELAY_MS * (i + 1));
+        }
+      }
+      if (lastError) {
+        console.warn("loadProfile retry failed:", lastError);
+      }
+      return null;
+    },
+    [loadProfile]
+  );
+
+  const syncSessionState = useCallback(
+    async (nextSession, options = {}) => {
+      const {
+        keepProfileIfLoadFails = true,
+        skipProfileLoad = false,
+        clearIfNoSession = false,
+      } = options;
+
+      if (!nextSession?.user) {
+        if (clearIfNoSession) {
+          setSession(null);
+          setProfile(null);
+        }
+        return;
+      }
+
+      setSession(nextSession);
+
+      if (skipProfileLoad) return;
+
+      const loadedProfile = await loadProfileWithRetry(nextSession.user.id);
+      if (loadedProfile) {
+        setProfile(loadedProfile);
+        return;
+      }
+
+      if (!keepProfileIfLoadFails) {
+        setProfile(null);
+      }
+    },
+    [loadProfileWithRetry]
+  );
 
   const loadProfile = useCallback(async (userId) => {
     const { data, error: qErr } = await supabase
@@ -97,83 +182,102 @@ export default function App() {
 
     (async () => {
       try {
-        const res = await withTimeout(supabase.auth.getSession(), AUTH_INIT_TIMEOUT_MS);
+        const s = await getSessionWithRetry();
         if (cancelled) return;
-        if (res.error) throw res.error;
-        const s = res.data?.session ?? null;
-
-        if (s?.user) {
-          let p = null;
-          try {
-            p = await withTimeout(loadProfile(s.user.id), AUTH_INIT_TIMEOUT_MS);
-          } catch (profileErr) {
-            console.warn("loadProfile failed or timed out:", profileErr);
-          }
-          if (cancelled) return;
-          if (!p) {
-            try {
-              await withTimeout(supabase.auth.signOut(), AUTH_INIT_TIMEOUT_MS);
-            } catch (signOutErr) {
-              console.warn("signOut after missing profile:", signOutErr);
-            }
-            setSession(null);
-            setProfile(null);
-          } else {
-            setSession(s);
-            setProfile(p);
-          }
-        } else {
-          setSession(null);
-          setProfile(null);
-        }
+        await syncSessionState(s, {
+          keepProfileIfLoadFails: true,
+          skipProfileLoad: false,
+          clearIfNoSession: true,
+        });
       } catch (e) {
-        console.warn("getSession failed or timed out:", e);
-        if (!cancelled) {
-          setSession(null);
-          setProfile(null);
-        }
+        console.warn("getSession failed after retry:", e);
       } finally {
         if (!cancelled) setAuthReady(true);
       }
     })();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, s) => {
-      try {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, s) => {
+      if (event === "TOKEN_REFRESHED") {
         if (s?.user) {
-          let p = null;
-          try {
-            p = await withTimeout(loadProfile(s.user.id), AUTH_INIT_TIMEOUT_MS);
-          } catch (profileErr) {
-            console.warn("onAuthStateChange loadProfile failed or timed out:", profileErr);
-          }
-          if (!p) {
-            try {
-              await withTimeout(supabase.auth.signOut(), AUTH_INIT_TIMEOUT_MS);
-            } catch (signOutErr) {
-              console.warn("signOut:", signOutErr);
-            }
-            setSession(null);
-            setProfile(null);
-            return;
-          }
           setSession(s);
-          setProfile(p);
-        } else {
+        }
+        return;
+      }
+
+      if (event === "SIGNED_OUT") {
+        if (manualLogoutRef.current) {
+          manualLogoutRef.current = false;
           setSession(null);
           setProfile(null);
+          return;
+        }
+
+        // Avoid accidental sign-out on temporary refresh/network hiccups.
+        try {
+          const recovered = await getSessionWithRetry();
+          if (recovered?.user) {
+            await syncSessionState(recovered, {
+              keepProfileIfLoadFails: true,
+              skipProfileLoad: true,
+              clearIfNoSession: false,
+            });
+            if (!profileRef.current) {
+              const p = await loadProfileWithRetry(recovered.user.id);
+              if (p) setProfile(p);
+            }
+            return;
+          }
+        } catch (recoverErr) {
+          console.warn("session recover after SIGNED_OUT failed:", recoverErr);
+        }
+
+        setSession(null);
+        setProfile(null);
+        return;
+      }
+
+      try {
+        await syncSessionState(s, {
+          keepProfileIfLoadFails: true,
+          // For INITIAL_SESSION / USER_UPDATED etc., keep current profile first.
+          skipProfileLoad: !!profileRef.current,
+          clearIfNoSession: false,
+        });
+
+        if (s?.user && !profileRef.current) {
+          const p = await loadProfileWithRetry(s.user.id);
+          if (p) setProfile(p);
         }
       } catch (e) {
         console.warn("onAuthStateChange:", e);
-        setSession(null);
-        setProfile(null);
       }
     });
+
+    const onVisibilityChange = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const s = await getSessionWithRetry();
+        await syncSessionState(s, {
+          keepProfileIfLoadFails: true,
+          skipProfileLoad: !!profileRef.current,
+          clearIfNoSession: false,
+        });
+        if (s?.user && !profileRef.current) {
+          const p = await loadProfileWithRetry(s.user.id);
+          if (p) setProfile(p);
+        }
+      } catch (visibilityErr) {
+        console.warn("visibility session check failed:", visibilityErr);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
       subscription.unsubscribe();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [loadProfile]);
+  }, [getSessionWithRetry, loadProfileWithRetry, syncSessionState]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -211,6 +315,7 @@ export default function App() {
 
   const handleLogout = async () => {
     setError("");
+    manualLogoutRef.current = true;
     await supabase.auth.signOut();
     setSession(null);
     setProfile(null);
