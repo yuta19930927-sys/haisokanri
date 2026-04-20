@@ -171,91 +171,293 @@ const EVENT_TYPE_LABEL = {
 const CalendarPage = ({ data, setData }) => {
   const [calYear, setCalYear] = useState(y);
   const [calMonth, setCalMonth] = useState(mo);
+  const [calMode, setCalMode] = useState("delivery");
   const [selectedDate, setSelectedDate] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [addDate, setAddDate] = useState("");
   const [newEvent, setNewEvent] = useState({ title:"", type:"task", note:"" });
+  const [newOrder, setNewOrder] = useState({ customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+  const [editingItem, setEditingItem] = useState(null);
+  const [editEvent, setEditEvent] = useState({ id:"", date:"", type:"task", title:"", note:"" });
+  const [editOrder, setEditOrder] = useState({ id:"", customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"", status:"pending" });
 
   const firstDay = new Date(calYear, calMonth, 1).getDay();
   const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
   const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+  const orders = Array.isArray(data?.orders) ? data.orders : [];
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+  const payables = Array.isArray(data?.payables) ? data.payables : [];
+  const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
+  const vehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
+  const customers = Array.isArray(data?.customers) ? data.customers : [];
+
+  const BUSINESS_OPTIONS = ["task", "sales", "payment_due", "payment_receive"];
+  const BUSINESS_LEGEND = [
+    { label:"支払期日", color:EVENT_TYPE_COLOR.payment_due },
+    { label:"入金予定", color:EVENT_TYPE_COLOR.payment_receive },
+    { label:"営業", color:EVENT_TYPE_COLOR.sales },
+    { label:"タスク", color:EVENT_TYPE_COLOR.task },
+    { label:"免許更新", color:"#cc6600" },
+    { label:"車検", color:"#cc0099" },
+  ];
+
   const normalizeDateString = (value) => {
     if (!value) return "";
     return String(value).slice(0, 10);
   };
-  const formatEventTitleForCell = (title) => {
-    const raw = title || "";
-    return raw.replace(/^[A-Z]+-\d+\s*/, "");
-  };
-
   const getDayStr = (d) => `${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+  const buildDeliveryItems = (targetDate) =>
+    orders
+      .filter((order) => normalizeDateString(order?.deliveryDate) === targetDate)
+      .map((order) => ({
+        id: `order-${order?.id || Math.random()}`,
+        source: "order",
+        sourceId: order?.id,
+        date: targetDate,
+        type: "delivery",
+        title: `配送：${order?.customerName || "未設定"}`,
+        color: EVENT_TYPE_COLOR.delivery,
+        raw: order,
+      }));
 
-  const getEventsForDate = (ds) => {
-    const targetDate = normalizeDateString(ds);
-    const evs = (Array.isArray(data?.events) ? data.events : []).filter((e) => normalizeDateString(e?.date) === targetDate);
-    const driverRenewals = (Array.isArray(data.drivers) ? data.drivers : [])
+  const buildBusinessItems = (targetDate) => {
+    const businessEvents = events
+      .filter((event) => normalizeDateString(event?.date) === targetDate && event?.type !== "delivery")
+      .map((event) => ({
+        id: `event-${event?.id || Math.random()}`,
+        source: "event",
+        sourceId: event?.id,
+        date: targetDate,
+        type: event?.type || "task",
+        title: event?.title || "",
+        color: event?.color || EVENT_TYPE_COLOR[event?.type] || "#808080",
+        raw: event,
+      }));
+    const invoiceItems = invoices
+      .filter((inv) => normalizeDateString(inv?.dueDate) === targetDate)
+      .map((inv) => ({
+        id: `invoice-${inv?.id || Math.random()}`,
+        source: "invoice",
+        sourceId: inv?.id,
+        date: targetDate,
+        type: "payment_receive",
+        title: `入金期日：${inv?.customerName || ""}`,
+        color: EVENT_TYPE_COLOR.payment_receive,
+        raw: inv,
+      }));
+    const payableItems = payables
+      .filter((payable) => normalizeDateString(payable?.dueDate) === targetDate)
+      .map((payable) => ({
+        id: `payable-${payable?.id || Math.random()}`,
+        source: "payable",
+        sourceId: payable?.id,
+        date: targetDate,
+        type: "payment_due",
+        title: `支払期日：${payable?.vendor || ""}`,
+        color: EVENT_TYPE_COLOR.payment_due,
+        raw: payable,
+      }));
+    const licenseItems = drivers
       .filter((driver) => normalizeDateString(driver?.license_expiry) === targetDate)
       .map((driver) => ({
-        id: `DRV-LIC-${driver?.id || Math.random()}`,
+        id: `driver-${driver?.id || Math.random()}`,
+        source: "driver",
+        sourceId: driver?.id,
         date: targetDate,
         type: "task",
-        title: `免許更新: ${driver?.name || ""}`,
+        title: `免許更新：${driver?.name || ""}`,
         color: "#cc6600",
+        raw: driver,
       }));
-    const vehicleInspections = (Array.isArray(data.vehicles) ? data.vehicles : [])
+    const inspectionItems = vehicles
       .filter((vehicle) => normalizeDateString(vehicle?.nextInspection) === targetDate)
       .map((vehicle) => ({
-        id: `VEH-INSP-${vehicle?.id || Math.random()}`,
+        id: `vehicle-${vehicle?.id || Math.random()}`,
+        source: "vehicle",
+        sourceId: vehicle?.id,
         date: targetDate,
         type: "task",
-        title: `車検: ${vehicle?.plate || ""}`,
+        title: `車検：${vehicle?.plate || ""}`,
         color: "#cc0099",
+        raw: vehicle,
       }));
-    const allEvents = [...evs, ...driverRenewals, ...vehicleInspections];
-    // also show bank transactions
-    const banks = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter((t) => normalizeDateString(t?.date) === targetDate);
-    return { evs: allEvents, banks };
+    return [...businessEvents, ...invoiceItems, ...payableItems, ...licenseItems, ...inspectionItems];
   };
 
-  const getEventsForDay = (d) => {
-    const ds = getDayStr(d);
-    return getEventsForDate(ds);
+  const getItemsForDate = (ds, mode = calMode) => {
+    const targetDate = normalizeDateString(ds);
+    if (!targetDate) return [];
+    return mode === "delivery" ? buildDeliveryItems(targetDate) : buildBusinessItems(targetDate);
   };
 
-  const selectedEvents = selectedDate ? getEventsForDate(selectedDate).evs : [];
-  const selectedBanks = selectedDate ? (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(t=>normalizeDateString(t?.date)===normalizeDateString(selectedDate)) : [];
-  const selectedPayables = selectedDate ? (Array.isArray(data?.payables) ? data.payables : []).filter(p=>normalizeDateString(p?.dueDate)===normalizeDateString(selectedDate)) : [];
-  const selectedInvoices = selectedDate ? (Array.isArray(data?.invoices) ? data.invoices : []).filter(i=>normalizeDateString(i?.dueDate)===normalizeDateString(selectedDate)) : [];
+  const selectedItems = selectedDate ? getItemsForDate(selectedDate) : [];
 
-  const addEvent = () => {
-    if (!newEvent.title||!addDate) return;
-    const safeEvents = Array.isArray(data?.events) ? data.events : [];
-    const ev = {
-      id:`EV-${String(safeEvents.length+1).padStart(3,"0")}`,
-      date:normalizeDateString(addDate), type:newEvent.type, title:newEvent.title,
-      color:EVENT_TYPE_COLOR[newEvent.type]||"#808080", note:newEvent.note
-    };
-    setData(d=>({...d, events:[...(Array.isArray(d?.events) ? d.events : []), ev]}));
+  const openAddModal = (dateStr) => {
+    const targetDate = normalizeDateString(dateStr || todayStr);
+    setAddDate(targetDate);
+    if (calMode === "delivery") {
+      setNewOrder({ customerId:"", deliveryDate:targetDate, from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+    } else {
+      setNewEvent({ title:"", type:"task", note:"" });
+    }
+    setShowAddModal(true);
+  };
+
+  const saveNewItem = () => {
+    if (calMode === "delivery") {
+      if (!newOrder.customerId || !newOrder.deliveryDate) return;
+      const customer = customers.find((c) => c?.id === newOrder.customerId);
+      const nextOrder = {
+        id:`ORD-${String(orders.length+1).padStart(3,"0")}`,
+        customerId:newOrder.customerId,
+        customerName:customer?.name || "",
+        date:fmt(today.getDate()),
+        deliveryDate:normalizeDateString(newOrder.deliveryDate),
+        from:newOrder.from,
+        to:newOrder.to,
+        cargo:newOrder.cargo,
+        weight:newOrder.weight,
+        status:"pending",
+        driverId:null,
+        vehicleId:null,
+        amount:parseInt(newOrder.amount, 10) || 0,
+        notes:newOrder.notes,
+      };
+      setData((d) => ({ ...d, orders:[nextOrder, ...(Array.isArray(d?.orders) ? d.orders : [])] }));
+    } else {
+      if (!newEvent.title || !addDate) return;
+      const safeEvents = Array.isArray(data?.events) ? data.events : [];
+      const nextEvent = {
+        id:`EV-${String(safeEvents.length+1).padStart(3,"0")}`,
+        date:normalizeDateString(addDate),
+        type:newEvent.type,
+        title:newEvent.title,
+        color:EVENT_TYPE_COLOR[newEvent.type]||"#808080",
+        note:newEvent.note,
+      };
+      setData((d) => ({ ...d, events:[...(Array.isArray(d?.events) ? d.events : []), nextEvent] }));
+    }
     setShowAddModal(false);
-    setNewEvent({ title:"", type:"task", note:"" });
+  };
+
+  const openEditModal = (item) => {
+    setEditingItem(item);
+    if (item?.source === "order") {
+      const order = item.raw || {};
+      setEditOrder({
+        id: order?.id || "",
+        customerId: order?.customerId || "",
+        deliveryDate: normalizeDateString(order?.deliveryDate),
+        from: order?.from || "",
+        to: order?.to || "",
+        cargo: order?.cargo || "",
+        weight: order?.weight || "",
+        amount: String(order?.amount ?? ""),
+        notes: order?.notes || "",
+        status: order?.status || "pending",
+      });
+    } else if (item?.source === "event") {
+      const event = item.raw || {};
+      setEditEvent({
+        id: event?.id || "",
+        date: normalizeDateString(event?.date),
+        type: event?.type || "task",
+        title: event?.title || "",
+        note: event?.note || "",
+      });
+    }
+    setShowEditModal(true);
+  };
+
+  const saveEditedItem = () => {
+    if (editingItem?.source === "order") {
+      const customer = customers.find((c) => c?.id === editOrder.customerId);
+      setData((d) => ({
+        ...d,
+        orders: (Array.isArray(d?.orders) ? d.orders : []).map((order) =>
+          order?.id === editOrder.id
+            ? {
+                ...order,
+                customerId: editOrder.customerId,
+                customerName: customer?.name || "",
+                deliveryDate: normalizeDateString(editOrder.deliveryDate),
+                from: editOrder.from,
+                to: editOrder.to,
+                cargo: editOrder.cargo,
+                weight: editOrder.weight,
+                amount: parseInt(editOrder.amount, 10) || 0,
+                notes: editOrder.notes,
+                status: editOrder.status,
+              }
+            : order
+        ),
+        events: (Array.isArray(d?.events) ? d.events : []).map((ev) =>
+          ev?.orderId === editOrder.id
+            ? {
+                ...ev,
+                date: normalizeDateString(editOrder.deliveryDate),
+                title: `配達予定：${customer?.name || ""}`,
+                color: EVENT_TYPE_COLOR.delivery,
+              }
+            : ev
+        ),
+      }));
+    } else if (editingItem?.source === "event") {
+      setData((d) => ({
+        ...d,
+        events: (Array.isArray(d?.events) ? d.events : []).map((ev) =>
+          ev?.id === editEvent.id
+            ? {
+                ...ev,
+                date: normalizeDateString(editEvent.date),
+                type: editEvent.type,
+                title: editEvent.title,
+                note: editEvent.note,
+                color: EVENT_TYPE_COLOR[editEvent.type] || "#808080",
+              }
+            : ev
+        ),
+      }));
+    }
+    setShowEditModal(false);
+    setEditingItem(null);
+  };
+
+  const deleteEditingItem = () => {
+    if (editingItem?.source === "order") {
+      setData((d) => ({
+        ...d,
+        orders: (Array.isArray(d?.orders) ? d.orders : []).filter((order) => order?.id !== editOrder.id),
+        events: (Array.isArray(d?.events) ? d.events : []).filter((ev) => ev?.orderId !== editOrder.id),
+      }));
+    } else if (editingItem?.source === "event") {
+      setData((d) => ({
+        ...d,
+        events: (Array.isArray(d?.events) ? d.events : []).filter((ev) => ev?.id !== editEvent.id),
+      }));
+    }
+    setShowEditModal(false);
+    setEditingItem(null);
   };
 
   const prevMonth = () => { if(calMonth===0){setCalYear(y=>y-1);setCalMonth(11);}else setCalMonth(m=>m-1); };
   const nextMonth = () => { if(calMonth===11){setCalYear(y=>y+1);setCalMonth(0);}else setCalMonth(m=>m+1); };
-
-  // Overdue invoices
-  const overdueInvoices = data.invoices.filter(i=>i.status==="overdue"||(i.status==="unpaid"&&i.dueDate<todayStr));
 
   return (
     <div style={{ display:"flex", gap:"10px" }}>
       {/* Left: Calendar */}
       <div style={{ flex:"0 0 auto", width:"420px" }}>
         <Panel title={`${calYear}年${calMonth+1}月`} icon="📅" style={{ marginBottom:"8px" }}>
+          <div style={{ display:"flex", gap:"6px", marginBottom:"8px" }}>
+            <RetroBtn onClick={()=>setCalMode("delivery")} color={calMode==="delivery" ? "#c0c0c0" : winBg} style={calMode==="delivery" ? pressed : raised}>配送カレンダー</RetroBtn>
+            <RetroBtn onClick={()=>setCalMode("business")} color={calMode==="business" ? "#c0c0c0" : winBg} style={calMode==="business" ? pressed : raised}>業務カレンダー</RetroBtn>
+          </div>
           <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"8px" }}>
             <RetroBtn onClick={prevMonth}>◀</RetroBtn>
             <span style={{ fontFamily:"monospace", fontSize:"13px", fontWeight:"bold", flex:1, textAlign:"center" }}>{calYear}年 {calMonth+1}月</span>
             <RetroBtn onClick={nextMonth}>▶</RetroBtn>
-            <RetroBtn onClick={()=>{setAddDate(todayStr);setShowAddModal(true);}} color="#d0e0ff">＋予定</RetroBtn>
           </div>
 
           {/* Weekday headers */}
@@ -272,12 +474,10 @@ const CalendarPage = ({ data, setData }) => {
             {Array.from({length:daysInMonth}).map((_,i)=>{
               const d = i+1;
               const ds = getDayStr(d);
-              const {evs, banks} = getEventsForDay(d);
+              const dayItems = getItemsForDate(ds);
               const isToday = ds===todayStr;
               const isSelected = ds===normalizeDateString(selectedDate);
               const dow = (firstDay+i)%7;
-              const hasPending = data.invoices.some(inv=>inv.dueDate===ds&&(inv.status==="unpaid"||inv.status==="overdue"));
-              const hasBankUnmatched = banks.some(b=>b.status==="unmatched");
               return (
                 <div key={d} onClick={()=>setSelectedDate(ds===selectedDate?null:ds)}
                   style={{ background:isSelected?"#cce0ff":isToday?"#ffffc0":"#fff",
@@ -288,21 +488,14 @@ const CalendarPage = ({ data, setData }) => {
                     display:"flex", alignItems:"center", gap:"2px" }}>
                     {isToday&&<span style={{ background:"#000080", color:"#fff", fontSize:"9px", padding:"0 2px" }}>今日</span>}
                     {d}
-                    {hasPending&&<span style={{ color:"#cc0000", fontSize:"9px" }}>●</span>}
-                    {hasBankUnmatched&&<span style={{ color:"#cc6600", fontSize:"9px" }}>★</span>}
                   </div>
                   <div style={{ display:"flex", flexDirection:"column", gap:"1px" }}>
-                    {evs.slice(0,2).map(ev=>(
-                      <div key={ev.id} style={{ background:ev.color, color:"#fff", fontSize:"9px", fontFamily:"monospace", padding:"1px 3px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
-                        {formatEventTitleForCell(ev?.title)}
+                    {dayItems.slice(0,2).map(item=>(
+                      <div key={item.id} style={{ background:item.color, color:"#fff", fontSize:"9px", fontFamily:"monospace", padding:"1px 3px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
+                        {item.title}
                       </div>
                     ))}
-                    {evs.length>2&&<div style={{ fontSize:"9px", fontFamily:"monospace", color:"#808080" }}>+{evs.length-2}件</div>}
-                    {banks.map(b=>(
-                      <div key={b.id} style={{ background:b.status==="matched"?"#006600":"#cc6600", color:"#fff", fontSize:"9px", fontFamily:"monospace", padding:"1px 3px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
-                        💰¥{b.amount.toLocaleString()}
-                      </div>
-                    ))}
+                    {dayItems.length>2&&<div style={{ fontSize:"9px", fontFamily:"monospace", color:"#808080" }}>+{dayItems.length-2}件</div>}
                   </div>
                 </div>
               );
@@ -311,30 +504,14 @@ const CalendarPage = ({ data, setData }) => {
 
           {/* Legend */}
           <div style={{ display:"flex", gap:"8px", marginTop:"6px", flexWrap:"wrap" }}>
-            {Object.entries(EVENT_TYPE_LABEL).map(([k,v])=>(
-              <div key={k} style={{ display:"flex", alignItems:"center", gap:"3px" }}>
-                <div style={{ width:"8px", height:"8px", background:EVENT_TYPE_COLOR[k] }}/>
-                <span style={{ fontFamily:"monospace", fontSize:"9px" }}>{v}</span>
+            {(calMode === "delivery" ? [{ label:"配送", color:EVENT_TYPE_COLOR.delivery }] : BUSINESS_LEGEND).map((item)=>(
+              <div key={item.label} style={{ display:"flex", alignItems:"center", gap:"3px" }}>
+                <div style={{ width:"8px", height:"8px", background:item.color }}/>
+                <span style={{ fontFamily:"monospace", fontSize:"9px" }}>{item.label}</span>
               </div>
             ))}
           </div>
         </Panel>
-
-        {/* Overdue alert */}
-        {overdueInvoices.length>0&&(
-          <Panel style={{ border:"2px solid #cc0000", background:"#fff0f0" }}>
-            <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#cc0000", marginBottom:"6px" }}>
-              ⚠ 延滞・期日超過 {overdueInvoices.length}件
-            </div>
-            {overdueInvoices.map(inv=>(
-              <div key={inv.id} style={{ borderBottom:"1px solid #ffcccc", padding:"4px 0", fontFamily:"monospace", fontSize:"11px" }}>
-                <div style={{ color:"#cc0000", fontWeight:"bold" }}>{inv.customerName}</div>
-                <div>期日: {inv.dueDate}　¥{inv.total.toLocaleString()}</div>
-                <div style={{ color:"#808080" }}>{inv.note}</div>
-              </div>
-            ))}
-          </Panel>
-        )}
       </div>
 
       {/* Right: Day detail */}
@@ -343,135 +520,39 @@ const CalendarPage = ({ data, setData }) => {
           <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
               <div style={{ fontFamily:"monospace", fontSize:"14px", fontWeight:"bold" }}>
-                📅 {selectedDate} の予定・記録
+                📅 {selectedDate} の{calMode === "delivery" ? "配送予定" : "業務予定"}
               </div>
-              <RetroBtn onClick={()=>{setAddDate(selectedDate);setShowAddModal(true);}} color="#d0e0ff">＋この日に予定追加</RetroBtn>
+              <RetroBtn onClick={()=>openAddModal(selectedDate)} color="#d0e0ff">
+                ＋この日に予定を追加
+              </RetroBtn>
             </div>
 
-            {/* Events */}
-            {selectedEvents.length>0&&(
-              <Panel title="スケジュール・タスク" icon="📋">
-                {selectedEvents.map(ev=>(
-                  <div key={ev.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"5px 0", borderBottom:"1px solid #ddd" }}>
-                    <div style={{ width:"10px", height:"10px", background:ev.color, flexShrink:0 }}/>
+            {selectedItems.length>0&&(
+              <Panel title={calMode === "delivery" ? "配送予定一覧" : "業務予定一覧"} icon="📋">
+                {selectedItems.map(item=>(
+                  <div key={item.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"5px 0", borderBottom:"1px solid #ddd", cursor:"pointer" }} onClick={() => openEditModal(item)}>
+                    <div style={{ width:"10px", height:"10px", background:item.color, flexShrink:0 }}/>
                     <div style={{ flex:1, fontFamily:"monospace", fontSize:"12px" }}>
-                      <span style={{ background:ev.color, color:"#fff", padding:"1px 6px", fontSize:"10px", marginRight:"6px" }}>{EVENT_TYPE_LABEL[ev.type]||ev.type}</span>
-                      {ev.title}
+                      <span style={{ background:item.color, color:"#fff", padding:"1px 6px", fontSize:"10px", marginRight:"6px" }}>
+                        {item.source === "driver" ? "免許更新" : item.source === "vehicle" ? "車検" : EVENT_TYPE_LABEL[item.type] || item.type}
+                      </span>
+                      {item.title}
                     </div>
-                    <RetroBtn small onClick={()=>setData(d=>({...d,events:d.events.filter(e=>e.id!==ev.id)}))}>削除</RetroBtn>
+                    {(item.source === "order" || item.source === "event") && <span style={{ fontSize:"10px", color:"#000080" }}>編集</span>}
                   </div>
                 ))}
               </Panel>
             )}
 
-            {/* Bank transactions for selected day */}
-            {selectedBanks.length>0&&(
-              <Panel title="口座入出金（銀行連携）" icon="🏦">
-                {selectedBanks.map(b=>(
-                  <div key={b.id} style={{ ...inset3d, background:b.status==="matched"?"#f0fff0":"#fff8e1", padding:"8px 10px", marginBottom:"6px" }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                      <div>
-                        <span style={{ fontFamily:"monospace", fontSize:"12px", fontWeight:"bold", color:"#006600" }}>
-                          ¥{b.amount.toLocaleString()} 入金
-                        </span>
-                        <span style={{ fontFamily:"monospace", fontSize:"11px", color:"#404040", marginLeft:"8px" }}>{b.description}</span>
-                      </div>
-                      <StatusPill s={b.status}/>
-                    </div>
-                    {b.status==="unmatched"&&(
-                      <div style={{ marginTop:"6px", display:"flex", gap:"6px", alignItems:"center" }}>
-                        <span style={{ fontFamily:"monospace", fontSize:"11px", color:"#cc6600" }}>▶ 請求書と照合：</span>
-                        <RetroSelect style={{ width:"200px" }} onChange={e=>{
-                          if(!e.target.value) return;
-                          setData(d=>({
-                            ...d,
-                            bankTransactions:d.bankTransactions.map(bt=>bt.id===b.id?{...bt,matchedInvoice:e.target.value,status:"matched"}:bt),
-                            invoices:d.invoices.map(inv=>inv.id===e.target.value?{...inv,status:"paid",paidDate:b.date}:inv),
-                            events:[...d.events,{id:`EV-B${Date.now()}`,date:b.date,type:"bank_in",title:`入金確認：${d.invoices.find(i=>i.id===e.target.value)?.customerName||""} ¥${b.amount.toLocaleString()}`,color:"#006600"}]
-                          }));
-                        }}>
-                          <option value="">請求書を選択して照合...</option>
-                          {data.invoices.filter(i=>i.status!=="paid").map(i=>(
-                            <option key={i.id} value={i.id}>{i.id} - {i.customerName} ¥{i.total.toLocaleString()}</option>
-                          ))}
-                        </RetroSelect>
-                      </div>
-                    )}
-                    {b.status==="matched"&&b.matchedInvoice&&(
-                      <div style={{ marginTop:"4px", fontFamily:"monospace", fontSize:"11px", color:"#006600" }}>
-                        ✓ {data.invoices.find(i=>i.id===b.matchedInvoice)?.customerName}　{b.matchedInvoice} と照合済み
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </Panel>
-            )}
-
-            {/* Invoices due on this day */}
-            {selectedInvoices.length>0&&(
-              <Panel title="入金期日（請求書）" icon="💴">
-                {selectedInvoices.map(inv=>(
-                  <div key={inv.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"5px 0", borderBottom:"1px solid #ddd" }}>
-                    <div style={{ fontFamily:"monospace", fontSize:"12px" }}>
-                      <div style={{ fontWeight:"bold" }}>{inv.customerName}</div>
-                      <div style={{ color:"#404040" }}>{inv.id}　¥{inv.total.toLocaleString()}</div>
-                    </div>
-                    <StatusPill s={inv.status}/>
-                  </div>
-                ))}
-              </Panel>
-            )}
-
-            {/* Payables due on this day */}
-            {selectedPayables.length>0&&(
-              <Panel title="支払期日（支払予定）" icon="💸">
-                {selectedPayables.map(p=>(
-                  <div key={p.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"5px 0", borderBottom:"1px solid #ddd" }}>
-                    <div style={{ fontFamily:"monospace", fontSize:"12px" }}>
-                      <div style={{ fontWeight:"bold" }}>{p.vendor}</div>
-                      <div style={{ color:"#404040" }}>{p.category}　¥{p.amount.toLocaleString()}</div>
-                    </div>
-                    <div style={{ display:"flex", gap:"6px", alignItems:"center" }}>
-                      <StatusPill s={p.status}/>
-                      {p.status==="unpaid"&&(
-                        <RetroBtn small color="#d0ffd0" onClick={()=>setData(d=>({...d,payables:d.payables.map(x=>x.id===p.id?{...x,status:"paid"}:x)}))}>支払済</RetroBtn>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </Panel>
-            )}
-
-            {selectedEvents.length===0&&selectedBanks.length===0&&selectedInvoices.length===0&&selectedPayables.length===0&&(
+            {selectedItems.length===0&&(
               <div style={{ ...inset3d, background:"#fff", padding:"24px", textAlign:"center", fontFamily:"monospace", fontSize:"12px", color:"#808080" }}>
                 この日の予定・記録はありません<br/>
-                <RetroBtn onClick={()=>{setAddDate(selectedDate);setShowAddModal(true);}} color="#d0e0ff" style={{ marginTop:"10px" }}>＋予定を追加する</RetroBtn>
+                <RetroBtn onClick={()=>openAddModal(selectedDate)} color="#d0e0ff" style={{ marginTop:"10px" }}>＋予定を追加する</RetroBtn>
               </div>
             )}
           </div>
         ) : (
           <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-            <Panel title="今月の入金予定（まとめ）" icon="💴">
-              <RetroTable
-                headers={["請求書","顧客","入金期日","金額","状態"]}
-                rows={data.invoices.map(inv=>[
-                  <span style={{ color:"#000080", fontWeight:"bold" }}>{inv.id}</span>,
-                  inv.customerName, inv.dueDate,
-                  <span style={{ fontWeight:"bold" }}>¥{inv.total.toLocaleString()}</span>,
-                  <StatusPill s={inv.status}/>,
-                ])}
-              />
-            </Panel>
-            <Panel title="今月の支払予定" icon="💸">
-              <RetroTable
-                headers={["支払先","区分","支払期日","金額","状態"]}
-                rows={data.payables.map(p=>[
-                  p.vendor, p.category, p.dueDate,
-                  "¥"+p.amount.toLocaleString(),
-                  <StatusPill s={p.status}/>,
-                ])}
-              />
-            </Panel>
             <div style={{ fontFamily:"monospace", fontSize:"11px", color:"#808080", textAlign:"center" }}>
               カレンダーの日付をクリックすると詳細が表示されます
             </div>
@@ -481,22 +562,90 @@ const CalendarPage = ({ data, setData }) => {
 
       {/* Add event modal */}
       {showAddModal&&(
-        <Modal title="予定・タスク追加" icon="📅" onClose={()=>setShowAddModal(false)} width={400}>
-          <Fl label="日付"><RetroInput type="date" value={addDate} onChange={e=>setAddDate(e.target.value)}/></Fl>
-          <Fl label="種別">
-            <RetroSelect value={newEvent.type} onChange={e=>setNewEvent(v=>({...v,type:e.target.value}))}>
-              <option value="task">タスク</option>
-              <option value="sales">営業</option>
-              <option value="delivery">配送</option>
-              <option value="payment_due">支払期日</option>
-              <option value="payment_receive">入金予定</option>
-            </RetroSelect>
-          </Fl>
-          <Fl label="タイトル"><RetroInput value={newEvent.title} onChange={e=>setNewEvent(v=>({...v,title:e.target.value}))} placeholder="例：車両点検、督促連絡"/></Fl>
-          <Fl label="メモ"><RetroTextarea value={newEvent.note} onChange={e=>setNewEvent(v=>({...v,note:e.target.value}))}/></Fl>
+        <Modal title={calMode === "delivery" ? "配送予定追加" : "業務予定追加"} icon="📅" onClose={()=>setShowAddModal(false)} width={420}>
+          {calMode === "delivery" ? (
+            <>
+              <Fl label="顧客">
+                <RetroSelect value={newOrder.customerId} onChange={(e)=>setNewOrder((v)=>({...v, customerId:e.target.value}))}>
+                  <option value="">選択</option>
+                  {customers.map((c)=><option key={c?.id||`c-${Math.random()}`} value={c?.id||""}>{c?.name||""}</option>)}
+                </RetroSelect>
+              </Fl>
+              <Fl label="配達日"><RetroInput type="date" value={newOrder.deliveryDate} onChange={(e)=>setNewOrder((v)=>({...v, deliveryDate:e.target.value}))}/></Fl>
+              <Fl label="出発地"><RetroInput value={newOrder.from} onChange={(e)=>setNewOrder((v)=>({...v, from:e.target.value}))}/></Fl>
+              <Fl label="配送先"><RetroInput value={newOrder.to} onChange={(e)=>setNewOrder((v)=>({...v, to:e.target.value}))}/></Fl>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 10px" }}>
+                <Fl label="荷物"><RetroInput value={newOrder.cargo} onChange={(e)=>setNewOrder((v)=>({...v, cargo:e.target.value}))}/></Fl>
+                <Fl label="重量"><RetroInput value={newOrder.weight} onChange={(e)=>setNewOrder((v)=>({...v, weight:e.target.value}))}/></Fl>
+              </div>
+              <Fl label="金額"><RetroInput type="number" value={newOrder.amount} onChange={(e)=>setNewOrder((v)=>({...v, amount:e.target.value}))}/></Fl>
+              <Fl label="備考"><RetroTextarea value={newOrder.notes} onChange={(e)=>setNewOrder((v)=>({...v, notes:e.target.value}))}/></Fl>
+            </>
+          ) : (
+            <>
+              <Fl label="日付"><RetroInput type="date" value={addDate} onChange={e=>setAddDate(e.target.value)}/></Fl>
+              <Fl label="種別">
+                <RetroSelect value={newEvent.type} onChange={e=>setNewEvent(v=>({...v,type:e.target.value}))}>
+                  {BUSINESS_OPTIONS.map((type)=><option key={type} value={type}>{EVENT_TYPE_LABEL[type]}</option>)}
+                </RetroSelect>
+              </Fl>
+              <Fl label="タイトル"><RetroInput value={newEvent.title} onChange={e=>setNewEvent(v=>({...v,title:e.target.value}))} placeholder="例：営業訪問、支払対応"/></Fl>
+              <Fl label="メモ"><RetroTextarea value={newEvent.note} onChange={e=>setNewEvent(v=>({...v,note:e.target.value}))}/></Fl>
+            </>
+          )}
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"10px" }}>
             <RetroBtn onClick={()=>setShowAddModal(false)}>キャンセル</RetroBtn>
-            <RetroBtn onClick={addEvent} color="#d0e0ff">　追加する　</RetroBtn>
+            <RetroBtn onClick={saveNewItem} color="#d0e0ff">　追加する　</RetroBtn>
+          </div>
+        </Modal>
+      )}
+
+      {showEditModal&&editingItem&&(
+        <Modal title="予定編集" icon="📝" onClose={()=>{setShowEditModal(false);setEditingItem(null);}} width={420}>
+          {editingItem.source === "order" ? (
+            <>
+              <Fl label="顧客">
+                <RetroSelect value={editOrder.customerId} onChange={(e)=>setEditOrder((v)=>({...v, customerId:e.target.value}))}>
+                  <option value="">選択</option>
+                  {customers.map((c)=><option key={c?.id||`c-edit-${Math.random()}`} value={c?.id||""}>{c?.name||""}</option>)}
+                </RetroSelect>
+              </Fl>
+              <Fl label="配達日"><RetroInput type="date" value={editOrder.deliveryDate} onChange={(e)=>setEditOrder((v)=>({...v, deliveryDate:e.target.value}))}/></Fl>
+              <Fl label="出発地"><RetroInput value={editOrder.from} onChange={(e)=>setEditOrder((v)=>({...v, from:e.target.value}))}/></Fl>
+              <Fl label="配送先"><RetroInput value={editOrder.to} onChange={(e)=>setEditOrder((v)=>({...v, to:e.target.value}))}/></Fl>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 10px" }}>
+                <Fl label="荷物"><RetroInput value={editOrder.cargo} onChange={(e)=>setEditOrder((v)=>({...v, cargo:e.target.value}))}/></Fl>
+                <Fl label="重量"><RetroInput value={editOrder.weight} onChange={(e)=>setEditOrder((v)=>({...v, weight:e.target.value}))}/></Fl>
+              </div>
+              <Fl label="金額"><RetroInput type="number" value={editOrder.amount} onChange={(e)=>setEditOrder((v)=>({...v, amount:e.target.value}))}/></Fl>
+              <Fl label="備考"><RetroTextarea value={editOrder.notes} onChange={(e)=>setEditOrder((v)=>({...v, notes:e.target.value}))}/></Fl>
+            </>
+          ) : editingItem.source === "event" ? (
+            <>
+              <Fl label="日付"><RetroInput type="date" value={editEvent.date} onChange={(e)=>setEditEvent((v)=>({...v, date:e.target.value}))}/></Fl>
+              <Fl label="種別">
+                <RetroSelect value={editEvent.type} onChange={(e)=>setEditEvent((v)=>({...v, type:e.target.value}))}>
+                  {BUSINESS_OPTIONS.map((type)=><option key={type} value={type}>{EVENT_TYPE_LABEL[type]}</option>)}
+                </RetroSelect>
+              </Fl>
+              <Fl label="タイトル"><RetroInput value={editEvent.title} onChange={(e)=>setEditEvent((v)=>({...v, title:e.target.value}))}/></Fl>
+              <Fl label="メモ"><RetroTextarea value={editEvent.note} onChange={(e)=>setEditEvent((v)=>({...v, note:e.target.value}))}/></Fl>
+            </>
+          ) : (
+            <div style={{ fontFamily:"monospace", fontSize:"12px", color:"#404040" }}>
+              この予定は自動表示項目のため編集できません。
+            </div>
+          )}
+          <div style={{ display:"flex", justifyContent:"space-between", gap:"6px", marginTop:"10px" }}>
+            <RetroBtn color="#ffd0d0" onClick={deleteEditingItem} style={{ visibility:(editingItem.source==="order"||editingItem.source==="event")?"visible":"hidden" }}>
+              削除
+            </RetroBtn>
+            <div style={{ display:"flex", gap:"6px" }}>
+              <RetroBtn onClick={()=>{setShowEditModal(false);setEditingItem(null);}}>キャンセル</RetroBtn>
+              <RetroBtn onClick={saveEditedItem} color="#d0e0ff" style={{ visibility:(editingItem.source==="order"||editingItem.source==="event")?"visible":"hidden" }}>
+                 保存
+              </RetroBtn>
+            </div>
           </div>
         </Modal>
       )}
