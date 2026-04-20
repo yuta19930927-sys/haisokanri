@@ -26,14 +26,14 @@ const initialData = {
     { id:"ORD-004", customerId:"C001", customerName:"株式会社田中商事", deliveryDate:fmt(22), from:"東京都品川区", to:"神奈川県横浜市", cargo:"精密機械", weight:"350kg", status:"pending", amount:38000 },
   ],
   drivers: [
-    { id:"D001", name:"佐藤 健", license:"大型", status:"available" },
-    { id:"D002", name:"伊藤 誠", license:"中型", status:"on_duty" },
-    { id:"D003", name:"渡辺 勇", license:"大型", status:"available" },
+    { id:"D001", name:"佐藤 健", license:"大型", status:"available", license_expiry:fmt(28), phone:"090-1111-2222", notes:"ベテランドライバー" },
+    { id:"D002", name:"伊藤 誠", license:"中型", status:"on_duty", license_expiry:fmt(24), phone:"090-3333-4444", notes:"冷凍便対応可" },
+    { id:"D003", name:"渡辺 勇", license:"大型", status:"available", license_expiry:fmt(20), phone:"090-5555-6666", notes:"夜間配送対応" },
   ],
   vehicles: [
-    { id:"V001", plate:"品川300あ1234", type:"4tトラック", status:"available", nextInspection: fmt(20) },
-    { id:"V002", plate:"なにわ400い5678", type:"10tトラック", status:"in_use", nextInspection: fmt(45) },
-    { id:"V003", plate:"名古屋200う9012", type:"2tトラック", status:"available", nextInspection: fmt(35) },
+    { id:"V001", plate:"品川300あ1234", type:"4tトラック", status:"available", nextInspection: fmt(20), notes:"定期点検済み" },
+    { id:"V002", plate:"なにわ400い5678", type:"10tトラック", status:"in_use", nextInspection: fmt(45), notes:"冷凍設備あり" },
+    { id:"V003", plate:"名古屋200う9012", type:"2tトラック", status:"available", nextInspection: fmt(35), notes:"小口配送向け" },
   ],
   invoices: [
     { id:"INV-001", orderId:"ORD-001", customerId:"C001", customerName:"株式会社田中商事", issueDate:fmt(8), dueDate:fmt(20), amount:45000, tax:4500, total:49500, status:"pending_confirmation", bankRef:"TAN20250408", paidDate:null, note:"" },
@@ -176,15 +176,38 @@ const CalendarPage = ({ data, setData }) => {
 
   const getDayStr = (d) => `${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
 
-  const getEventsForDay = (d) => {
-    const ds = getDayStr(d);
+  const getEventsForDate = (ds) => {
     const evs = data.events.filter(e=>e.date===ds);
+    const driverRenewals = (Array.isArray(data.drivers) ? data.drivers : [])
+      .filter((driver) => driver?.license_expiry === ds)
+      .map((driver) => ({
+        id: `DRV-LIC-${driver?.id || Math.random()}`,
+        date: ds,
+        type: "task",
+        title: `免許更新: ${driver?.name || ""}`,
+        color: "#cc6600",
+      }));
+    const vehicleInspections = (Array.isArray(data.vehicles) ? data.vehicles : [])
+      .filter((vehicle) => vehicle?.nextInspection === ds)
+      .map((vehicle) => ({
+        id: `VEH-INSP-${vehicle?.id || Math.random()}`,
+        date: ds,
+        type: "task",
+        title: `車検: ${vehicle?.plate || ""}`,
+        color: "#cc0099",
+      }));
+    const allEvents = [...evs, ...driverRenewals, ...vehicleInspections];
     // also show bank transactions
     const banks = data.bankTransactions.filter(t=>t.date===ds);
-    return { evs, banks };
+    return { evs: allEvents, banks };
   };
 
-  const selectedEvents = selectedDate ? data.events.filter(e=>e.date===selectedDate) : [];
+  const getEventsForDay = (d) => {
+    const ds = getDayStr(d);
+    return getEventsForDate(ds);
+  };
+
+  const selectedEvents = selectedDate ? getEventsForDate(selectedDate).evs : [];
   const selectedBanks = selectedDate ? data.bankTransactions.filter(t=>t.date===selectedDate) : [];
   const selectedPayables = selectedDate ? data.payables.filter(p=>p.dueDate===selectedDate) : [];
   const selectedInvoices = selectedDate ? data.invoices.filter(i=>i.dueDate===selectedDate) : [];
@@ -895,12 +918,223 @@ const InvoicesPage = ({ data, setData }) => {
   );
 };
 
+const DriversPage = ({ data, setData }) => {
+  const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
+  const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({ name:"", license:"大型", license_expiry:"", phone:"", status:"available", notes:"" });
+
+  const openAdd = () => {
+    setEditingId(null);
+    setForm({ name:"", license:"大型", license_expiry:"", phone:"", status:"available", notes:"" });
+    setShowModal(true);
+  };
+
+  const openEdit = (driver) => {
+    setEditingId(driver?.id || null);
+    setForm({
+      name: driver?.name || "",
+      license: driver?.license || "大型",
+      license_expiry: driver?.license_expiry || "",
+      phone: driver?.phone || "",
+      status: driver?.status || "available",
+      notes: driver?.notes || "",
+    });
+    setShowModal(true);
+  };
+
+  const saveDriver = () => {
+    if (!form.name) return;
+    setData((d) => {
+      const currentDrivers = Array.isArray(d?.drivers) ? d.drivers : [];
+      if (editingId) {
+        return {
+          ...d,
+          drivers: currentDrivers.map((driver) =>
+            driver?.id === editingId ? { ...driver, ...form } : driver
+          ),
+        };
+      }
+      const nextId = `D${String(currentDrivers.length + 1).padStart(3, "0")}`;
+      return {
+        ...d,
+        drivers: [...currentDrivers, { id: nextId, ...form }],
+      };
+    });
+    setShowModal(false);
+    setEditingId(null);
+  };
+
+  const deleteDriver = (id) => {
+    setData((d) => ({
+      ...d,
+      drivers: (Array.isArray(d?.drivers) ? d.drivers : []).filter((driver) => driver?.id !== id),
+    }));
+  };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+      <div>
+        <RetroBtn onClick={openAdd} color="#d0e0ff">👤 ドライバー追加</RetroBtn>
+      </div>
+      <RetroTable
+        headers={["ID","氏名","免許種別","免許更新日","電話","状態","メモ","操作"]}
+        rows={drivers.map((driver)=>[
+          <span style={{ color:"#000080", fontWeight:"bold" }}>{driver?.id || "—"}</span>,
+          driver?.name || "",
+          driver?.license || "",
+          driver?.license_expiry || "",
+          driver?.phone || "",
+          <StatusPill s={driver?.status}/>,
+          <span style={{ fontSize:"10px", color:"#808080" }}>{driver?.notes || "—"}</span>,
+          <div style={{ display:"flex", gap:"4px" }}>
+            <RetroBtn small onClick={()=>openEdit(driver)}>編集</RetroBtn>
+            <RetroBtn small color="#ffd0d0" onClick={()=>deleteDriver(driver?.id)}>削除</RetroBtn>
+          </div>
+        ])}
+      />
+      {showModal && (
+        <Modal title={editingId ? "ドライバー編集" : "ドライバー追加"} icon="👤" onClose={()=>setShowModal(false)} width={460}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+            <Fl label="氏名"><RetroInput value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></Fl>
+            <Fl label="免許種別">
+              <RetroSelect value={form.license} onChange={e=>setForm(f=>({...f,license:e.target.value}))}>
+                <option value="大型">大型</option>
+                <option value="中型">中型</option>
+                <option value="普通">普通</option>
+              </RetroSelect>
+            </Fl>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+            <Fl label="免許更新日"><RetroInput type="date" value={form.license_expiry} onChange={e=>setForm(f=>({...f,license_expiry:e.target.value}))}/></Fl>
+            <Fl label="電話"><RetroInput value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></Fl>
+          </div>
+          <Fl label="状態">
+            <RetroSelect value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>
+              <option value="available">待機中</option>
+              <option value="on_duty">稼働中</option>
+              <option value="off">休暇</option>
+            </RetroSelect>
+          </Fl>
+          <Fl label="メモ"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
+            <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
+            <RetroBtn onClick={saveDriver} color="#d0e0ff">　保存する　</RetroBtn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
+const VehiclesPage = ({ data, setData }) => {
+  const vehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
+  const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({ plate:"", type:"", nextInspection:"", status:"available", notes:"" });
+
+  const openAdd = () => {
+    setEditingId(null);
+    setForm({ plate:"", type:"", nextInspection:"", status:"available", notes:"" });
+    setShowModal(true);
+  };
+
+  const openEdit = (vehicle) => {
+    setEditingId(vehicle?.id || null);
+    setForm({
+      plate: vehicle?.plate || "",
+      type: vehicle?.type || "",
+      nextInspection: vehicle?.nextInspection || "",
+      status: vehicle?.status || "available",
+      notes: vehicle?.notes || "",
+    });
+    setShowModal(true);
+  };
+
+  const saveVehicle = () => {
+    if (!form.plate) return;
+    setData((d) => {
+      const currentVehicles = Array.isArray(d?.vehicles) ? d.vehicles : [];
+      if (editingId) {
+        return {
+          ...d,
+          vehicles: currentVehicles.map((vehicle) =>
+            vehicle?.id === editingId ? { ...vehicle, ...form } : vehicle
+          ),
+        };
+      }
+      const nextId = `V${String(currentVehicles.length + 1).padStart(3, "0")}`;
+      return {
+        ...d,
+        vehicles: [...currentVehicles, { id: nextId, ...form }],
+      };
+    });
+    setShowModal(false);
+    setEditingId(null);
+  };
+
+  const deleteVehicle = (id) => {
+    setData((d) => ({
+      ...d,
+      vehicles: (Array.isArray(d?.vehicles) ? d.vehicles : []).filter((vehicle) => vehicle?.id !== id),
+    }));
+  };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+      <div>
+        <RetroBtn onClick={openAdd} color="#d0e0ff">🚗 車両追加</RetroBtn>
+      </div>
+      <RetroTable
+        headers={["ID","ナンバー","車種","車検日","状態","メモ","操作"]}
+        rows={vehicles.map((vehicle)=>[
+          <span style={{ color:"#000080", fontWeight:"bold" }}>{vehicle?.id || "—"}</span>,
+          vehicle?.plate || "",
+          vehicle?.type || "",
+          vehicle?.nextInspection || "",
+          <StatusPill s={vehicle?.status}/>,
+          <span style={{ fontSize:"10px", color:"#808080" }}>{vehicle?.notes || "—"}</span>,
+          <div style={{ display:"flex", gap:"4px" }}>
+            <RetroBtn small onClick={()=>openEdit(vehicle)}>編集</RetroBtn>
+            <RetroBtn small color="#ffd0d0" onClick={()=>deleteVehicle(vehicle?.id)}>削除</RetroBtn>
+          </div>
+        ])}
+      />
+      {showModal && (
+        <Modal title={editingId ? "車両編集" : "車両追加"} icon="🚗" onClose={()=>setShowModal(false)} width={460}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+            <Fl label="ナンバー"><RetroInput value={form.plate} onChange={e=>setForm(f=>({...f,plate:e.target.value}))}/></Fl>
+            <Fl label="車種"><RetroInput value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))}/></Fl>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+            <Fl label="車検日"><RetroInput type="date" value={form.nextInspection} onChange={e=>setForm(f=>({...f,nextInspection:e.target.value}))}/></Fl>
+            <Fl label="状態">
+              <RetroSelect value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>
+                <option value="available">待機中</option>
+                <option value="in_use">使用中</option>
+                <option value="maintenance">整備中</option>
+              </RetroSelect>
+            </Fl>
+          </div>
+          <Fl label="メモ"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
+            <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
+            <RetroBtn onClick={saveVehicle} color="#d0e0ff">　保存する　</RetroBtn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
 // ===== MAIN =====
 const MENU = [
   { id:"dashboard", icon:"🏠", label:"ダッシュボード" },
   { id:"calendar",  icon:"📅", label:"カレンダー" },
   { id:"orders",    icon:"📋", label:"受注処理" },
   { id:"dispatch",  icon:"🚛", label:"配車管理" },
+  { id:"drivers",   icon:"👤", label:"ドライバー管理" },
+  { id:"vehicles",  icon:"🚗", label:"車両管理" },
   { id:"customers", icon:"👥", label:"顧客管理" },
   { id:"invoices",  icon:"💴", label:"請求管理" },
   { id:"bank",      icon:"🏦", label:"口座・入金" },
@@ -1154,7 +1388,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
 
   const badges = { dispatch:pendingCount, bank:unmatchedCount+overdueCount };
 
-  const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage };
+  const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, drivers:DriversPage, vehicles:VehiclesPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage };
   const PageComponent = pages[page];
 
   return (
