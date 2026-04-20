@@ -466,17 +466,21 @@ const CalendarPage = ({ data, setData }) => {
 
 // ===== BANK PAGE =====
 const BankPage = ({ data, setData }) => {
+  const bankTransactions = Array.isArray(data?.bankTransactions) ? data.bankTransactions : [];
+  const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+  const payables = Array.isArray(data?.payables) ? data.payables : [];
+  const events = Array.isArray(data?.events) ? data.events : [];
   const [addTx, setAddTx] = useState(false);
   const [form, setForm] = useState({ date:todayStr, amount:"", description:"", direction:"in" });
 
   const todayStr2 = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
-  const unmatchedBanks = data.bankTransactions.filter(b=>b.status==="unmatched");
-  const totalUnmatched = unmatchedBanks.reduce((s,b)=>s+b.amount,0);
-  const overdueTotal = data.invoices.filter(i=>i.status==="overdue"||(i.status==="unpaid"&&i.dueDate<todayStr2)).reduce((s,i)=>s+i.total,0);
+  const unmatchedBanks = bankTransactions.filter(b=>b?.status==="unmatched");
+  const totalUnmatched = unmatchedBanks.reduce((s,b)=>s+(Number(b?.amount)||0),0);
+  const overdueTotal = invoices.filter(i=>i?.status==="overdue"||(i?.status==="unpaid"&&(i?.dueDate||"")<todayStr2)).reduce((s,i)=>s+(Number(i?.total)||0),0);
 
   const addTxn = () => {
-    const tx = { id:`BNK-${String(data.bankTransactions.length+1).padStart(3,"0")}`, date:form.date, amount:parseInt(form.amount)||0, description:form.description, matchedInvoice:null, status:"unmatched" };
-    setData(d=>({...d, bankTransactions:[tx,...d.bankTransactions]}));
+    const tx = { id:`BNK-${String(bankTransactions.length+1).padStart(3,"0")}`, date:form.date, amount:parseInt(form.amount)||0, description:form.description, matchedInvoice:null, status:"unmatched" };
+    setData(d=>({...d, bankTransactions:[tx,...(Array.isArray(d?.bankTransactions) ? d.bankTransactions : [])]}));
     setAddTx(false); setForm({ date:todayStr2, amount:"", description:"", direction:"in" });
   };
 
@@ -486,9 +490,9 @@ const BankPage = ({ data, setData }) => {
       <div style={{ display:"flex", gap:"8px" }}>
         {[
           ["未照合入金", "¥"+totalUnmatched.toLocaleString(), "#cc6600"],
-          ["未払い請求", "¥"+data.invoices.filter(i=>i.status!=="paid").reduce((s,i)=>s+i.total,0).toLocaleString(), "#0000cc"],
+          ["未払い請求", "¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(), "#0000cc"],
           ["延滞金額", "¥"+overdueTotal.toLocaleString(), "#cc0000"],
-          ["入金済", "¥"+data.invoices.filter(i=>i.status==="paid").reduce((s,i)=>s+i.total,0).toLocaleString(), "#006600"],
+          ["入金済", "¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(), "#006600"],
         ].map(([l,v,c])=>(
           <div key={l} style={{ ...inset3d, background:"#fff", padding:"8px 12px", flex:1, textAlign:"center" }}>
             <div style={{ fontFamily:"monospace", fontSize:"10px", color:"#404040", marginBottom:"3px" }}>{l}</div>
@@ -517,17 +521,17 @@ const BankPage = ({ data, setData }) => {
                 <span style={{ fontFamily:"monospace", fontSize:"11px" }}>照合：</span>
                 <RetroSelect style={{ width:"250px" }} onChange={e=>{
                   if(!e.target.value) return;
-                  const inv = data.invoices.find(i=>i.id===e.target.value);
+                  const inv = invoices.find(i=>i?.id===e.target.value);
                   setData(d=>({
                     ...d,
-                    bankTransactions:d.bankTransactions.map(bt=>bt.id===b.id?{...bt,matchedInvoice:e.target.value,status:"matched"}:bt),
-                    invoices:d.invoices.map(i=>i.id===e.target.value?{...i,status:"paid",paidDate:b.date}:i),
-                    events:[...d.events,{id:`EV-B${Date.now()}`,date:b.date,type:"bank_in",title:`入金確認：${inv?.customerName||""} ¥${b.amount.toLocaleString()}`,color:"#006600"}]
+                    bankTransactions:(Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).map(bt=>bt?.id===b?.id?{...bt,matchedInvoice:e.target.value,status:"matched"}:bt),
+                    invoices:(Array.isArray(d?.invoices) ? d.invoices : []).map(i=>i?.id===e.target.value?{...i,status:"paid",paidDate:b?.date}:i),
+                    events:[...(Array.isArray(d?.events) ? d.events : []),{id:`EV-B${Date.now()}`,date:b?.date,type:"bank_in",title:`入金確認：${inv?.customerName||""} ¥${(Number(b?.amount)||0).toLocaleString()}`,color:"#006600"}]
                   }));
                 }}>
                   <option value="">請求書を選択...</option>
-                  {data.invoices.filter(i=>i.status!=="paid").map(i=>(
-                    <option key={i.id} value={i.id}>{i.id} {i.customerName} ¥{i.total.toLocaleString()}</option>
+                  {invoices.filter(i=>i?.status!=="paid").map(i=>(
+                    <option key={i?.id||`inv-${Math.random()}`} value={i?.id||""}>{i?.id||"—"} {i?.customerName||""} ¥{(Number(i?.total)||0).toLocaleString()}</option>
                   ))}
                 </RetroSelect>
               </div>
@@ -543,14 +547,14 @@ const BankPage = ({ data, setData }) => {
         </div>
         <RetroTable
           headers={["日付","内容（振込名義等）","金額","照合状況","照合先"]}
-          rows={data.bankTransactions.map(b=>[
-            b.date,
-            <span style={{ fontFamily:"monospace", fontSize:"11px" }}>{b.description}</span>,
-            <span style={{ color:"#006600", fontWeight:"bold" }}>¥{b.amount.toLocaleString()}</span>,
-            <StatusPill s={b.status}/>,
-            b.matchedInvoice ? (
+          rows={bankTransactions.map(b=>[
+            b?.date||"",
+            <span style={{ fontFamily:"monospace", fontSize:"11px" }}>{b?.description||""}</span>,
+            <span style={{ color:"#006600", fontWeight:"bold" }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
+            <StatusPill s={b?.status}/>,
+            b?.matchedInvoice ? (
               <span style={{ color:"#006600", fontFamily:"monospace", fontSize:"11px" }}>
-                {b.matchedInvoice} / {data.invoices.find(i=>i.id===b.matchedInvoice)?.customerName||""}
+                {b.matchedInvoice} / {invoices.find(i=>i?.id===b.matchedInvoice)?.customerName||""}
               </span>
             ) : "—",
           ])}
@@ -561,12 +565,12 @@ const BankPage = ({ data, setData }) => {
       <Panel title="入金管理（請求書別）" icon="💴">
         <RetroTable
           headers={["請求書","顧客","発行日","期日","金額","状態","メモ"]}
-          rows={data.invoices.map(inv=>[
-            <span style={{ color:"#000080", fontWeight:"bold" }}>{inv.id}</span>,
-            inv.customerName, inv.issueDate, inv.dueDate,
-            <span style={{ fontWeight:"bold" }}>¥{inv.total.toLocaleString()}</span>,
-            <StatusPill s={inv.status}/>,
-            <span style={{ fontSize:"10px", color:"#808080" }}>{inv.note||"—"}</span>,
+          rows={invoices.map(inv=>[
+            <span style={{ color:"#000080", fontWeight:"bold" }}>{inv?.id||"—"}</span>,
+            inv?.customerName||"", inv?.issueDate||"", inv?.dueDate||"",
+            <span style={{ fontWeight:"bold" }}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
+            <StatusPill s={inv?.status}/>,
+            <span style={{ fontSize:"10px", color:"#808080" }}>{inv?.note||"—"}</span>,
           ])}
         />
       </Panel>
@@ -575,12 +579,12 @@ const BankPage = ({ data, setData }) => {
       <Panel title="支払管理（支払予定一覧）" icon="💸">
         <RetroTable
           headers={["支払先","区分","期日","金額","状態","操作"]}
-          rows={data.payables.map(p=>[
-            p.vendor, p.category, p.dueDate,
-            "¥"+p.amount.toLocaleString(),
-            <StatusPill s={p.status}/>,
-            p.status==="unpaid"
-              ? <RetroBtn small color="#d0ffd0" onClick={()=>setData(d=>({...d,payables:d.payables.map(x=>x.id===p.id?{...x,status:"paid"}:x)}))}>✓ 支払済</RetroBtn>
+          rows={payables.map(p=>[
+            p?.vendor||"", p?.category||"", p?.dueDate||"",
+            "¥"+(Number(p?.amount)||0).toLocaleString(),
+            <StatusPill s={p?.status}/>,
+            p?.status==="unpaid"
+              ? <RetroBtn small color="#d0ffd0" onClick={()=>setData(d=>({...d,payables:(Array.isArray(d?.payables) ? d.payables : []).map(x=>x?.id===p?.id?{...x,status:"paid"}:x)}))}>✓ 支払済</RetroBtn>
               : <span style={{ fontFamily:"monospace", fontSize:"10px", color:"#808080" }}>済</span>
           ])}
         />
@@ -603,15 +607,20 @@ const BankPage = ({ data, setData }) => {
 
 // ===== DASHBOARD =====
 const DashboardPage = ({ data, setData, setPage }) => {
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const bankTransactions = Array.isArray(data?.bankTransactions) ? data.bankTransactions : [];
+  const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+  const orders = Array.isArray(data?.orders) ? data.orders : [];
+  const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
   const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
-  const todayEvents = data.events.filter(e=>e.date===todayStr);
-  const todayBanks = data.bankTransactions.filter(b=>b.date===todayStr);
-  const unmatchedCount = data.bankTransactions.filter(b=>b.status==="unmatched").length;
-  const overdueCount = data.invoices.filter(i=>i.status==="overdue"||(i.status==="unpaid"&&i.dueDate<todayStr)).length;
-  const activeOrders = data.orders.filter(o=>["pending","scheduled","in_transit"].includes(o.status)).length;
-  const availableDrivers = data.drivers.filter(d=>d.status==="available").length;
-  const totalRevenue = data.invoices.filter(i=>i.status==="paid").reduce((s,i)=>s+i.total,0);
-  const unpaidTotal = data.invoices.filter(i=>i.status!=="paid").reduce((s,i)=>s+i.total,0);
+  const todayEvents = events.filter(e=>e?.date===todayStr);
+  const todayBanks = bankTransactions.filter(b=>b?.date===todayStr);
+  const unmatchedCount = bankTransactions.filter(b=>b?.status==="unmatched").length;
+  const overdueCount = invoices.filter(i=>i?.status==="overdue"||(i?.status==="unpaid"&&(i?.dueDate||"")<todayStr)).length;
+  const activeOrders = orders.filter(o=>["pending","scheduled","in_transit"].includes(o?.status)).length;
+  const availableDrivers = drivers.filter(d=>d?.status==="available").length;
+  const totalRevenue = invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0);
+  const unpaidTotal = invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0);
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
@@ -668,9 +677,9 @@ const DashboardPage = ({ data, setData, setPage }) => {
           <Panel title="最近の案件" icon="🚛">
             <RetroTable
               headers={["ID","顧客","配達日","状態"]}
-              rows={[...data.orders].reverse().slice(0,5).map(o=>[
-                <span style={{ color:"#000080", fontWeight:"bold" }}>{o.id}</span>,
-                o.customerName, o.deliveryDate, <StatusPill s={o.status}/>
+              rows={[...orders].reverse().slice(0,5).map(o=>[
+                <span style={{ color:"#000080", fontWeight:"bold" }}>{o?.id||"—"}</span>,
+                o?.customerName||"", o?.deliveryDate||"", <StatusPill s={o?.status}/>
               ])}
             />
           </Panel>
@@ -681,17 +690,17 @@ const DashboardPage = ({ data, setData, setPage }) => {
         <Panel title="ドライバー状況" icon="👤" style={{ flex:1 }}>
           <RetroTable
             headers={["氏名","免許","状態"]}
-            rows={data.drivers.map(d=>[d.name, d.license, <StatusPill s={d.status}/>])}
+            rows={drivers.map(d=>[d?.name||"", d?.license||"", <StatusPill s={d?.status}/>])}
           />
         </Panel>
         <Panel title="口座照合が必要な入金" icon="🏦" style={{ flex:1 }}>
           <RetroTable
             headers={["日付","金額","摘要","状態"]}
-            rows={data.bankTransactions.filter(b=>b.status==="unmatched").map(b=>[
-              b.date,
-              <span style={{ color:"#006600", fontWeight:"bold" }}>¥{b.amount.toLocaleString()}</span>,
-              <span style={{ fontSize:"10px" }}>{b.description}</span>,
-              <StatusPill s={b.status}/>
+            rows={bankTransactions.filter(b=>b?.status==="unmatched").map(b=>[
+              b?.date||"",
+              <span style={{ color:"#006600", fontWeight:"bold" }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
+              <span style={{ fontSize:"10px" }}>{b?.description||""}</span>,
+              <StatusPill s={b?.status}/>
             ])}
           />
         </Panel>
@@ -714,11 +723,16 @@ const OrdersPage = ({ data, setData }) => {
   }
   const orders = Array.isArray(data.orders) ? data.orders : [];
   const customers = Array.isArray(data.customers) ? data.customers : [];
-  const filtered = orders.filter(o=>o.customerName.includes(search)||o.id.includes(search)||o.cargo.includes(search));
+  const filtered = orders.filter((o) => {
+    const customerName = o?.customerName || "";
+    const id = o?.id || "";
+    const cargo = o?.cargo || "";
+    return customerName.includes(search) || id.includes(search) || cargo.includes(search);
+  });
   const handleAdd = () => {
     const c = customers.find(x=>x.id===form.customerId);
     const o = { id:`ORD-${String(orders.length+1).padStart(3,"0")}`, customerId:form.customerId, customerName:c?.name||"", date:fmt(today.getDate()), deliveryDate:form.deliveryDate, from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, notes:form.notes };
-    setData(d=>({ ...d, orders:[o,...d.orders], events:[...d.events,{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
+    setData(d=>({ ...d, orders:[o,...(Array.isArray(d?.orders) ? d.orders : [])], events:[...(Array.isArray(d?.events) ? d.events : []),{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
     setShowModal(false); setForm({ customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   };
   return (
@@ -731,10 +745,10 @@ const OrdersPage = ({ data, setData }) => {
       <RetroTable
         headers={["ID","顧客","荷物","配達日","金額","状態","操作"]}
         rows={filtered.map(o=>[
-          <span style={{ color:"#000080", fontWeight:"bold" }}>{o.id}</span>,
-          o.customerName, o.cargo+"("+o.weight+")", o.deliveryDate,
-          "¥"+o.amount.toLocaleString(), <StatusPill s={o.status}/>,
-          o.status!=="delivered"&&<RetroBtn small onClick={()=>{ const next={pending:"scheduled",scheduled:"in_transit",in_transit:"delivered"}; if(next[o.status]) setData(d=>({...d,orders:d.orders.map(x=>x.id===o.id?{...x,status:next[o.status]}:x)})); }}>次へ→</RetroBtn>
+          <span style={{ color:"#000080", fontWeight:"bold" }}>{o?.id||"—"}</span>,
+          o?.customerName||"", `${o?.cargo||""}(${o?.weight||""})`, o?.deliveryDate||"",
+          "¥"+(Number(o?.amount)||0).toLocaleString(), <StatusPill s={o?.status}/>,
+          o?.status!=="delivered"&&<RetroBtn small onClick={()=>{ const next={pending:"scheduled",scheduled:"in_transit",in_transit:"delivered"}; if(next[o?.status]) setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(x=>x?.id===o?.id?{...x,status:next[o.status]}:x)})); }}>次へ→</RetroBtn>
         ])}
       />
       {showModal&&<Modal title="新規受注登録" icon="📋" onClose={()=>setShowModal(false)}>
@@ -760,13 +774,16 @@ const OrdersPage = ({ data, setData }) => {
 };
 
 const DispatchPage = ({ data, setData }) => {
+  const orders = Array.isArray(data?.orders) ? data.orders : [];
+  const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
+  const vehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
   const [sel, setSel] = useState(null);
   const [aD, setAD] = useState(""); const [aV, setAV] = useState("");
-  const pending = data.orders.filter(o=>o.status==="pending");
-  const scheduled = data.orders.filter(o=>o.status==="scheduled");
+  const pending = orders.filter(o=>o?.status==="pending");
+  const scheduled = orders.filter(o=>o?.status==="scheduled");
   const doAssign = () => {
     if(!sel||!aD||!aV) return;
-    setData(d=>({...d,orders:d.orders.map(o=>o.id===sel?{...o,driverId:aD,vehicleId:aV,status:"scheduled"}:o)}));
+    setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(o=>o?.id===sel?{...o,driverId:aD,vehicleId:aV,status:"scheduled"}:o)}));
     setSel(null); setAD(""); setAV("");
   };
   return (
@@ -774,27 +791,27 @@ const DispatchPage = ({ data, setData }) => {
       <div style={{ flex:1 }}>
         <Panel title={`未配車（${pending.length}件）`} icon="⚠">
           {pending.map(o=>(
-            <div key={o.id} onClick={()=>setSel(o.id===sel?null:o.id)} style={{ ...inset3d, background:sel===o.id?"#cce0ff":"#fff", padding:"7px 10px", marginBottom:"5px", cursor:"pointer" }}>
-              <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{o.id} — {o.customerName}</div>
-              <div style={{ fontFamily:"monospace", fontSize:"11px", color:"#404040" }}>{o.cargo}（{o.weight}）配達日：{o.deliveryDate}</div>
+            <div key={o?.id||`pending-${Math.random()}`} onClick={()=>setSel(o?.id===sel?null:o?.id)} style={{ ...inset3d, background:sel===o?.id?"#cce0ff":"#fff", padding:"7px 10px", marginBottom:"5px", cursor:"pointer" }}>
+              <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{o?.id||"—"} — {o?.customerName||""}</div>
+              <div style={{ fontFamily:"monospace", fontSize:"11px", color:"#404040" }}>{o?.cargo||""}（{o?.weight||""}）配達日：{o?.deliveryDate||""}</div>
             </div>
           ))}
         </Panel>
         {sel&&<Panel title="配車アサイン" icon="🚛" style={{ marginTop:"8px", border:"2px solid #000080" }}>
-          <Fl label="ドライバー"><RetroSelect value={aD} onChange={e=>setAD(e.target.value)}><option value="">選択</option>{data.drivers.filter(d=>d.status==="available").map(d=><option key={d.id} value={d.id}>{d.name}（{d.license}）</option>)}</RetroSelect></Fl>
-          <Fl label="車両"><RetroSelect value={aV} onChange={e=>setAV(e.target.value)}><option value="">選択</option>{data.vehicles.filter(v=>v.status==="available").map(v=><option key={v.id} value={v.id}>{v.plate}</option>)}</RetroSelect></Fl>
+          <Fl label="ドライバー"><RetroSelect value={aD} onChange={e=>setAD(e.target.value)}><option value="">選択</option>{drivers.filter(d=>d?.status==="available").map(d=><option key={d?.id||`driver-${Math.random()}`} value={d?.id||""}>{d?.name||""}（{d?.license||""}）</option>)}</RetroSelect></Fl>
+          <Fl label="車両"><RetroSelect value={aV} onChange={e=>setAV(e.target.value)}><option value="">選択</option>{vehicles.filter(v=>v?.status==="available").map(v=><option key={v?.id||`vehicle-${Math.random()}`} value={v?.id||""}>{v?.plate||""}</option>)}</RetroSelect></Fl>
           <RetroBtn onClick={doAssign} color="#d0ffd0">🚛 配車確定</RetroBtn>
         </Panel>}
       </div>
       <div style={{ flex:1 }}>
         <Panel title={`配車済（${scheduled.length}件）`} icon="✓">
           {scheduled.map(o=>{
-            const dr=data.drivers.find(d=>d.id===o.driverId); const vh=data.vehicles.find(v=>v.id===o.vehicleId);
-            return <div key={o.id} style={{ ...inset3d, background:"#f0fff0", padding:"7px 10px", marginBottom:"5px" }}>
-              <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{o.id} — {o.customerName}</div>
+            const dr=drivers.find(d=>d?.id===o?.driverId); const vh=vehicles.find(v=>v?.id===o?.vehicleId);
+            return <div key={o?.id||`scheduled-${Math.random()}`} style={{ ...inset3d, background:"#f0fff0", padding:"7px 10px", marginBottom:"5px" }}>
+              <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{o?.id||"—"} — {o?.customerName||""}</div>
               <div style={{ display:"flex", gap:"6px", marginTop:"3px" }}>
-                {dr&&<span style={{ background:"#000080", color:"#fff", fontFamily:"monospace", fontSize:"10px", padding:"1px 6px" }}>👤{dr.name}</span>}
-                {vh&&<span style={{ background:"#006600", color:"#fff", fontFamily:"monospace", fontSize:"10px", padding:"1px 6px" }}>🚛{vh.plate}</span>}
+                {dr&&<span style={{ background:"#000080", color:"#fff", fontFamily:"monospace", fontSize:"10px", padding:"1px 6px" }}>👤{dr?.name||""}</span>}
+                {vh&&<span style={{ background:"#006600", color:"#fff", fontFamily:"monospace", fontSize:"10px", padding:"1px 6px" }}>🚛{vh?.plate||""}</span>}
               </div>
             </div>;
           })}
@@ -805,14 +822,16 @@ const DispatchPage = ({ data, setData }) => {
 };
 
 const CustomersPage = ({ data, setData }) => {
+  const customers = Array.isArray(data?.customers) ? data.customers : [];
+  const orders = Array.isArray(data?.orders) ? data.orders : [];
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ name:"", contact:"", phone:"", email:"" });
-  const add = () => { setData(d=>({...d,customers:[...d.customers,{id:`C${String(d.customers.length+1).padStart(3,"0")}`, ...form}]})); setShowModal(false); setForm({name:"",contact:"",phone:"",email:""}); };
+  const add = () => { setData(d=>({...d,customers:[...(Array.isArray(d?.customers) ? d.customers : []),{id:`C${String((Array.isArray(d?.customers) ? d.customers.length : 0)+1).padStart(3,"0")}`, ...form}]})); setShowModal(false); setForm({name:"",contact:"",phone:"",email:""}); };
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
       <div><RetroBtn onClick={()=>setShowModal(true)} color="#d0e0ff">👥 顧客追加</RetroBtn></div>
       <RetroTable headers={["ID","会社名","担当者","電話","案件数","累計売上"]}
-        rows={data.customers.map(c=>{ const ords=data.orders.filter(o=>o.customerId===c.id); return [<span style={{color:"#000080",fontWeight:"bold"}}>{c.id}</span>, c.name, c.contact, c.phone, ords.length+"件", "¥"+ords.reduce((s,o)=>s+o.amount,0).toLocaleString()]; })} />
+        rows={customers.map(c=>{ const ords=orders.filter(o=>o?.customerId===c?.id); return [<span style={{color:"#000080",fontWeight:"bold"}}>{c?.id||"—"}</span>, c?.name||"", c?.contact||"", c?.phone||"", ords.length+"件", "¥"+ords.reduce((s,o)=>s+(Number(o?.amount)||0),0).toLocaleString()]; })} />
       {showModal&&<Modal title="顧客追加" icon="👥" onClose={()=>setShowModal(false)}>
         <Fl label="会社名"><RetroInput value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></Fl>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 12px"}}>
@@ -830,17 +849,21 @@ const CustomersPage = ({ data, setData }) => {
 };
 
 const InvoicesPage = ({ data, setData }) => {
-  const deliveredNoInv = data.orders.filter(o=>o.status==="delivered"&&!data.invoices.find(i=>i.orderId===o.id));
+  const orders = Array.isArray(data?.orders) ? data.orders : [];
+  const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const deliveredNoInv = orders.filter(o=>o?.status==="delivered"&&!invoices.find(i=>i?.orderId===o?.id));
   const createInv = (o) => {
-    const tax=Math.round(o.amount*0.1);
+    const tax=Math.round((Number(o?.amount)||0)*0.1);
     const dueDate=`${y}-${String(mo+1).padStart(2,"0")}-${String(Math.min(today.getDate()+30,28)).padStart(2,"0")}`;
-    const inv={ id:`INV-${String(data.invoices.length+1).padStart(3,"0")}`, orderId:o.id, customerId:o.customerId, customerName:o.customerName, issueDate:fmt(today.getDate()), dueDate, amount:o.amount, tax, total:o.amount+tax, status:"unpaid", bankRef:"", paidDate:null, note:"" };
-    setData(d=>({...d, invoices:[inv,...d.invoices], events:[...d.events,{id:`EV-INV${Date.now()}`,date:dueDate,type:"payment_due",title:`${inv.id} 入金期日：${o.customerName}`,color:"#660099"}] }));
+    const baseAmount = Number(o?.amount)||0;
+    const inv={ id:`INV-${String(invoices.length+1).padStart(3,"0")}`, orderId:o?.id, customerId:o?.customerId, customerName:o?.customerName||"", issueDate:fmt(today.getDate()), dueDate, amount:baseAmount, tax, total:baseAmount+tax, status:"unpaid", bankRef:"", paidDate:null, note:"" };
+    setData(d=>({...d, invoices:[inv,...(Array.isArray(d?.invoices) ? d.invoices : [])], events:[...(Array.isArray(d?.events) ? d.events : events),{id:`EV-INV${Date.now()}`,date:dueDate,type:"payment_due",title:`${inv.id} 入金期日：${o?.customerName||""}`,color:"#660099"}] }));
   };
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
       <div style={{ display:"flex", gap:"8px" }}>
-        {[["請求総額","¥"+data.invoices.reduce((s,i)=>s+i.total,0).toLocaleString(),"#660099"],["入金済","¥"+data.invoices.filter(i=>i.status==="paid").reduce((s,i)=>s+i.total,0).toLocaleString(),"#006600"],["未回収","¥"+data.invoices.filter(i=>i.status!=="paid").reduce((s,i)=>s+i.total,0).toLocaleString(),"#cc0000"]].map(([l,v,c])=>(
+        {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#660099"],["入金済","¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#006600"],["未回収","¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#cc0000"]].map(([l,v,c])=>(
           <div key={l} style={{ ...inset3d, background:"#fff", padding:"8px 12px", flex:1, textAlign:"center" }}>
             <div style={{ fontFamily:"monospace", fontSize:"10px", color:"#404040" }}>{l}</div>
             <div style={{ fontFamily:"monospace", fontSize:"18px", fontWeight:"bold", color:c }}>{v}</div>
@@ -852,7 +875,7 @@ const InvoicesPage = ({ data, setData }) => {
           <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#cc6600", marginBottom:"6px" }}>⚠ 請求書未発行</div>
           {deliveredNoInv.map(o=>(
             <div key={o.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0" }}>
-              <span style={{ fontFamily:"monospace", fontSize:"11px" }}>{o.id} — {o.customerName}（¥{o.amount.toLocaleString()}）</span>
+              <span style={{ fontFamily:"monospace", fontSize:"11px" }}>{o?.id||"—"} — {o?.customerName||""}（¥{(Number(o?.amount)||0).toLocaleString()}）</span>
               <RetroBtn small color="#ffe0a0" onClick={()=>createInv(o)}>📄 発行</RetroBtn>
             </div>
           ))}
@@ -860,12 +883,12 @@ const InvoicesPage = ({ data, setData }) => {
       )}
       <RetroTable
         headers={["請求書","顧客","期日","合計","状態","備考"]}
-        rows={data.invoices.map(inv=>[
-          <span style={{color:"#000080",fontWeight:"bold"}}>{inv.id}</span>,
-          inv.customerName, inv.dueDate,
-          <span style={{fontWeight:"bold"}}>¥{inv.total.toLocaleString()}</span>,
-          <StatusPill s={inv.status}/>,
-          <span style={{fontSize:"10px",color:"#808080"}}>{inv.note||"—"}</span>
+        rows={invoices.map(inv=>[
+          <span style={{color:"#000080",fontWeight:"bold"}}>{inv?.id||"—"}</span>,
+          inv?.customerName||"", inv?.dueDate||"",
+          <span style={{fontWeight:"bold"}}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
+          <StatusPill s={inv?.status}/>,
+          <span style={{fontSize:"10px",color:"#808080"}}>{inv?.note||"—"}</span>
         ])}
       />
     </div>
@@ -1124,10 +1147,10 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
     };
   }, [isLoaded]);
 
-  const pendingCount = data.orders.filter(o=>o.status==="pending").length;
-  const unmatchedCount = data.bankTransactions.filter(b=>b.status==="unmatched").length;
+  const pendingCount = (Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="pending").length;
+  const unmatchedCount = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched").length;
   const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
-  const overdueCount = data.invoices.filter(i=>i.status==="overdue"||(i.status==="unpaid"&&i.dueDate<todayStr)).length;
+  const overdueCount = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i=>i?.status==="overdue"||(i?.status==="unpaid"&&(i?.dueDate||"")<todayStr)).length;
 
   const badges = { dispatch:pendingCount, bank:unmatchedCount+overdueCount };
 
@@ -1189,7 +1212,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
         {/* Statusbar */}
         <div style={{ borderTop:"2px solid #808080", padding:"2px 8px", display:"flex", gap:"8px", background:winBg }}>
           <div style={{ ...inset3d, padding:"1px 8px", flex:1, fontSize:"11px" }}>
-            稼働案件：{data.orders.filter(o=>o.status==="in_transit").length}件　未配車：{pendingCount}件　ドライバー待機：{data.drivers.filter(d=>d.status==="available").length}名
+            稼働案件：{(Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="in_transit").length}件　未配車：{pendingCount}件　ドライバー待機：{(Array.isArray(data?.drivers) ? data.drivers : []).filter(d=>d?.status==="available").length}名
           </div>
           {unmatchedCount>0&&<div style={{ ...inset3d, padding:"1px 8px", fontSize:"11px", color:"#cc6600", fontWeight:"bold" }}>未照合入金：{unmatchedCount}件</div>}
           {overdueCount>0&&<div style={{ ...inset3d, padding:"1px 8px", fontSize:"11px", color:"#cc0000", fontWeight:"bold" }}>延滞：{overdueCount}件</div>}
