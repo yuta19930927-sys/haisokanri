@@ -15,9 +15,9 @@ const fmt = (d) => `${y}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,
 
 const initialData = {
   customers: [
-    { id:"C001", name:"株式会社田中商事", contact:"田中 太郎", phone:"03-1234-5678", email:"tanaka@tanakashoji.co.jp" },
-    { id:"C002", name:"山田運輸有限会社", contact:"山田 花子", phone:"06-2345-6789", email:"yamada@yamada-unyu.co.jp" },
-    { id:"C003", name:"鈴木食品株式会社", contact:"鈴木 次郎", phone:"052-3456-7890", email:"suzuki@suzukifood.co.jp" },
+    { id:"C001", name:"株式会社田中商事", contact:"田中 太郎", phone:"03-1234-5678", email:"tanaka@tanakashoji.co.jp", address:"東京都中央区1-2-3", notes:"月末締め翌月払い" },
+    { id:"C002", name:"山田運輸有限会社", contact:"山田 花子", phone:"06-2345-6789", email:"yamada@yamada-unyu.co.jp", address:"大阪府大阪市北区4-5-6", notes:"午前中納品希望" },
+    { id:"C003", name:"鈴木食品株式会社", contact:"鈴木 次郎", phone:"052-3456-7890", email:"suzuki@suzukifood.co.jp", address:"愛知県名古屋市中区7-8-9", notes:"冷凍便あり" },
   ],
   orders: [
     { id:"ORD-001", customerId:"C001", customerName:"株式会社田中商事", deliveryDate:fmt(8), from:"東京都江東区", to:"東京都港区", cargo:"電子部品", weight:"500kg", status:"delivered", amount:45000 },
@@ -754,6 +754,9 @@ const OrdersPage = ({ data, setData }) => {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   const [search, setSearch] = useState("");
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
+  const [orderEditMode, setOrderEditMode] = useState(false);
+  const [orderDraft, setOrderDraft] = useState(null);
   if (!data) {
     return (
       <div style={{ ...inset3d, background:"#fff", padding:"24px", textAlign:"center", fontFamily:"monospace", fontSize:"12px", color:"#808080" }}>
@@ -769,6 +772,54 @@ const OrdersPage = ({ data, setData }) => {
     const cargo = o?.cargo || "";
     return customerName.includes(search) || id.includes(search) || cargo.includes(search);
   });
+  const statusNext = { pending:"scheduled", scheduled:"in_transit", in_transit:"delivered" };
+  const statusPrev = { delivered:"in_transit", in_transit:"scheduled", scheduled:"pending" };
+  const selectedOrder = orders.find((o) => o?.id === selectedOrderId) || null;
+
+  const openOrderDetail = (order) => {
+    setSelectedOrderId(order?.id || null);
+    setOrderEditMode(false);
+    setOrderDraft(order ? { ...order } : null);
+  };
+
+  const closeOrderDetail = () => {
+    setSelectedOrderId(null);
+    setOrderEditMode(false);
+    setOrderDraft(null);
+  };
+
+  const saveOrderDetail = () => {
+    if (!orderDraft?.id) return;
+    setData((d) => ({
+      ...d,
+      orders: (Array.isArray(d?.orders) ? d.orders : []).map((order) =>
+        order?.id === orderDraft.id ? { ...order, ...orderDraft, amount: Number(orderDraft?.amount) || 0 } : order
+      ),
+    }));
+    setOrderEditMode(false);
+  };
+
+  const goNextStatus = (orderId, currentStatus) => {
+    const next = statusNext[currentStatus];
+    if (!next) return;
+    setData((d) => ({
+      ...d,
+      orders: (Array.isArray(d?.orders) ? d.orders : []).map((x) =>
+        x?.id === orderId ? { ...x, status: next } : x
+      ),
+    }));
+  };
+
+  const goPrevStatus = (orderId, currentStatus) => {
+    const prev = statusPrev[currentStatus];
+    if (!prev) return;
+    setData((d) => ({
+      ...d,
+      orders: (Array.isArray(d?.orders) ? d.orders : []).map((x) =>
+        x?.id === orderId ? { ...x, status: prev } : x
+      ),
+    }));
+  };
   const handleAdd = () => {
     const c = customers.find(x=>x.id===form.customerId);
     const o = { id:`ORD-${String(orders.length+1).padStart(3,"0")}`, customerId:form.customerId, customerName:c?.name||"", date:fmt(today.getDate()), deliveryDate:form.deliveryDate, from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, notes:form.notes };
@@ -782,15 +833,38 @@ const OrdersPage = ({ data, setData }) => {
         <span style={{ fontFamily:"monospace", fontSize:"11px" }}>検索：</span>
         <RetroInput value={search} onChange={e=>setSearch(e.target.value)} style={{ width:"200px" }}/>
       </div>
-      <RetroTable
-        headers={["ID","顧客","荷物","配達日","金額","状態","操作"]}
-        rows={filtered.map(o=>[
-          <span style={{ color:"#000080", fontWeight:"bold" }}>{o?.id||"—"}</span>,
-          o?.customerName||"", `${o?.cargo||""}(${o?.weight||""})`, o?.deliveryDate||"",
-          "¥"+(Number(o?.amount)||0).toLocaleString(), <StatusPill s={o?.status}/>,
-          o?.status!=="delivered"&&<RetroBtn small onClick={()=>{ const next={pending:"scheduled",scheduled:"in_transit",in_transit:"delivered"}; if(next[o?.status]) setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(x=>x?.id===o?.id?{...x,status:next[o.status]}:x)})); }}>次へ→</RetroBtn>
-        ])}
-      />
+      <div style={{ ...inset3d, background:"#fff", overflow:"auto", maxHeight:"320px" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"11px" }}>
+          <thead>
+            <tr style={{ background:"#000080", position:"sticky", top:0 }}>
+              {["ID","顧客","荷物","配達日","金額","状態","操作"].map((h)=><th key={h} style={{ color:"#fff", padding:"3px 8px", textAlign:"left", fontWeight:"bold", whiteSpace:"nowrap", borderRight:"1px solid #4040a0" }}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((o, index) => (
+              <tr key={o?.id || `order-${index}`} onClick={() => openOrderDetail(o)} style={{ background:index%2===0?"#fff":"#f0f0f8", borderBottom:"1px solid #ddd", cursor:"pointer" }}>
+                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}><span style={{ color:"#000080", fontWeight:"bold" }}>{o?.id||"—"}</span></td>
+                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{o?.customerName||""}</td>
+                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{`${o?.cargo||""}(${o?.weight||""})`}</td>
+                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{o?.deliveryDate||""}</td>
+                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{(Number(o?.amount)||0).toLocaleString()}</td>
+                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}><StatusPill s={o?.status}/></td>
+                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee", whiteSpace:"nowrap" }}>
+                  <div style={{ display:"flex", gap:"4px" }}>
+                    {statusPrev[o?.status] && (
+                      <RetroBtn small onClick={(e)=>{ e.stopPropagation(); goPrevStatus(o?.id, o?.status); }}>←戻る</RetroBtn>
+                    )}
+                    {statusNext[o?.status] && (
+                      <RetroBtn small onClick={(e)=>{ e.stopPropagation(); goNextStatus(o?.id, o?.status); }}>次へ→</RetroBtn>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {filtered.length===0&&<tr><td colSpan={7} style={{ padding:"16px", textAlign:"center", color:"#808080" }}>データなし</td></tr>}
+          </tbody>
+        </table>
+      </div>
       {showModal&&<Modal title="新規受注登録" icon="📋" onClose={()=>setShowModal(false)}>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
           <Fl label="顧客"><RetroSelect value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}><option value="">選択</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</RetroSelect></Fl>
@@ -809,6 +883,66 @@ const OrdersPage = ({ data, setData }) => {
           <RetroBtn onClick={handleAdd} color="#d0e0ff">　登録する　</RetroBtn>
         </div>
       </Modal>}
+      {selectedOrder && (
+        <Modal title={`受注詳細 ${selectedOrder?.id || ""}`} icon="📋" onClose={closeOrderDetail} width={520}>
+          {orderEditMode ? (
+            <>
+              <Fl label="顧客">
+                <RetroSelect value={orderDraft?.customerId || ""} onChange={(e)=>{
+                  const customer = customers.find((c)=>c?.id===e.target.value);
+                  setOrderDraft((prev)=>({ ...(prev||{}), customerId:e.target.value, customerName:customer?.name||"" }));
+                }}>
+                  <option value="">選択</option>
+                  {customers.map((c)=><option key={c?.id||`customer-${Math.random()}`} value={c?.id||""}>{c?.name||""}</option>)}
+                </RetroSelect>
+              </Fl>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+                <Fl label="配達日"><RetroInput type="date" value={orderDraft?.deliveryDate || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), deliveryDate:e.target.value }))}/></Fl>
+                <Fl label="状態">
+                  <RetroSelect value={orderDraft?.status || "pending"} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), status:e.target.value }))}>
+                    <option value="pending">未配車</option>
+                    <option value="scheduled">配車済</option>
+                    <option value="in_transit">配送中</option>
+                    <option value="delivered">完了</option>
+                  </RetroSelect>
+                </Fl>
+              </div>
+              <Fl label="出発地"><RetroInput value={orderDraft?.from || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), from:e.target.value }))}/></Fl>
+              <Fl label="配送先"><RetroInput value={orderDraft?.to || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), to:e.target.value }))}/></Fl>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px 12px" }}>
+                <Fl label="荷物"><RetroInput value={orderDraft?.cargo || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), cargo:e.target.value }))}/></Fl>
+                <Fl label="重量"><RetroInput value={orderDraft?.weight || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), weight:e.target.value }))}/></Fl>
+                <Fl label="金額"><RetroInput type="number" value={orderDraft?.amount ?? ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), amount:e.target.value }))}/></Fl>
+              </div>
+              <Fl label="備考"><RetroTextarea value={orderDraft?.notes || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), notes:e.target.value }))}/></Fl>
+              <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
+                <RetroBtn onClick={()=>{ setOrderEditMode(false); setOrderDraft(selectedOrder ? { ...selectedOrder } : null); }}>キャンセル</RetroBtn>
+                <RetroBtn onClick={saveOrderDetail} color="#d0e0ff">保存</RetroBtn>
+              </div>
+            </>
+          ) : (
+            <>
+              <Panel>
+                <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontFamily:"monospace", fontSize:"12px" }}>
+                  <div>顧客</div><div>{selectedOrder?.customerName || ""}</div>
+                  <div>配達日</div><div>{selectedOrder?.deliveryDate || ""}</div>
+                  <div>出発地</div><div>{selectedOrder?.from || ""}</div>
+                  <div>配送先</div><div>{selectedOrder?.to || ""}</div>
+                  <div>荷物</div><div>{selectedOrder?.cargo || ""}</div>
+                  <div>重量</div><div>{selectedOrder?.weight || ""}</div>
+                  <div>金額</div><div>¥{(Number(selectedOrder?.amount)||0).toLocaleString()}</div>
+                  <div>備考</div><div>{selectedOrder?.notes || "—"}</div>
+                  <div>状態</div><div><StatusPill s={selectedOrder?.status}/></div>
+                </div>
+              </Panel>
+              <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
+                <RetroBtn onClick={closeOrderDetail}>閉じる</RetroBtn>
+                <RetroBtn onClick={()=>{ setOrderDraft(selectedOrder ? { ...selectedOrder } : null); setOrderEditMode(true); }} color="#d0e0ff">編集</RetroBtn>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
     </div>
   );
 };
@@ -865,13 +999,79 @@ const CustomersPage = ({ data, setData }) => {
   const customers = Array.isArray(data?.customers) ? data.customers : [];
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ name:"", contact:"", phone:"", email:"" });
-  const add = () => { setData(d=>({...d,customers:[...(Array.isArray(d?.customers) ? d.customers : []),{id:`C${String((Array.isArray(d?.customers) ? d.customers.length : 0)+1).padStart(3,"0")}`, ...form}]})); setShowModal(false); setForm({name:"",contact:"",phone:"",email:""}); };
+  const [form, setForm] = useState({ name:"", contact:"", phone:"", email:"", address:"", notes:"" });
+  const [selectedCustomerId, setSelectedCustomerId] = useState(null);
+  const [customerEditMode, setCustomerEditMode] = useState(false);
+  const [customerDraft, setCustomerDraft] = useState(null);
+  const selectedCustomer = customers.find((c) => c?.id === selectedCustomerId) || null;
+
+  const add = () => {
+    setData(d=>({...d,customers:[...(Array.isArray(d?.customers) ? d.customers : []),{id:`C${String((Array.isArray(d?.customers) ? d.customers.length : 0)+1).padStart(3,"0")}`, ...form}]}));
+    setShowModal(false);
+    setForm({name:"",contact:"",phone:"",email:"",address:"",notes:""});
+  };
+
+  const openCustomerDetail = (customer) => {
+    setSelectedCustomerId(customer?.id || null);
+    setCustomerEditMode(false);
+    setCustomerDraft(customer ? { ...customer } : null);
+  };
+
+  const closeCustomerDetail = () => {
+    setSelectedCustomerId(null);
+    setCustomerEditMode(false);
+    setCustomerDraft(null);
+  };
+
+  const saveCustomer = () => {
+    if (!customerDraft?.id) return;
+    setData((d) => ({
+      ...d,
+      customers: (Array.isArray(d?.customers) ? d.customers : []).map((customer) =>
+        customer?.id === customerDraft.id ? { ...customer, ...customerDraft } : customer
+      ),
+    }));
+    setCustomerEditMode(false);
+  };
+
+  const deleteCustomer = (customerId) => {
+    if (!customerId) return;
+    if (!window.confirm("この顧客を削除しますか？")) return;
+    setData((d) => ({
+      ...d,
+      customers: (Array.isArray(d?.customers) ? d.customers : []).filter((customer) => customer?.id !== customerId),
+    }));
+    closeCustomerDetail();
+  };
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
       <div><RetroBtn onClick={()=>setShowModal(true)} color="#d0e0ff">👥 顧客追加</RetroBtn></div>
-      <RetroTable headers={["ID","会社名","担当者","電話","案件数","累計売上"]}
-        rows={customers.map(c=>{ const ords=orders.filter(o=>o?.customerId===c?.id); return [<span style={{color:"#000080",fontWeight:"bold"}}>{c?.id||"—"}</span>, c?.name||"", c?.contact||"", c?.phone||"", ords.length+"件", "¥"+ords.reduce((s,o)=>s+(Number(o?.amount)||0),0).toLocaleString()]; })} />
+      <div style={{ ...inset3d, background:"#fff", overflow:"auto", maxHeight:"320px" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"11px" }}>
+          <thead>
+            <tr style={{ background:"#000080", position:"sticky", top:0 }}>
+              {["ID","会社名","担当者","電話","案件数","累計売上"].map((h)=><th key={h} style={{ color:"#fff", padding:"3px 8px", textAlign:"left", fontWeight:"bold", whiteSpace:"nowrap", borderRight:"1px solid #4040a0" }}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {customers.map((c, index) => {
+              const ords = orders.filter((o)=>o?.customerId===c?.id);
+              return (
+                <tr key={c?.id || `customer-${index}`} onClick={()=>openCustomerDetail(c)} style={{ background:index%2===0?"#fff":"#f0f0f8", borderBottom:"1px solid #ddd", cursor:"pointer" }}>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}><span style={{color:"#000080",fontWeight:"bold"}}>{c?.id||"—"}</span></td>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.name||""}</td>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.contact||""}</td>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.phone||""}</td>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{ords.length}件</td>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{ords.reduce((s,o)=>s+(Number(o?.amount)||0),0).toLocaleString()}</td>
+                </tr>
+              );
+            })}
+            {customers.length===0&&<tr><td colSpan={6} style={{ padding:"16px", textAlign:"center", color:"#808080" }}>データなし</td></tr>}
+          </tbody>
+        </table>
+      </div>
       {showModal&&<Modal title="顧客追加" icon="👥" onClose={()=>setShowModal(false)}>
         <Fl label="会社名"><RetroInput value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></Fl>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 12px"}}>
@@ -879,11 +1079,53 @@ const CustomersPage = ({ data, setData }) => {
           <Fl label="電話"><RetroInput value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></Fl>
         </div>
         <Fl label="メール"><RetroInput value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))}/></Fl>
+        <Fl label="住所"><RetroInput value={form.address} onChange={e=>setForm(f=>({...f,address:e.target.value}))}/></Fl>
+        <Fl label="メモ"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
         <div style={{display:"flex",justifyContent:"flex-end",gap:"6px",marginTop:"8px"}}>
           <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
           <RetroBtn onClick={add} color="#d0e0ff">　登録する　</RetroBtn>
         </div>
       </Modal>}
+      {selectedCustomer && (
+        <Modal title={`顧客詳細 ${selectedCustomer?.id || ""}`} icon="👥" onClose={closeCustomerDetail} width={520}>
+          {customerEditMode ? (
+            <>
+              <Fl label="会社名"><RetroInput value={customerDraft?.name || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), name:e.target.value }))}/></Fl>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 12px"}}>
+                <Fl label="担当者"><RetroInput value={customerDraft?.contact || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), contact:e.target.value }))}/></Fl>
+                <Fl label="電話"><RetroInput value={customerDraft?.phone || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), phone:e.target.value }))}/></Fl>
+              </div>
+              <Fl label="メール"><RetroInput value={customerDraft?.email || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), email:e.target.value }))}/></Fl>
+              <Fl label="住所"><RetroInput value={customerDraft?.address || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), address:e.target.value }))}/></Fl>
+              <Fl label="メモ"><RetroTextarea value={customerDraft?.notes || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), notes:e.target.value }))}/></Fl>
+              <div style={{display:"flex",justifyContent:"flex-end",gap:"6px",marginTop:"8px"}}>
+                <RetroBtn onClick={()=>{ setCustomerEditMode(false); setCustomerDraft(selectedCustomer ? { ...selectedCustomer } : null); }}>キャンセル</RetroBtn>
+                <RetroBtn onClick={saveCustomer} color="#d0e0ff">保存</RetroBtn>
+              </div>
+            </>
+          ) : (
+            <>
+              <Panel>
+                <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontFamily:"monospace", fontSize:"12px" }}>
+                  <div>会社名</div><div>{selectedCustomer?.name || ""}</div>
+                  <div>担当者</div><div>{selectedCustomer?.contact || ""}</div>
+                  <div>電話</div><div>{selectedCustomer?.phone || ""}</div>
+                  <div>メール</div><div>{selectedCustomer?.email || ""}</div>
+                  <div>住所</div><div>{selectedCustomer?.address || "—"}</div>
+                  <div>メモ</div><div>{selectedCustomer?.notes || "—"}</div>
+                </div>
+              </Panel>
+              <div style={{display:"flex",justifyContent:"space-between",gap:"6px",marginTop:"8px"}}>
+                <RetroBtn color="#ffd0d0" onClick={()=>deleteCustomer(selectedCustomer?.id)}>削除</RetroBtn>
+                <div style={{ display:"flex", gap:"6px" }}>
+                  <RetroBtn onClick={closeCustomerDetail}>閉じる</RetroBtn>
+                  <RetroBtn onClick={()=>{ setCustomerDraft(selectedCustomer ? { ...selectedCustomer } : null); setCustomerEditMode(true); }} color="#d0e0ff">編集</RetroBtn>
+                </div>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
     </div>
   );
 };
@@ -1148,7 +1390,7 @@ const VehiclesPage = ({ data, setData }) => {
 const MENU = [
   { id:"dashboard", icon:"🏠", label:"ダッシュボード" },
   { id:"calendar",  icon:"📅", label:"カレンダー" },
-  { id:"orders",    icon:"📋", label:"受注処理" },
+  { id:"orders",    icon:"📋", label:"受注管理" },
   { id:"dispatch",  icon:"🚛", label:"配車管理" },
   { id:"drivers",   icon:"👤", label:"ドライバー管理" },
   { id:"vehicles",  icon:"🚗", label:"車両管理" },
