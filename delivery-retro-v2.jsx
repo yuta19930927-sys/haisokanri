@@ -705,10 +705,19 @@ const OrdersPage = ({ data, setData }) => {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   const [search, setSearch] = useState("");
-  const filtered = data.orders.filter(o=>o.customerName.includes(search)||o.id.includes(search)||o.cargo.includes(search));
+  if (!data) {
+    return (
+      <div style={{ ...inset3d, background:"#fff", padding:"24px", textAlign:"center", fontFamily:"monospace", fontSize:"12px", color:"#808080" }}>
+        読み込み中...
+      </div>
+    );
+  }
+  const orders = Array.isArray(data.orders) ? data.orders : [];
+  const customers = Array.isArray(data.customers) ? data.customers : [];
+  const filtered = orders.filter(o=>o.customerName.includes(search)||o.id.includes(search)||o.cargo.includes(search));
   const handleAdd = () => {
-    const c = data.customers.find(x=>x.id===form.customerId);
-    const o = { id:`ORD-${String(data.orders.length+1).padStart(3,"0")}`, customerId:form.customerId, customerName:c?.name||"", date:fmt(today.getDate()), deliveryDate:form.deliveryDate, from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, notes:form.notes };
+    const c = customers.find(x=>x.id===form.customerId);
+    const o = { id:`ORD-${String(orders.length+1).padStart(3,"0")}`, customerId:form.customerId, customerName:c?.name||"", date:fmt(today.getDate()), deliveryDate:form.deliveryDate, from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, notes:form.notes };
     setData(d=>({ ...d, orders:[o,...d.orders], events:[...d.events,{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
     setShowModal(false); setForm({ customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   };
@@ -730,7 +739,7 @@ const OrdersPage = ({ data, setData }) => {
       />
       {showModal&&<Modal title="新規受注登録" icon="📋" onClose={()=>setShowModal(false)}>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="顧客"><RetroSelect value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}><option value="">選択</option>{data.customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</RetroSelect></Fl>
+          <Fl label="顧客"><RetroSelect value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}><option value="">選択</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</RetroSelect></Fl>
           <Fl label="配達日"><RetroInput type="date" value={form.deliveryDate} onChange={e=>setForm(f=>({...f,deliveryDate:e.target.value}))}/></Fl>
         </div>
         <Fl label="出発地"><RetroInput value={form.from} onChange={e=>setForm(f=>({...f,from:e.target.value}))}/></Fl>
@@ -983,6 +992,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
   const latestDataRef = useRef(initialData);
   const saveGenerationRef = useRef(0);
   const saveChainRef = useRef(Promise.resolve());
+  const pageHistoryRef = useRef(["dashboard"]);
+  const handlingPopRef = useRef(false);
   const now = new Date();
 
   useEffect(() => {
@@ -1027,6 +1038,46 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    window.history.replaceState({ appPage: "dashboard" }, "", window.location.href);
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (pageHistoryRef.current.length > 1) {
+        handlingPopRef.current = true;
+        pageHistoryRef.current.pop();
+        const previousPage = pageHistoryRef.current[pageHistoryRef.current.length - 1] || "dashboard";
+        setPage(previousPage);
+        queueMicrotask(() => {
+          handlingPopRef.current = false;
+        });
+        return;
+      }
+
+      setPage("dashboard");
+      window.history.pushState({ appPage: "dashboard" }, "", window.location.href);
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, []);
+
+  const setPageWithHistory = (nextPage) => {
+    setPage((currentPage) => {
+      if (currentPage === nextPage) {
+        return currentPage;
+      }
+      if (!handlingPopRef.current) {
+        pageHistoryRef.current.push(nextPage);
+        window.history.pushState({ appPage: nextPage }, "", window.location.href);
+      }
+      return nextPage;
+    });
+  };
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -1115,7 +1166,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
           {/* Sidebar */}
           <div style={{ width:"122px", borderRight:"2px solid #808080", padding:"6px", display:"flex", flexDirection:"column", gap:"3px", background:"#c0c0c0", flexShrink:0 }}>
             {MENU.map(m=>(
-              <MenuBtn key={m.id} icon={m.icon} label={m.label} onClick={()=>setPage(m.id)} active={page===m.id} badge={badges[m.id]||0}/>
+              <MenuBtn key={m.id} icon={m.icon} label={m.label} onClick={()=>setPageWithHistory(m.id)} active={page===m.id} badge={badges[m.id]||0}/>
             ))}
           </div>
 
@@ -1125,7 +1176,13 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
               <span style={{ fontSize:"11px", color:"#404040" }}>現在：</span>
               <span style={{ fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{MENU.find(m=>m.id===page)?.icon} {MENU.find(m=>m.id===page)?.label}</span>
             </div>
-            <PageComponent data={data} setData={setData} setPage={setPage}/>
+            {!isLoaded ? (
+              <div style={{ ...inset3d, background:"#fff", padding:"24px", textAlign:"center", fontFamily:"monospace", fontSize:"12px", color:"#808080" }}>
+                データを読み込んでいます...
+              </div>
+            ) : (
+              <PageComponent data={data} setData={setData} setPage={setPageWithHistory}/>
+            )}
           </div>
         </div>
 
