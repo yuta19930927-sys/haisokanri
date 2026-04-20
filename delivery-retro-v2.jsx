@@ -48,14 +48,14 @@ const initialData = {
   ],
   // Calendar events / tasks
   events: [
-    { id:"EV-001", date:fmt(8), type:"delivery", title:"ORD-001 配達完了", orderId:"ORD-001", color:"#006600" },
-    { id:"EV-002", date:fmt(10), type:"payment_due", title:"INV-002 支払期日", invoiceId:"INV-002", color:"#cc0000" },
-    { id:"EV-003", date:fmt(12), type:"delivery", title:"ORD-002 配達予定", orderId:"ORD-002", color:"#0000cc" },
+    { id:"EV-001", date:fmt(8), type:"delivery", title:"配達完了：株式会社田中商事", orderId:"ORD-001", color:"#006600" },
+    { id:"EV-002", date:fmt(10), type:"payment_due", title:"支払期日：山田運輸有限会社", invoiceId:"INV-002", color:"#cc0000" },
+    { id:"EV-003", date:fmt(12), type:"delivery", title:"配達予定：山田運輸有限会社", orderId:"ORD-002", color:"#0000cc" },
     { id:"EV-004", date:fmt(15), type:"task", title:"車検：品川300あ1234", color:"#cc6600" },
-    { id:"EV-005", date:fmt(18), type:"delivery", title:"ORD-003 配達予定", orderId:"ORD-003", color:"#0000cc" },
-    { id:"EV-006", date:fmt(20), type:"payment_due", title:"INV-001 入金期日", invoiceId:"INV-001", color:"#660099" },
-    { id:"EV-007", date:fmt(22), type:"delivery", title:"ORD-004 配達予定", orderId:"ORD-004", color:"#0000cc" },
-    { id:"EV-008", date:fmt(25), type:"payment_due", title:"INV-003 入金期日", invoiceId:"INV-003", color:"#660099" },
+    { id:"EV-005", date:fmt(18), type:"delivery", title:"配達予定：鈴木食品株式会社", orderId:"ORD-003", color:"#0000cc" },
+    { id:"EV-006", date:fmt(20), type:"payment_due", title:"入金期日：株式会社田中商事", invoiceId:"INV-001", color:"#660099" },
+    { id:"EV-007", date:fmt(22), type:"delivery", title:"配達予定：株式会社田中商事", orderId:"ORD-004", color:"#0000cc" },
+    { id:"EV-008", date:fmt(25), type:"payment_due", title:"入金期日：鈴木食品株式会社", invoiceId:"INV-003", color:"#660099" },
   ],
   // Payables (支払予定)
   payables: [
@@ -146,7 +146,13 @@ const Panel = ({ title, icon, children, style:ext }) => (
 const Modal = ({ title, icon, onClose, children, width=480 }) => (
   <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center" }}>
     <div style={{ background:winBg, ...raised, width, maxWidth:"95vw", maxHeight:"90vh", overflow:"auto" }}>
-      <TitleBar title={title} icon={icon} />
+      <div style={{ background:"linear-gradient(to right,#000080,#1084d0)", padding:"3px 6px", display:"flex", alignItems:"center", gap:"6px" }}>
+        <span style={{ fontSize:"14px" }}>{icon}</span>
+        <span style={{ color:"#fff", fontFamily:"'MS Gothic','ＭＳ ゴシック','Noto Sans JP',monospace", fontSize:"12px", fontWeight:"bold", flex:1 }}>{title}</span>
+        <button onClick={onClose} style={{ ...raised, background:winBg, width:"14px", height:"12px", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"8px", cursor:"pointer", padding:0 }}>
+          ✕
+        </button>
+      </div>
       <div style={{ padding:"14px" }}>{children}</div>
     </div>
   </div>
@@ -155,11 +161,11 @@ const Modal = ({ title, icon, onClose, children, width=480 }) => (
 // ===== CALENDAR =====
 const EVENT_TYPE_COLOR = {
   delivery:"#0000cc", payment_due:"#cc0000", payment_receive:"#006600",
-  task:"#cc6600", bank_in:"#006600", bank_out:"#cc0000"
+  task:"#cc6600", sales:"#009999", bank_in:"#006600", bank_out:"#cc0000"
 };
 const EVENT_TYPE_LABEL = {
   delivery:"配送", payment_due:"支払期日", payment_receive:"入金予定",
-  task:"タスク", bank_in:"入金", bank_out:"支出"
+  task:"タスク", sales:"営業", bank_in:"入金", bank_out:"支出"
 };
 
 const CalendarPage = ({ data, setData }) => {
@@ -173,32 +179,41 @@ const CalendarPage = ({ data, setData }) => {
   const firstDay = new Date(calYear, calMonth, 1).getDay();
   const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
   const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+  const normalizeDateString = (value) => {
+    if (!value) return "";
+    return String(value).slice(0, 10);
+  };
+  const formatEventTitleForCell = (title) => {
+    const raw = title || "";
+    return raw.replace(/^[A-Z]+-\d+\s*/, "");
+  };
 
   const getDayStr = (d) => `${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
 
   const getEventsForDate = (ds) => {
-    const evs = data.events.filter(e=>e.date===ds);
+    const targetDate = normalizeDateString(ds);
+    const evs = (Array.isArray(data?.events) ? data.events : []).filter((e) => normalizeDateString(e?.date) === targetDate);
     const driverRenewals = (Array.isArray(data.drivers) ? data.drivers : [])
-      .filter((driver) => driver?.license_expiry === ds)
+      .filter((driver) => normalizeDateString(driver?.license_expiry) === targetDate)
       .map((driver) => ({
         id: `DRV-LIC-${driver?.id || Math.random()}`,
-        date: ds,
+        date: targetDate,
         type: "task",
         title: `免許更新: ${driver?.name || ""}`,
         color: "#cc6600",
       }));
     const vehicleInspections = (Array.isArray(data.vehicles) ? data.vehicles : [])
-      .filter((vehicle) => vehicle?.nextInspection === ds)
+      .filter((vehicle) => normalizeDateString(vehicle?.nextInspection) === targetDate)
       .map((vehicle) => ({
         id: `VEH-INSP-${vehicle?.id || Math.random()}`,
-        date: ds,
+        date: targetDate,
         type: "task",
         title: `車検: ${vehicle?.plate || ""}`,
         color: "#cc0099",
       }));
     const allEvents = [...evs, ...driverRenewals, ...vehicleInspections];
     // also show bank transactions
-    const banks = data.bankTransactions.filter(t=>t.date===ds);
+    const banks = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter((t) => normalizeDateString(t?.date) === targetDate);
     return { evs: allEvents, banks };
   };
 
@@ -208,18 +223,19 @@ const CalendarPage = ({ data, setData }) => {
   };
 
   const selectedEvents = selectedDate ? getEventsForDate(selectedDate).evs : [];
-  const selectedBanks = selectedDate ? data.bankTransactions.filter(t=>t.date===selectedDate) : [];
-  const selectedPayables = selectedDate ? data.payables.filter(p=>p.dueDate===selectedDate) : [];
-  const selectedInvoices = selectedDate ? data.invoices.filter(i=>i.dueDate===selectedDate) : [];
+  const selectedBanks = selectedDate ? (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(t=>normalizeDateString(t?.date)===normalizeDateString(selectedDate)) : [];
+  const selectedPayables = selectedDate ? (Array.isArray(data?.payables) ? data.payables : []).filter(p=>normalizeDateString(p?.dueDate)===normalizeDateString(selectedDate)) : [];
+  const selectedInvoices = selectedDate ? (Array.isArray(data?.invoices) ? data.invoices : []).filter(i=>normalizeDateString(i?.dueDate)===normalizeDateString(selectedDate)) : [];
 
   const addEvent = () => {
     if (!newEvent.title||!addDate) return;
+    const safeEvents = Array.isArray(data?.events) ? data.events : [];
     const ev = {
-      id:`EV-${String(data.events.length+1).padStart(3,"0")}`,
-      date:addDate, type:newEvent.type, title:newEvent.title,
+      id:`EV-${String(safeEvents.length+1).padStart(3,"0")}`,
+      date:normalizeDateString(addDate), type:newEvent.type, title:newEvent.title,
       color:EVENT_TYPE_COLOR[newEvent.type]||"#808080", note:newEvent.note
     };
-    setData(d=>({...d, events:[...d.events, ev]}));
+    setData(d=>({...d, events:[...(Array.isArray(d?.events) ? d.events : []), ev]}));
     setShowAddModal(false);
     setNewEvent({ title:"", type:"task", note:"" });
   };
@@ -258,7 +274,7 @@ const CalendarPage = ({ data, setData }) => {
               const ds = getDayStr(d);
               const {evs, banks} = getEventsForDay(d);
               const isToday = ds===todayStr;
-              const isSelected = ds===selectedDate;
+              const isSelected = ds===normalizeDateString(selectedDate);
               const dow = (firstDay+i)%7;
               const hasPending = data.invoices.some(inv=>inv.dueDate===ds&&(inv.status==="unpaid"||inv.status==="overdue"));
               const hasBankUnmatched = banks.some(b=>b.status==="unmatched");
@@ -278,7 +294,7 @@ const CalendarPage = ({ data, setData }) => {
                   <div style={{ display:"flex", flexDirection:"column", gap:"1px" }}>
                     {evs.slice(0,2).map(ev=>(
                       <div key={ev.id} style={{ background:ev.color, color:"#fff", fontSize:"9px", fontFamily:"monospace", padding:"1px 3px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
-                        {ev.title}
+                        {formatEventTitleForCell(ev?.title)}
                       </div>
                     ))}
                     {evs.length>2&&<div style={{ fontSize:"9px", fontFamily:"monospace", color:"#808080" }}>+{evs.length-2}件</div>}
@@ -295,7 +311,7 @@ const CalendarPage = ({ data, setData }) => {
 
           {/* Legend */}
           <div style={{ display:"flex", gap:"8px", marginTop:"6px", flexWrap:"wrap" }}>
-            {Object.entries(EVENT_TYPE_LABEL).slice(0,5).map(([k,v])=>(
+            {Object.entries(EVENT_TYPE_LABEL).map(([k,v])=>(
               <div key={k} style={{ display:"flex", alignItems:"center", gap:"3px" }}>
                 <div style={{ width:"8px", height:"8px", background:EVENT_TYPE_COLOR[k] }}/>
                 <span style={{ fontFamily:"monospace", fontSize:"9px" }}>{v}</span>
@@ -470,6 +486,7 @@ const CalendarPage = ({ data, setData }) => {
           <Fl label="種別">
             <RetroSelect value={newEvent.type} onChange={e=>setNewEvent(v=>({...v,type:e.target.value}))}>
               <option value="task">タスク</option>
+              <option value="sales">営業</option>
               <option value="delivery">配送</option>
               <option value="payment_due">支払期日</option>
               <option value="payment_receive">入金予定</option>
