@@ -1,6 +1,19 @@
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "./lib/supabase";
 import { DeliveryManagementApp } from "../delivery-retro-v2.jsx";
+const MOBILE_BREAKPOINT = 768;
+
+const useIsMobile = () => {
+  const getValue = () =>
+    typeof window !== "undefined" ? window.innerWidth <= MOBILE_BREAKPOINT : false;
+  const [isMobile, setIsMobile] = useState(getValue);
+  useEffect(() => {
+    const onResize = () => setIsMobile(getValue());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return isMobile;
+};
 
 const loginBox = {
   width: "100%",
@@ -70,6 +83,7 @@ function withTimeout(promise, ms) {
 }
 
 export default function App() {
+  const isMobile = useIsMobile();
   const [authReady, setAuthReady] = useState(false);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -228,9 +242,9 @@ export default function App() {
 
   if (!authed) {
     return (
-      <div style={{ minHeight: "100vh", background: "#008080", display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}>
-        <div style={loginBox}>
-          <div style={{ background: "linear-gradient(to right,#000080,#1084d0)", margin: "-20px -20px 16px -20px", padding: "8px 12px", color: "#fff", fontWeight: "bold", fontSize: "13px" }}>
+      <div style={{ minHeight: "100vh", background: "#008080", display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? "8px" : "16px" }}>
+        <div style={{ ...loginBox, maxWidth: isMobile ? "100%" : "380px", padding: isMobile ? "14px" : "20px" }}>
+          <div style={{ background: "linear-gradient(to right,#000080,#1084d0)", margin: isMobile ? "-14px -14px 12px -14px" : "-20px -20px 16px -20px", padding: "8px 12px", color: "#fff", fontWeight: "bold", fontSize: isMobile ? "12px" : "13px" }}>
             配送管理システム — ログイン
           </div>
           <div style={{ display: "flex", gap: "6px", marginBottom: "14px" }}>
@@ -244,11 +258,11 @@ export default function App() {
           <form onSubmit={handleLogin}>
             <label style={{ fontSize: "12px", fontWeight: "bold" }}>
               メールアドレス
-              <input type="email" autoComplete="username" value={email} onChange={(ev) => setEmail(ev.target.value)} required style={inputStyle} />
+              <input type="email" autoComplete="username" value={email} onChange={(ev) => setEmail(ev.target.value)} required style={{ ...inputStyle, fontSize: "16px", padding: "10px 12px" }} />
             </label>
             <label style={{ fontSize: "12px", fontWeight: "bold", display: "block", marginTop: "10px" }}>
               パスワード
-              <input type="password" autoComplete="current-password" value={password} onChange={(ev) => setPassword(ev.target.value)} required style={inputStyle} />
+              <input type="password" autoComplete="current-password" value={password} onChange={(ev) => setPassword(ev.target.value)} required style={{ ...inputStyle, fontSize: "16px", padding: "10px 12px" }} />
             </label>
             {error && (
               <div style={{ marginTop: "10px", fontSize: "12px", color: "#c00", fontWeight: "bold" }}>{error}</div>
@@ -270,6 +284,7 @@ export default function App() {
       onLogout={handleLogout}
       authRole={profile.role}
       authEmail={profile.email || session.user.email}
+      isMobile={isMobile}
     />
   );
 }

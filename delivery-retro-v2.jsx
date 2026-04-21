@@ -22,6 +22,19 @@ const PAYMENT_SITE_OPTIONS = [
   "翌月25日払い",
 ];
 const CLOSING_DAY_OPTIONS = [5, 10, 15, 20, 25, 31];
+const MOBILE_BREAKPOINT = 768;
+
+const useIsMobile = () => {
+  const getValue = () =>
+    typeof window !== "undefined" ? window.innerWidth <= MOBILE_BREAKPOINT : false;
+  const [isMobile, setIsMobile] = useState(getValue);
+  useEffect(() => {
+    const onResize = () => setIsMobile(getValue());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return isMobile;
+};
 
 const parseDate = (value) => {
   if (!value) return null;
@@ -140,21 +153,22 @@ const RetroBtn = ({ children, onClick, color, wide, small, style:ext }) => {
     <button onMouseDown={()=>setDn(true)} onMouseUp={()=>setDn(false)} onMouseLeave={()=>setDn(false)} onClick={onClick}
       style={{ background:color||winBg, fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:small?"11px":"12px", fontWeight:"bold", color:"#000", cursor:"pointer",
         padding:small?"2px 8px":wide?"8px 16px":"5px 10px", display:"inline-flex", alignItems:"center", gap:"4px", userSelect:"none",
+        minHeight:"44px",
         ...(dn?pressed:raised), ...ext }}>
       {children}
     </button>
   );
 };
 const RetroInput = (props) => (
-  <input {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"12px", padding:"3px 6px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", ...props.style }} />
+  <input {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"16px", padding:"8px 10px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", ...props.style }} />
 );
 const RetroSelect = ({ children, ...props }) => (
-  <select {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"12px", padding:"3px 6px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", ...props.style }}>
+  <select {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"16px", padding:"8px 10px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", ...props.style }}>
     {children}
   </select>
 );
 const RetroTextarea = (props) => (
-  <textarea {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"12px", padding:"3px 6px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", resize:"vertical", minHeight:"50px", ...props.style }} />
+  <textarea {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"16px", padding:"8px 10px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", resize:"vertical", minHeight:"80px", ...props.style }} />
 );
 const Fl = ({ label, children }) => (
   <div style={{ marginBottom:"6px" }}>
@@ -213,7 +227,7 @@ const Panel = ({ title, icon, children, style:ext }) => (
 // ===== MODAL =====
 const Modal = ({ title, icon, onClose, children, width=480 }) => (
   <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center" }}>
-    <div style={{ background:winBg, ...raised, width, maxWidth:"95vw", maxHeight:"90vh", overflow:"auto" }}>
+    <div style={{ background:winBg, ...raised, width:`min(${typeof width === "number" ? `${width}px` : width}, 95vw)`, maxWidth:"95vw", maxHeight:"90vh", overflow:"auto" }}>
       <div style={{ background:"linear-gradient(to right,#000080,#1084d0)", padding:"3px 6px", display:"flex", alignItems:"center", gap:"6px" }}>
         <span style={{ fontSize:"14px" }}>{icon}</span>
         <span style={{ color:"#fff", fontFamily:"'MS Gothic','ＭＳ ゴシック','Noto Sans JP',monospace", fontSize:"12px", fontWeight:"bold", flex:1 }}>{title}</span>
@@ -236,7 +250,7 @@ const EVENT_TYPE_LABEL = {
   task:"タスク", sales:"営業", bank_in:"入金", bank_out:"支出"
 };
 
-const CalendarPage = ({ data, setData }) => {
+const CalendarPage = ({ data, setData, isMobile=false }) => {
   const [calYear, setCalYear] = useState(y);
   const [calMonth, setCalMonth] = useState(mo);
   const [calMode, setCalMode] = useState("delivery");
@@ -523,9 +537,9 @@ const CalendarPage = ({ data, setData }) => {
   const nextMonth = () => { if(calMonth===11){setCalYear(y=>y+1);setCalMonth(0);}else setCalMonth(m=>m+1); };
 
   return (
-    <div style={{ display:"flex", gap:"10px" }}>
+    <div style={{ display:"flex", flexDirection:isMobile?"column":"row", gap:"10px" }}>
       {/* Left: Calendar */}
-      <div style={{ flex:"0 0 auto", width:"420px" }}>
+      <div style={{ flex:"0 0 auto", width:isMobile?"100%":"420px" }}>
         <Panel title={`${calYear}年${calMonth+1}月`} icon="📅" style={{ marginBottom:"8px" }}>
           <div style={{ display:"flex", gap:"6px", marginBottom:"8px" }}>
             <RetroBtn onClick={()=>setCalMode("delivery")} color={calMode==="delivery" ? "#c0c0c0" : winBg} style={calMode==="delivery" ? pressed : raised}>配送カレンダー</RetroBtn>
@@ -558,7 +572,7 @@ const CalendarPage = ({ data, setData }) => {
               return (
                 <div key={d} onClick={()=>setSelectedDate(ds===selectedDate?null:ds)}
                   style={{ background:isSelected?"#cce0ff":isToday?"#ffffc0":"#fff",
-                    ...inset3d, minHeight:"54px", cursor:"pointer", padding:"2px", overflow:"hidden",
+                    ...inset3d, minHeight:isMobile?"44px":"54px", cursor:"pointer", padding:"2px", overflow:"hidden",
                     outline:isSelected?"2px solid #000080":"none" }}>
                   <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:isToday?"bold":"normal",
                     color:dow===0?"#cc0000":dow===6?"#0000cc":"#000",
@@ -567,17 +581,17 @@ const CalendarPage = ({ data, setData }) => {
                     {d}
                   </div>
                   <div style={{ display:"flex", flexDirection:"column", gap:"1px" }}>
-                    {dayItems.slice(0,2).map(item=>(
+                    {(isMobile ? [{ id:`count-${ds}`, title:`${dayItems.length}件`, color:"#808080", source:"count" }] : dayItems.slice(0,2)).map(item=>(
                       <div key={item.id} style={{ background:item.color, color:"#fff", fontSize:"9px", fontFamily:"monospace", padding:"1px 3px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
                         <div>{item.title}</div>
-                        {item.source === "order" && (
+                        {item.source === "order" && !isMobile && (
                           <div style={{ fontSize:"8px", opacity:0.9 }}>
                             {item.subtitle || "未配車"}
                           </div>
                         )}
                       </div>
                     ))}
-                    {dayItems.length>2&&<div style={{ fontSize:"9px", fontFamily:"monospace", color:"#808080" }}>+{dayItems.length-2}件</div>}
+                    {!isMobile && dayItems.length>2&&<div style={{ fontSize:"9px", fontFamily:"monospace", color:"#808080" }}>+{dayItems.length-2}件</div>}
                   </div>
                 </div>
               );
@@ -1880,7 +1894,9 @@ const MenuBtn = ({ icon, label, onClick, active, badge }) => {
 };
 
 export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
+  const isMobile = useIsMobile();
   const [page, setPage] = useState("dashboard");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [data, setData] = useState(initialData);
   const [isLoaded, setIsLoaded] = useState(false);
   const previousDataRef = useRef(createEmptyData());
@@ -2030,43 +2046,53 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
   const PageComponent = pages[page];
 
   return (
-    <div style={{ minHeight:"100vh", background:"#008080", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"12px", fontFamily:"'MS Gothic','ＭＳ ゴシック','Noto Sans JP',monospace" }}>
-      <div style={{ background:winBg, ...raised, width:"100%", maxWidth:"1100px", boxShadow:"4px 4px 0 #404040" }}>
+    <div style={{ minHeight:"100vh", background:"#008080", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:isMobile?"6px":"12px", fontFamily:"'MS Gothic','ＭＳ ゴシック','Noto Sans JP',monospace" }}>
+      <div style={{ background:winBg, ...raised, width:"100%", maxWidth:isMobile?"100%":"1100px", boxShadow:"4px 4px 0 #404040" }}>
         {/* Title bar */}
         <div style={{ background:"linear-gradient(to right,#000080,#1084d0)", padding:"3px 8px", display:"flex", alignItems:"center", gap:"8px" }}>
+          {isMobile && <RetroBtn small onClick={()=>setMenuOpen(v=>!v)} style={{ minHeight:"32px", padding:"2px 8px" }}>≡</RetroBtn>}
           <span style={{ fontSize:"16px" }}>🚚</span>
-          <span style={{ color:"#fff", fontFamily:"monospace", fontSize:"13px", fontWeight:"bold", flex:1 }}>配送管理システム</span>
-          <span style={{ color:"#cce0ff", fontSize:"10px", marginRight:"6px", maxWidth:"200px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={authEmail || ""}>
+          <span style={{ color:"#fff", fontFamily:"monospace", fontSize:"13px", fontWeight:"bold", flex:1 }}>{isMobile?"配送管理":"配送管理システム"}</span>
+          {!isMobile && <span style={{ color:"#cce0ff", fontSize:"10px", marginRight:"6px", maxWidth:"200px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={authEmail || ""}>
             {authRole === "admin" ? "管理者" : authRole === "driver" ? "ドライバー" : ""}{authEmail ? ` · ${authEmail}` : ""}
-          </span>
-          <span style={{ color:"#cce0ff", fontSize:"11px", marginRight:"10px" }}>
+          </span>}
+          {!isMobile && <span style={{ color:"#cce0ff", fontSize:"11px", marginRight:"10px" }}>
             {now.getFullYear()}年{now.getMonth()+1}月{now.getDate()}日　{now.getHours()}:{String(now.getMinutes()).padStart(2,"0")}
-          </span>
+          </span>}
           {typeof onLogout === "function" && (
             <RetroBtn small onClick={onLogout} color="#ffcfcf" style={{ marginRight:"6px" }}>ログアウト</RetroBtn>
           )}
-          {["－","□","✕"].map((c,i)=><div key={i} style={{ ...raised, background:winBg, width:"16px", height:"14px", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"9px", cursor:"pointer" }}>{c}</div>)}
+          {!isMobile && ["－","□","✕"].map((c,i)=><div key={i} style={{ ...raised, background:winBg, width:"16px", height:"14px", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"9px", cursor:"pointer" }}>{c}</div>)}
         </div>
 
         {/* Menubar */}
-        <div style={{ borderBottom:"2px solid #808080", padding:"1px 4px", display:"flex", gap:"2px", background:winBg }}>
+        {!isMobile && <div style={{ borderBottom:"2px solid #808080", padding:"1px 4px", display:"flex", gap:"2px", background:winBg }}>
           {["ファイル(F)","編集(E)","表示(V)","ヘルプ(H)"].map(m=>(
             <div key={m} style={{ padding:"2px 8px", fontSize:"11px", cursor:"pointer", fontFamily:"monospace" }}
               onMouseEnter={e=>{e.currentTarget.style.background="#000080";e.currentTarget.style.color="#fff";}}
               onMouseLeave={e=>{e.currentTarget.style.background="";e.currentTarget.style.color="";}}>{m}</div>
           ))}
-        </div>
+        </div>}
 
         <div style={{ display:"flex", minHeight:"580px" }}>
           {/* Sidebar */}
-          <div style={{ width:"122px", borderRight:"2px solid #808080", padding:"6px", display:"flex", flexDirection:"column", gap:"3px", background:"#c0c0c0", flexShrink:0 }}>
+          {!isMobile && <div style={{ width:"122px", borderRight:"2px solid #808080", padding:"6px", display:"flex", flexDirection:"column", gap:"3px", background:"#c0c0c0", flexShrink:0 }}>
             {MENU.map(m=>(
               <MenuBtn key={m.id} icon={m.icon} label={m.label} onClick={()=>setPageWithHistory(m.id)} active={page===m.id} badge={badges[m.id]||0}/>
             ))}
-          </div>
+          </div>}
 
           {/* Content */}
           <div style={{ flex:1, padding:"10px", overflow:"auto" }}>
+            {isMobile && menuOpen && (
+              <div style={{ ...inset3d, background:"#c0c0c0", padding:"6px", marginBottom:"8px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:"4px" }}>
+                {MENU.map(m=>(
+                  <RetroBtn key={m.id} small onClick={()=>{setPageWithHistory(m.id);setMenuOpen(false);}} style={{ justifyContent:"flex-start" }}>
+                    {m.icon} {m.label}
+                  </RetroBtn>
+                ))}
+              </div>
+            )}
             <div style={{ ...inset3d, background:"#fff", padding:"2px 8px", marginBottom:"8px", display:"flex", alignItems:"center", gap:"6px" }}>
               <span style={{ fontSize:"11px", color:"#404040" }}>現在：</span>
               <span style={{ fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{MENU.find(m=>m.id===page)?.icon} {MENU.find(m=>m.id===page)?.label}</span>
@@ -2076,7 +2102,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
                 データを読み込んでいます...
               </div>
             ) : (
-              <PageComponent data={data} setData={setData} setPage={setPageWithHistory}/>
+              <PageComponent data={data} setData={setData} setPage={setPageWithHistory} isMobile={isMobile}/>
             )}
           </div>
         </div>
