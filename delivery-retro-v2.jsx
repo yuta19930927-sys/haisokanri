@@ -1184,7 +1184,7 @@ const OrdersPage = ({ data, setData }) => {
             setForm(f=>({
               ...f,
               customerId:e.target.value,
-              amount: selectedCustomer?.unitPrice != null ? String(selectedCustomer.unitPrice) : f.amount,
+              amount: selectedCustomer?.unitPrice != null ? String(selectedCustomer.unitPrice) : "0",
             }));
           }}><option value="">選択</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</RetroSelect></Fl>
           <Fl label="配達日"><RetroInput type="date" value={form.deliveryDate} onChange={e=>setForm(f=>({...f,deliveryDate:e.target.value}))}/></Fl>
@@ -1336,6 +1336,13 @@ const CustomersPage = ({ data, setData }) => {
   const [customerEditMode, setCustomerEditMode] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(null);
   const selectedCustomer = customers.find((c) => c?.id === selectedCustomerId) || null;
+  const formatClosingDay = (closingDay) => {
+    if (closingDay === 31 || Number(closingDay) === 31) return "月末";
+    const dayNum = Number(closingDay);
+    if (Number.isFinite(dayNum) && dayNum > 0) return `${dayNum}日`;
+    return "未設定";
+  };
+  const formatPaymentSite = (paymentSite) => (paymentSite ? paymentSite : "未設定");
 
   const add = () => {
     setData(d=>({...d,customers:[...(Array.isArray(d?.customers) ? d.customers : []),{id:`C${String((Array.isArray(d?.customers) ? d.customers.length : 0)+1).padStart(3,"0")}`, ...form, unitPrice:Number(form.unitPrice)||0, closingDay:Number(form.closingDay)||31 }]}));
@@ -1396,7 +1403,7 @@ const CustomersPage = ({ data, setData }) => {
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.contact||""}</td>
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.phone||""}</td>
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{(Number(c?.unitPrice)||0).toLocaleString()}</td>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.closingDay===31?"月末":`${c?.closingDay}日`} / {c?.paymentSite||"—"}</td>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{formatClosingDay(c?.closingDay)} / {formatPaymentSite(c?.paymentSite)}</td>
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{ords.length}件</td>
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{ords.reduce((s,o)=>s+(Number(o?.amount)||0),0).toLocaleString()}</td>
                 </tr>
@@ -1447,12 +1454,14 @@ const CustomersPage = ({ data, setData }) => {
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px 12px"}}>
                 <Fl label="単価（円）"><RetroInput type="number" value={customerDraft?.unitPrice ?? ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), unitPrice:Number(e.target.value)||0 }))}/></Fl>
                 <Fl label="締め日">
-                  <RetroSelect value={customerDraft?.closingDay ?? 31} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), closingDay:Number(e.target.value) }))}>
+                  <RetroSelect value={customerDraft?.closingDay ?? ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), closingDay:e.target.value ? Number(e.target.value) : "" }))}>
+                    <option value="">未設定（候補: 月末(31)）</option>
                     {CLOSING_DAY_OPTIONS.map((day)=><option key={day} value={day}>{day===31?"月末(31)":`${day}日`}</option>)}
                   </RetroSelect>
                 </Fl>
                 <Fl label="支払サイト">
-                  <RetroSelect value={customerDraft?.paymentSite || "翌月末払い"} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), paymentSite:e.target.value }))}>
+                  <RetroSelect value={customerDraft?.paymentSite || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), paymentSite:e.target.value }))}>
+                    <option value="">未設定（候補: 翌月末払い）</option>
                     {PAYMENT_SITE_OPTIONS.map((site)=><option key={site} value={site}>{site}</option>)}
                   </RetroSelect>
                 </Fl>
@@ -1473,8 +1482,8 @@ const CustomersPage = ({ data, setData }) => {
                   <div>メール</div><div>{selectedCustomer?.email || ""}</div>
                   <div>住所</div><div>{selectedCustomer?.address || "—"}</div>
                   <div>単価</div><div>¥{(Number(selectedCustomer?.unitPrice)||0).toLocaleString()}</div>
-                  <div>締め日</div><div>{selectedCustomer?.closingDay===31?"月末":`${selectedCustomer?.closingDay || "—"}日`}</div>
-                  <div>支払サイト</div><div>{selectedCustomer?.paymentSite || "—"}</div>
+                  <div>締め日</div><div>{formatClosingDay(selectedCustomer?.closingDay)}</div>
+                  <div>支払サイト</div><div>{formatPaymentSite(selectedCustomer?.paymentSite)}</div>
                   <div>メモ</div><div>{selectedCustomer?.notes || "—"}</div>
                 </div>
               </Panel>
