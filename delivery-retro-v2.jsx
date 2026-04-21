@@ -144,6 +144,15 @@ const initialData = {
     { id:"PAY-002", vendor:"中部運輸協同組合", amount:25000, dueDate:fmt(20), status:"unpaid", category:"協力費" },
     { id:"PAY-003", vendor:"東日本高速道路", amount:8400, dueDate:fmt(16), status:"paid", category:"高速代" },
   ],
+  companyInfo: {
+    id: "COMPANY-001",
+    name: "配送管理株式会社",
+    address: "東京都千代田区1-1-1",
+    phone: "03-0000-0000",
+    email: "info@example.com",
+    bankInfo: "みずほ銀行 東京支店 普通 1234567 ハイソウカンリ（カ",
+    stampImage: "",
+  },
 };
 
 // ===== UI COMPONENTS =====
@@ -1521,6 +1530,24 @@ const InvoicesPage = ({ data, setData }) => {
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
   const events = Array.isArray(data?.events) ? data.events : [];
   const customers = Array.isArray(data?.customers) ? data.customers : [];
+  const companyInfo = data?.companyInfo || {};
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState(null);
+  const [invoiceDraft, setInvoiceDraft] = useState(null);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [showMailModal, setShowMailModal] = useState(false);
+  const [showCompanyModal, setShowCompanyModal] = useState(false);
+  const [companyDraft, setCompanyDraft] = useState({
+    id: companyInfo?.id || "COMPANY-001",
+    name: companyInfo?.name || "",
+    address: companyInfo?.address || "",
+    phone: companyInfo?.phone || "",
+    email: companyInfo?.email || "",
+    bankInfo: companyInfo?.bankInfo || "",
+    stampImage: companyInfo?.stampImage || "",
+  });
+  const [mailDraft, setMailDraft] = useState({ to: "", subject: "", body: "" });
+
+  const selectedInvoice = invoices.find((inv) => inv?.id === selectedInvoiceId) || null;
   const deliveredNoInv = orders.filter(o=>o?.status==="delivered"&&!invoices.find(i=>i?.orderId===o?.id));
   const createInv = (o) => {
     const tax=Math.round((Number(o?.amount)||0)*0.1);
@@ -1532,11 +1559,198 @@ const InvoicesPage = ({ data, setData }) => {
       customer?.paymentSite || "翌月末払い"
     );
     const baseAmount = Number(o?.amount)||0;
-    const inv={ id:`INV-${String(invoices.length+1).padStart(3,"0")}`, orderId:o?.id, customerId:o?.customerId, customerName:o?.customerName||"", issueDate, dueDate, amount:baseAmount, tax, total:baseAmount+tax, status:"unpaid", bankRef:"", paidDate:null, note:"" };
+    const inv={
+      id:`INV-${String(invoices.length+1).padStart(3,"0")}`,
+      orderId:o?.id,
+      customerId:o?.customerId,
+      customerName:o?.customerName||"",
+      issueDate,
+      dueDate,
+      amount:baseAmount,
+      tax,
+      total:baseAmount+tax,
+      status:"unpaid",
+      bankRef:"",
+      paidDate:null,
+      note:"",
+      lineItems:[
+        { id:`LI-${Date.now()}`, name:o?.cargo || "配送費", qty:1, unitPrice:baseAmount, subtotal:baseAmount },
+      ],
+      sentAt:null,
+      sentTo:"",
+    };
     setData(d=>({...d, invoices:[inv,...(Array.isArray(d?.invoices) ? d.invoices : [])], events:[...(Array.isArray(d?.events) ? d.events : events),{id:`EV-INV${Date.now()}`,date:dueDate,type:"payment_due",title:`${inv.id} 入金期日：${o?.customerName||""}`,color:"#660099"}] }));
   };
+
+  const openInvoiceModal = (inv) => {
+    const draft = {
+      ...inv,
+      lineItems: Array.isArray(inv?.lineItems) && inv.lineItems.length > 0
+        ? inv.lineItems
+        : [{ id:`LI-${Date.now()}`, name:"配送費", qty:1, unitPrice:Number(inv?.amount)||0, subtotal:Number(inv?.amount)||0 }],
+    };
+    setSelectedInvoiceId(inv?.id || null);
+    setInvoiceDraft(draft);
+    setShowInvoiceModal(true);
+  };
+
+  const saveInvoice = () => {
+    if (!invoiceDraft?.id) return;
+    const normalizedItems = (invoiceDraft.lineItems || []).map((item) => {
+      const qty = Number(item?.qty) || 0;
+      const unitPrice = Number(item?.unitPrice) || 0;
+      return { ...item, qty, unitPrice, subtotal: qty * unitPrice };
+    });
+    const amount = normalizedItems.reduce((s, item) => s + (Number(item?.subtotal) || 0), 0);
+    const tax = Number(invoiceDraft.tax) || 0;
+    const total = Number(invoiceDraft.total) || amount + tax;
+    setData((d) => ({
+      ...d,
+      invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
+        inv?.id === invoiceDraft.id
+          ? {
+              ...inv,
+              ...invoiceDraft,
+              amount,
+              tax,
+              total,
+              lineItems: normalizedItems,
+            }
+          : inv
+      ),
+    }));
+    setShowInvoiceModal(false);
+  };
+
+  const addLineItem = () => {
+    setInvoiceDraft((prev) => ({
+      ...(prev || {}),
+      lineItems: [...(prev?.lineItems || []), { id:`LI-${Date.now()}`, name:"", qty:1, unitPrice:0, subtotal:0 }],
+    }));
+  };
+
+  const removeLineItem = (itemId) => {
+    setInvoiceDraft((prev) => ({
+      ...(prev || {}),
+      lineItems: (prev?.lineItems || []).filter((item) => item?.id !== itemId),
+    }));
+  };
+
+  const updateLineItem = (itemId, key, value) => {
+    setInvoiceDraft((prev) => ({
+      ...(prev || {}),
+      lineItems: (prev?.lineItems || []).map((item) => {
+        if (item?.id !== itemId) return item;
+        const nextItem = { ...item, [key]: value };
+        const qty = Number(nextItem?.qty) || 0;
+        const unitPrice = Number(nextItem?.unitPrice) || 0;
+        return { ...nextItem, subtotal: qty * unitPrice };
+      }),
+    }));
+  };
+
+  const buildInvoiceHtml = (inv) => {
+    const customer = customers.find((c) => c?.id === inv?.customerId);
+    const lineItems = Array.isArray(inv?.lineItems) ? inv.lineItems : [];
+    const rowsHtml = lineItems
+      .map(
+        (item) => `
+          <tr>
+            <td>${item?.name || ""}</td>
+            <td style="text-align:right;">${Number(item?.qty)||0}</td>
+            <td style="text-align:right;">¥${(Number(item?.unitPrice)||0).toLocaleString()}</td>
+            <td style="text-align:right;">¥${(Number(item?.subtotal)||0).toLocaleString()}</td>
+          </tr>`
+      )
+      .join("");
+    return `<!doctype html><html><head><meta charset="utf-8"/><title>${inv?.id || "請求書"}</title><style>
+      body{font-family:'Noto Sans JP',sans-serif;padding:24px;color:#222}
+      h1{margin:0 0 12px} table{width:100%;border-collapse:collapse;margin-top:10px}
+      th,td{border:1px solid #ccc;padding:8px;font-size:12px}
+      .meta{display:flex;justify-content:space-between;gap:20px}.box{margin-top:12px}
+      .total{margin-top:12px;width:320px;margin-left:auto}
+      .total td{font-weight:bold}
+      @media print{button{display:none}}
+    </style></head><body>
+      <button onclick="window.print()">印刷/PDF保存</button>
+      <h1>請求書</h1>
+      <div class="meta">
+        <div>
+          <div><strong>発行元:</strong> ${companyInfo?.name || ""}</div>
+          <div>${companyInfo?.address || ""}</div>
+          <div>TEL: ${companyInfo?.phone || ""}</div>
+          <div>MAIL: ${companyInfo?.email || ""}</div>
+        </div>
+        <div>
+          <div><strong>請求先:</strong> ${inv?.customerName || ""}</div>
+          <div>${customer?.address || ""}</div>
+          <div>MAIL: ${customer?.email || ""}</div>
+        </div>
+      </div>
+      <div class="box">請求書番号: ${inv?.id || ""} / 発行日: ${inv?.issueDate || ""} / 支払期日: ${inv?.dueDate || ""}</div>
+      <table><thead><tr><th>品目</th><th>数量</th><th>単価</th><th>小計</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+      <table class="total">
+        <tr><td>小計</td><td style="text-align:right;">¥${(Number(inv?.amount)||0).toLocaleString()}</td></tr>
+        <tr><td>消費税</td><td style="text-align:right;">¥${(Number(inv?.tax)||0).toLocaleString()}</td></tr>
+        <tr><td>合計</td><td style="text-align:right;">¥${(Number(inv?.total)||0).toLocaleString()}</td></tr>
+      </table>
+      <div class="box"><strong>振込先:</strong><br/>${(companyInfo?.bankInfo || "").replace(/\n/g, "<br/>")}</div>
+      <div class="box"><strong>備考:</strong><br/>${(inv?.note || "").replace(/\n/g, "<br/>")}</div>
+      ${companyInfo?.stampImage ? `<div class="box"><img src="${companyInfo.stampImage}" alt="stamp" style="height:80px;"/></div>` : ""}
+    </body></html>`;
+  };
+
+  const openPreview = () => {
+    if (!invoiceDraft) return;
+    const html = buildInvoiceHtml(invoiceDraft);
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  };
+
+  const openMailModal = () => {
+    if (!invoiceDraft) return;
+    const customer = customers.find((c) => c?.id === invoiceDraft.customerId);
+    const to = customer?.email || "";
+    const subject = `【請求書送付】${invoiceDraft.id} ${invoiceDraft.customerName || ""}`;
+    const body = `いつもお世話になっております。\n請求書をお送りします。\n\n請求書番号: ${invoiceDraft.id}\n発行日: ${invoiceDraft.issueDate}\n支払期日: ${invoiceDraft.dueDate}\n合計: ¥${(Number(invoiceDraft.total)||0).toLocaleString()}\n\nPDFはプレビュー画面から印刷保存してご利用ください。`;
+    setMailDraft({ to, subject, body });
+    setShowMailModal(true);
+  };
+
+  const openMailer = () => {
+    const url = `mailto:${encodeURIComponent(mailDraft.to)}?subject=${encodeURIComponent(mailDraft.subject)}&body=${encodeURIComponent(mailDraft.body)}`;
+    window.location.href = url;
+  };
+
+  const recordSent = () => {
+    if (!invoiceDraft?.id) return;
+    setData((d) => ({
+      ...d,
+      invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
+        inv?.id === invoiceDraft.id
+          ? { ...inv, sentAt: new Date().toISOString(), sentTo: mailDraft.to || "" }
+          : inv
+      ),
+    }));
+    setShowMailModal(false);
+  };
+
+  const saveCompanyInfo = () => {
+    setData((d) => ({
+      ...d,
+      companyInfo: { ...companyDraft, id: companyDraft?.id || "COMPANY-001" },
+    }));
+    setShowCompanyModal(false);
+  };
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+      <div style={{ display:"flex", justifyContent:"flex-end" }}>
+        <RetroBtn onClick={()=>setShowCompanyModal(true)} color="#d0e0ff">⚙ 会社情報設定</RetroBtn>
+      </div>
       <div style={{ display:"flex", gap:"8px" }}>
         {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#660099"],["入金済","¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#006600"],["未回収","¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#cc0000"]].map(([l,v,c])=>(
           <div key={l} style={{ ...inset3d, background:"#fff", padding:"8px 12px", flex:1, textAlign:"center" }}>
@@ -1557,15 +1771,83 @@ const InvoicesPage = ({ data, setData }) => {
         </Panel>
       )}
       <RetroTable
-        headers={["請求書","顧客","期日","合計","状態","備考"]}
+        headers={["請求書","顧客","期日","合計","状態","送付","備考"]}
         rows={invoices.map(inv=>[
-          <span style={{color:"#000080",fontWeight:"bold"}}>{inv?.id||"—"}</span>,
+          <span style={{color:"#000080",fontWeight:"bold", cursor:"pointer"}} onClick={()=>openInvoiceModal(inv)}>{inv?.id||"—"}</span>,
           inv?.customerName||"", inv?.dueDate||"",
           <span style={{fontWeight:"bold"}}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
           <StatusPill s={inv?.status}/>,
+          inv?.sentAt ? <span style={{ color:"#006600", fontWeight:"bold" }}>送付済</span> : <span style={{ color:"#808080" }}>未送付</span>,
           <span style={{fontSize:"10px",color:"#808080"}}>{inv?.note||"—"}</span>
         ])}
       />
+
+      {showInvoiceModal && invoiceDraft && (
+        <Modal title={`請求書詳細 ${invoiceDraft.id}`} icon="💴" onClose={()=>setShowInvoiceModal(false)} width={780}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 12px" }}>
+            <Fl label="発行日"><RetroInput type="date" value={invoiceDraft.issueDate || ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), issueDate:e.target.value }))}/></Fl>
+            <Fl label="支払期日"><RetroInput type="date" value={invoiceDraft.dueDate || ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), dueDate:e.target.value }))}/></Fl>
+            <Fl label="金額"><RetroInput type="number" value={invoiceDraft.amount ?? ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), amount:Number(e.target.value)||0 }))}/></Fl>
+            <Fl label="消費税"><RetroInput type="number" value={invoiceDraft.tax ?? ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), tax:Number(e.target.value)||0 }))}/></Fl>
+            <Fl label="合計"><RetroInput type="number" value={invoiceDraft.total ?? ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), total:Number(e.target.value)||0 }))}/></Fl>
+            <Fl label="備考"><RetroInput value={invoiceDraft.note || ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), note:e.target.value }))}/></Fl>
+          </div>
+          <Panel title="明細" icon="📄" style={{ marginTop:"8px" }}>
+            {(invoiceDraft.lineItems || []).map((item)=>(
+              <div key={item.id} style={{ display:"grid", gridTemplateColumns:"2fr 70px 120px 120px auto", gap:"6px", alignItems:"end", marginBottom:"6px" }}>
+                <Fl label="品目"><RetroInput value={item.name || ""} onChange={(e)=>updateLineItem(item.id, "name", e.target.value)}/></Fl>
+                <Fl label="数量"><RetroInput type="number" value={item.qty ?? 0} onChange={(e)=>updateLineItem(item.id, "qty", Number(e.target.value)||0)}/></Fl>
+                <Fl label="単価"><RetroInput type="number" value={item.unitPrice ?? 0} onChange={(e)=>updateLineItem(item.id, "unitPrice", Number(e.target.value)||0)}/></Fl>
+                <Fl label="小計"><RetroInput type="number" value={item.subtotal ?? 0} readOnly/></Fl>
+                <RetroBtn small color="#ffd0d0" onClick={()=>removeLineItem(item.id)}>削除</RetroBtn>
+              </div>
+            ))}
+            <RetroBtn small onClick={addLineItem} color="#d0e0ff">＋明細追加</RetroBtn>
+          </Panel>
+          <div style={{ display:"flex", justifyContent:"space-between", gap:"6px", marginTop:"10px" }}>
+            <div style={{ display:"flex", gap:"6px" }}>
+              <RetroBtn onClick={openPreview}>PDFプレビュー</RetroBtn>
+              <RetroBtn onClick={openMailModal}>メール送付</RetroBtn>
+            </div>
+            <div style={{ display:"flex", gap:"6px" }}>
+              <RetroBtn onClick={()=>setShowInvoiceModal(false)}>キャンセル</RetroBtn>
+              <RetroBtn onClick={saveInvoice} color="#d0e0ff">保存</RetroBtn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {showMailModal && (
+        <Modal title="メール送付" icon="✉️" onClose={()=>setShowMailModal(false)} width={560}>
+          <Fl label="送付先メール"><RetroInput value={mailDraft.to} onChange={(e)=>setMailDraft((v)=>({ ...(v||{}), to:e.target.value }))}/></Fl>
+          <Fl label="件名"><RetroInput value={mailDraft.subject} onChange={(e)=>setMailDraft((v)=>({ ...(v||{}), subject:e.target.value }))}/></Fl>
+          <Fl label="本文"><RetroTextarea value={mailDraft.body} onChange={(e)=>setMailDraft((v)=>({ ...(v||{}), body:e.target.value }))} style={{ minHeight:"140px" }}/></Fl>
+          <div style={{ display:"flex", justifyContent:"space-between", gap:"6px", marginTop:"10px" }}>
+            <RetroBtn onClick={recordSent} color="#d0ffd0">送付記録</RetroBtn>
+            <div style={{ display:"flex", gap:"6px" }}>
+              <RetroBtn onClick={()=>setShowMailModal(false)}>閉じる</RetroBtn>
+              <RetroBtn onClick={openMailer} color="#d0e0ff">メーラーで送る</RetroBtn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {showCompanyModal && (
+        <Modal title="会社情報設定" icon="🏢" onClose={()=>setShowCompanyModal(false)} width={620}>
+          <Fl label="会社名"><RetroInput value={companyDraft.name} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), name:e.target.value }))}/></Fl>
+          <Fl label="住所"><RetroInput value={companyDraft.address} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), address:e.target.value }))}/></Fl>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 12px" }}>
+            <Fl label="電話番号"><RetroInput value={companyDraft.phone} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), phone:e.target.value }))}/></Fl>
+            <Fl label="メール"><RetroInput value={companyDraft.email} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), email:e.target.value }))}/></Fl>
+          </div>
+          <Fl label="振込先"><RetroTextarea value={companyDraft.bankInfo} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), bankInfo:e.target.value }))}/></Fl>
+          <Fl label="印影画像(base64)"><RetroTextarea value={companyDraft.stampImage} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), stampImage:e.target.value }))}/></Fl>
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
+            <RetroBtn onClick={()=>setShowCompanyModal(false)}>キャンセル</RetroBtn>
+            <RetroBtn onClick={saveCompanyInfo} color="#d0e0ff">保存</RetroBtn>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
@@ -1801,6 +2083,7 @@ const TABLE_CONFIG = [
   { key: "bankTransactions", table: "bank_transactions" },
   { key: "events", table: "events" },
   { key: "payables", table: "payables" },
+  { key: "companyInfo", table: "company_info", single: true },
 ];
 
 const createEmptyData = () => ({
@@ -1812,18 +2095,19 @@ const createEmptyData = () => ({
   bankTransactions: [],
   events: [],
   payables: [],
+  companyInfo: null,
 });
 
 const fetchDataFromSupabase = async () => {
   const nextData = createEmptyData();
 
   const results = await Promise.all(
-    TABLE_CONFIG.map(async ({ key, table }) => {
+    TABLE_CONFIG.map(async ({ key, table, single }) => {
       const { data: rows, error } = await supabase
         .from(table)
         .select("id,payload")
         .order("id", { ascending: true });
-      return { key, rows, error };
+      return { key, rows, error, single };
     })
   );
 
@@ -1831,23 +2115,24 @@ const fetchDataFromSupabase = async () => {
     if (result.error) {
       throw result.error;
     }
-    nextData[result.key] = (result.rows || [])
-      .map((row) => row.payload)
-      .filter(Boolean);
+    const payloads = (result.rows || []).map((row) => row.payload).filter(Boolean);
+    nextData[result.key] = result.single ? (payloads[0] || null) : payloads;
   }
 
   return nextData;
 };
 
 const saveDataToSupabase = async (nextData, prevData) => {
-  const jobs = TABLE_CONFIG.map(async ({ key, table }) => {
-    const currentRows = Array.isArray(nextData[key]) ? nextData[key] : [];
-    const previousRows = Array.isArray(prevData[key]) ? prevData[key] : [];
+  const jobs = TABLE_CONFIG.map(async ({ key, table, single }) => {
+    const currentRows = single
+      ? (nextData[key] ? [{ id: nextData[key]?.id || "COMPANY-001", payload: nextData[key] }] : [])
+      : (Array.isArray(nextData[key]) ? nextData[key] : []).filter((row) => row && row.id).map((row) => ({ id: row.id, payload: row }));
+    const previousRows = single
+      ? (prevData[key] ? [{ id: prevData[key]?.id || "COMPANY-001", payload: prevData[key] }] : [])
+      : (Array.isArray(prevData[key]) ? prevData[key] : []).filter((row) => row && row.id).map((row) => ({ id: row.id, payload: row }));
 
     if (currentRows.length > 0) {
-      const upsertRows = currentRows
-        .filter((row) => row && row.id)
-        .map((row) => ({ id: row.id, payload: row }));
+      const upsertRows = currentRows;
       if (upsertRows.length > 0) {
         const { error } = await supabase
           .from(table)
@@ -1917,7 +2202,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
     const load = async () => {
       try {
         const remoteData = await fetchDataFromSupabase();
-        const hasRemoteData = TABLE_CONFIG.some(({ key }) => (remoteData[key] || []).length > 0);
+        const hasRemoteData = TABLE_CONFIG.some(({ key, single }) =>
+          single ? !!remoteData[key] : (remoteData[key] || []).length > 0
+        );
 
         if (!alive) return;
 
