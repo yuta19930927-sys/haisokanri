@@ -199,7 +199,7 @@ const CalendarPage = ({ data, setData }) => {
     { label:"入金予定", color:EVENT_TYPE_COLOR.payment_receive },
     { label:"営業", color:EVENT_TYPE_COLOR.sales },
     { label:"タスク", color:EVENT_TYPE_COLOR.task },
-    { label:"免許更新", color:"#cc6600" },
+    { label:"免許更新", color:"#9933cc" },
     { label:"車検", color:"#cc0099" },
   ];
 
@@ -268,7 +268,7 @@ const CalendarPage = ({ data, setData }) => {
         date: targetDate,
         type: "task",
         title: `免許更新：${driver?.name || ""}`,
-        color: "#cc6600",
+        color: "#9933cc",
         raw: driver,
       }));
     const inspectionItems = vehicles
