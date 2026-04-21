@@ -1548,6 +1548,11 @@ const InvoicesPage = ({ data, setData }) => {
   const [mailDraft, setMailDraft] = useState({ to: "", subject: "", body: "" });
 
   const selectedInvoice = invoices.find((inv) => inv?.id === selectedInvoiceId) || null;
+  const formatJapaneseDate = (dateStr) => {
+    const d = parseDate(dateStr);
+    if (!d) return "未設定";
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  };
   const deliveredNoInv = orders.filter(o=>o?.status==="delivered"&&!invoices.find(i=>i?.orderId===o?.id));
   const createInv = (o) => {
     const tax=Math.round((Number(o?.amount)||0)*0.1);
@@ -1651,12 +1656,51 @@ const InvoicesPage = ({ data, setData }) => {
 
   const buildInvoiceHtml = (inv) => {
     const customer = customers.find((c) => c?.id === inv?.customerId);
-    const lineItems = Array.isArray(inv?.lineItems) ? inv.lineItems : [];
+    const fallbackCompany = {
+      name: "T-LINK",
+      tagline: "LOGISTICS & DELIVERY SOLUTIONS",
+      address: "住所未設定",
+      phone: "電話未設定",
+      email: "メール未設定",
+      bankInfo: {
+        bankName: "－",
+        branch: "－",
+        accountType: "－",
+        accountNumber: "－",
+        accountName: "－",
+      },
+      stampImage: "",
+    };
+    const mergedCompany = {
+      ...fallbackCompany,
+      ...companyInfo,
+      tagline: companyInfo?.tagline || fallbackCompany.tagline,
+    };
+    const parsedBankInfo = (() => {
+      if (companyInfo?.bankInfo && typeof companyInfo.bankInfo === "object") {
+        return { ...fallbackCompany.bankInfo, ...companyInfo.bankInfo };
+      }
+      if (typeof companyInfo?.bankInfo === "string" && companyInfo.bankInfo.trim()) {
+        const text = companyInfo.bankInfo.trim();
+        const parts = text.split(/\s+/);
+        return {
+          bankName: parts[0] || fallbackCompany.bankInfo.bankName,
+          branch: parts[1] || fallbackCompany.bankInfo.branch,
+          accountType: parts[2] || fallbackCompany.bankInfo.accountType,
+          accountNumber: parts[3] || fallbackCompany.bankInfo.accountNumber,
+          accountName: parts.slice(4).join(" ") || fallbackCompany.bankInfo.accountName,
+        };
+      }
+      return fallbackCompany.bankInfo;
+    })();
+    const lineItems = Array.isArray(inv?.lineItems) && inv.lineItems.length > 0
+      ? inv.lineItems
+      : [{ name: "配送料", qty: 1, unitPrice: Number(inv?.amount) || 0, subtotal: Number(inv?.amount) || 0 }];
     const rowsHtml = lineItems
       .map(
         (item) => `
           <tr>
-            <td>${item?.name || ""}</td>
+            <td>${item?.name || "配送料"}</td>
             <td style="text-align:right;">${Number(item?.qty)||0}</td>
             <td style="text-align:right;">¥${(Number(item?.unitPrice)||0).toLocaleString()}</td>
             <td style="text-align:right;">¥${(Number(item?.subtotal)||0).toLocaleString()}</td>
@@ -1664,39 +1708,103 @@ const InvoicesPage = ({ data, setData }) => {
       )
       .join("");
     return `<!doctype html><html><head><meta charset="utf-8"/><title>${inv?.id || "請求書"}</title><style>
-      body{font-family:'Noto Sans JP',sans-serif;padding:24px;color:#222}
-      h1{margin:0 0 12px} table{width:100%;border-collapse:collapse;margin-top:10px}
-      th,td{border:1px solid #ccc;padding:8px;font-size:12px}
-      .meta{display:flex;justify-content:space-between;gap:20px}.box{margin-top:12px}
-      .total{margin-top:12px;width:320px;margin-left:auto}
-      .total td{font-weight:bold}
-      @media print{button{display:none}}
+      @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Noto+Serif+JP:wght@500;700&display=swap');
+      body{font-family:'Noto Sans JP',sans-serif;background:#fff;color:#111;padding:20px;line-height:1.6}
+      .container{max-width:920px;margin:0 auto}
+      .topbar{height:8px;background:linear-gradient(90deg,#111,#c8a96e,#111);margin-bottom:18px}
+      .header{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}
+      .company{font-family:'Noto Serif JP',serif;font-size:34px;letter-spacing:2px}
+      .tagline{font-size:11px;color:#666;letter-spacing:2px}
+      .inv-title{text-align:right}
+      .inv-title .label{font-family:'Noto Serif JP',serif;font-size:30px;letter-spacing:4px}
+      .inv-title .meta{font-size:12px;color:#444}
+      .line{height:3px;background:linear-gradient(90deg,#111,#c8a96e);margin:14px 0 18px}
+      .info{display:flex;justify-content:space-between;gap:24px}
+      .box{flex:1}
+      .label{font-size:11px;color:#c8a96e;letter-spacing:1px;margin-bottom:4px}
+      .name{font-size:18px;font-weight:700}
+      .amount-box{margin:16px 0;padding:12px;border:1px solid #ddd;background:#fff;display:inline-block;min-width:280px}
+      .amount-box .num{font-family:'Noto Serif JP',serif;font-size:30px}
+      table{width:100%;border-collapse:collapse;margin-top:14px}
+      thead th{border-top:2px solid #111;border-bottom:2px solid #111;padding:8px 6px;text-align:left;font-size:12px}
+      tbody td{border-bottom:1px solid #ddd;padding:8px 6px;font-size:12px}
+      .totals{width:340px;margin-left:auto;margin-top:14px}
+      .totals-row{display:flex;justify-content:space-between;padding:4px 0;font-size:13px}
+      .grand{display:flex;justify-content:space-between;align-items:center;border-top:2px solid #111;margin-top:6px;padding-top:8px}
+      .grand .value{font-family:'Noto Serif JP',serif;font-size:28px}
+      .bank{margin-top:18px;background:#f8f6f2;border-left:4px solid #c8a96e;padding:12px}
+      .bank-grid{display:grid;grid-template-columns:120px 1fr;gap:2px 12px;font-size:12px}
+      .note{margin-top:16px;padding-top:10px;border-top:1px dashed #bbb;background:#fafafa;padding-left:8px}
+      .footer{margin-top:20px;text-align:center;font-size:11px;color:#666}
+      .print-bar{margin-bottom:12px;text-align:right}
+      @media print{.print-bar{display:none} body{padding:0.4cm}}
     </style></head><body>
-      <button onclick="window.print()">印刷/PDF保存</button>
-      <h1>請求書</h1>
-      <div class="meta">
-        <div>
-          <div><strong>発行元:</strong> ${companyInfo?.name || ""}</div>
-          <div>${companyInfo?.address || ""}</div>
-          <div>TEL: ${companyInfo?.phone || ""}</div>
-          <div>MAIL: ${companyInfo?.email || ""}</div>
+      <div class="container">
+        <div class="print-bar"><button onclick="window.print()">🖨️ PDF印刷</button></div>
+        <div class="topbar"></div>
+        <div class="header">
+          <div>
+            <div class="company">${mergedCompany.name || fallbackCompany.name}</div>
+            <div class="tagline">${mergedCompany.tagline}</div>
+          </div>
+          <div class="inv-title">
+            <div class="label">請求書</div>
+            <div class="meta">No. ${inv?.id || "—"}</div>
+            <div class="meta">発行日: ${formatJapaneseDate(inv?.issueDate)}</div>
+          </div>
         </div>
-        <div>
-          <div><strong>請求先:</strong> ${inv?.customerName || ""}</div>
-          <div>${customer?.address || ""}</div>
-          <div>MAIL: ${customer?.email || ""}</div>
+        <div class="line"></div>
+
+        <div class="info">
+          <div class="box">
+            <div class="label">請求先</div>
+            <div class="name">${customer?.name || inv?.customerName || "宛先未設定"} 御中</div>
+            <div>${customer?.address || "住所未設定"}</div>
+          </div>
+          <div class="box" style="text-align:right">
+            <div class="label">請求元</div>
+            <div>${mergedCompany.name || fallbackCompany.name}</div>
+            <div>${mergedCompany.address || fallbackCompany.address}</div>
+            <div>TEL: ${mergedCompany.phone || fallbackCompany.phone}</div>
+            <div>MAIL: ${mergedCompany.email || fallbackCompany.email}</div>
+          </div>
         </div>
+
+        <div class="amount-box">
+          <div class="label">ご請求金額</div>
+          <div class="num">¥${(Number(inv?.total)||0).toLocaleString()}</div>
+          <div>お支払期限: ${formatJapaneseDate(inv?.dueDate)}</div>
+        </div>
+
+        <table>
+          <thead><tr><th>品目</th><th style="text-align:right;">数量</th><th style="text-align:right;">単価</th><th style="text-align:right;">金額</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+
+        <div class="totals">
+          <div class="totals-row"><span>小計</span><span>¥${(Number(inv?.amount)||0).toLocaleString()}</span></div>
+          <div class="totals-row"><span>消費税</span><span>¥${(Number(inv?.tax)||0).toLocaleString()}</span></div>
+          <div class="grand"><span>合計</span><span class="value">¥${(Number(inv?.total)||0).toLocaleString()}</span></div>
+        </div>
+
+        <div class="bank">
+          <div class="label">お振込先</div>
+          <div class="bank-grid">
+            <div>銀行名</div><div>${parsedBankInfo.bankName}</div>
+            <div>支店名</div><div>${parsedBankInfo.branch}</div>
+            <div>口座種別</div><div>${parsedBankInfo.accountType}</div>
+            <div>口座番号</div><div>${parsedBankInfo.accountNumber}</div>
+            <div>口座名義</div><div>${parsedBankInfo.accountName}</div>
+          </div>
+        </div>
+
+        <div class="note">
+          <div class="label">備考</div>
+          <div>${(inv?.note || "上記の通りご請求申し上げます。").replace(/\n/g, "<br/>")}</div>
+        </div>
+        ${mergedCompany?.stampImage ? `<div style="margin-top:12px"><img src="${mergedCompany.stampImage}" alt="stamp" style="height:86px"/></div>` : ""}
+        <div class="footer">${mergedCompany.name || fallbackCompany.name} | このたびはご利用ありがとうございます</div>
       </div>
-      <div class="box">請求書番号: ${inv?.id || ""} / 発行日: ${inv?.issueDate || ""} / 支払期日: ${inv?.dueDate || ""}</div>
-      <table><thead><tr><th>品目</th><th>数量</th><th>単価</th><th>小計</th></tr></thead><tbody>${rowsHtml}</tbody></table>
-      <table class="total">
-        <tr><td>小計</td><td style="text-align:right;">¥${(Number(inv?.amount)||0).toLocaleString()}</td></tr>
-        <tr><td>消費税</td><td style="text-align:right;">¥${(Number(inv?.tax)||0).toLocaleString()}</td></tr>
-        <tr><td>合計</td><td style="text-align:right;">¥${(Number(inv?.total)||0).toLocaleString()}</td></tr>
-      </table>
-      <div class="box"><strong>振込先:</strong><br/>${(companyInfo?.bankInfo || "").replace(/\n/g, "<br/>")}</div>
-      <div class="box"><strong>備考:</strong><br/>${(inv?.note || "").replace(/\n/g, "<br/>")}</div>
-      ${companyInfo?.stampImage ? `<div class="box"><img src="${companyInfo.stampImage}" alt="stamp" style="height:80px;"/></div>` : ""}
     </body></html>`;
   };
 
