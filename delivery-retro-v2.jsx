@@ -20,10 +20,10 @@ const initialData = {
     { id:"C003", name:"鈴木食品株式会社", contact:"鈴木 次郎", phone:"052-3456-7890", email:"suzuki@suzukifood.co.jp", address:"愛知県名古屋市中区7-8-9", notes:"冷凍便あり" },
   ],
   orders: [
-    { id:"ORD-001", customerId:"C001", customerName:"株式会社田中商事", deliveryDate:fmt(8), from:"東京都江東区", to:"東京都港区", cargo:"電子部品", weight:"500kg", status:"delivered", amount:45000 },
-    { id:"ORD-002", customerId:"C002", customerName:"山田運輸有限会社", deliveryDate:fmt(12), from:"大阪府堺市", to:"大阪府豊中市", cargo:"食料品", weight:"1200kg", status:"in_transit", amount:68000 },
-    { id:"ORD-003", customerId:"C003", customerName:"鈴木食品株式会社", deliveryDate:fmt(18), from:"名古屋市港区", to:"愛知県一宮市", cargo:"冷凍食品", weight:"800kg", status:"scheduled", amount:52000 },
-    { id:"ORD-004", customerId:"C001", customerName:"株式会社田中商事", deliveryDate:fmt(22), from:"東京都品川区", to:"神奈川県横浜市", cargo:"精密機械", weight:"350kg", status:"pending", amount:38000 },
+    { id:"ORD-001", customerId:"C001", customerName:"株式会社田中商事", deliveryType:"route", deliveryDate:fmt(8), from:"東京都江東区", to:"東京都港区", cargo:"電子部品", weight:"500kg", status:"delivered", amount:45000 },
+    { id:"ORD-002", customerId:"C002", customerName:"山田運輸有限会社", deliveryType:"charter", deliveryDate:fmt(12), from:"大阪府堺市", to:"大阪府豊中市", cargo:"食料品", weight:"1200kg", status:"in_transit", amount:68000 },
+    { id:"ORD-003", customerId:"C003", customerName:"鈴木食品株式会社", deliveryType:"route", deliveryDate:fmt(18), from:"名古屋市港区", to:"愛知県一宮市", cargo:"冷凍食品", weight:"800kg", status:"scheduled", amount:52000 },
+    { id:"ORD-004", customerId:"C001", customerName:"株式会社田中商事", deliveryType:"charter", deliveryDate:fmt(22), from:"東京都品川区", to:"神奈川県横浜市", cargo:"精密機械", weight:"350kg", status:"pending", amount:38000 },
   ],
   drivers: [
     { id:"D001", name:"佐藤 健", license:"大型", status:"available", license_expiry:fmt(28), phone:"090-1111-2222", notes:"ベテランドライバー" },
@@ -177,10 +177,10 @@ const CalendarPage = ({ data, setData }) => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [addDate, setAddDate] = useState("");
   const [newEvent, setNewEvent] = useState({ title:"", type:"task", note:"" });
-  const [newOrder, setNewOrder] = useState({ customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+  const [newOrder, setNewOrder] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   const [editingItem, setEditingItem] = useState(null);
   const [editEvent, setEditEvent] = useState({ id:"", date:"", type:"task", title:"", note:"" });
-  const [editOrder, setEditOrder] = useState({ id:"", customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"", status:"pending" });
+  const [editOrder, setEditOrder] = useState({ id:"", customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"", status:"pending" });
 
   const firstDay = new Date(calYear, calMonth, 1).getDay();
   const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
@@ -211,16 +211,22 @@ const CalendarPage = ({ data, setData }) => {
   const buildDeliveryItems = (targetDate) =>
     orders
       .filter((order) => normalizeDateString(order?.deliveryDate) === targetDate)
-      .map((order) => ({
+      .map((order) => {
+        const driver = drivers.find((d) => d?.id === order?.driverId);
+        const isCharter = order?.deliveryType === "charter";
+        return {
         id: `order-${order?.id || Math.random()}`,
         source: "order",
         sourceId: order?.id,
         date: targetDate,
         type: "delivery",
-        title: `配送：${order?.customerName || "未設定"}`,
-        color: EVENT_TYPE_COLOR.delivery,
+        title: `${isCharter ? "チャーター" : "ルート"}：${order?.customerName || "未設定"}`,
+        subtitle: driver?.name || "未配車",
+        deliveryType: order?.deliveryType || "route",
+        color: isCharter ? "#008800" : "#0000cc",
         raw: order,
-      }));
+      };
+    });
 
   const buildBusinessItems = (targetDate) => {
     const businessEvents = events
@@ -298,7 +304,7 @@ const CalendarPage = ({ data, setData }) => {
     const targetDate = normalizeDateString(dateStr || todayStr);
     setAddDate(targetDate);
     if (calMode === "delivery") {
-      setNewOrder({ customerId:"", deliveryDate:targetDate, from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+      setNewOrder({ customerId:"", deliveryType:"route", deliveryDate:targetDate, from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
     } else {
       setNewEvent({ title:"", type:"task", note:"" });
     }
@@ -313,6 +319,7 @@ const CalendarPage = ({ data, setData }) => {
         id:`ORD-${String(orders.length+1).padStart(3,"0")}`,
         customerId:newOrder.customerId,
         customerName:customer?.name || "",
+        deliveryType:newOrder.deliveryType || "route",
         date:fmt(today.getDate()),
         deliveryDate:normalizeDateString(newOrder.deliveryDate),
         from:newOrder.from,
@@ -349,6 +356,7 @@ const CalendarPage = ({ data, setData }) => {
       setEditOrder({
         id: order?.id || "",
         customerId: order?.customerId || "",
+        deliveryType: order?.deliveryType || "route",
         deliveryDate: normalizeDateString(order?.deliveryDate),
         from: order?.from || "",
         to: order?.to || "",
@@ -382,6 +390,7 @@ const CalendarPage = ({ data, setData }) => {
                 ...order,
                 customerId: editOrder.customerId,
                 customerName: customer?.name || "",
+                deliveryType: editOrder.deliveryType || "route",
                 deliveryDate: normalizeDateString(editOrder.deliveryDate),
                 from: editOrder.from,
                 to: editOrder.to,
@@ -492,7 +501,12 @@ const CalendarPage = ({ data, setData }) => {
                   <div style={{ display:"flex", flexDirection:"column", gap:"1px" }}>
                     {dayItems.slice(0,2).map(item=>(
                       <div key={item.id} style={{ background:item.color, color:"#fff", fontSize:"9px", fontFamily:"monospace", padding:"1px 3px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
-                        {item.title}
+                        <div>{item.title}</div>
+                        {item.source === "order" && (
+                          <div style={{ fontSize:"8px", opacity:0.9 }}>
+                            {item.subtitle || "未配車"}
+                          </div>
+                        )}
                       </div>
                     ))}
                     {dayItems.length>2&&<div style={{ fontSize:"9px", fontFamily:"monospace", color:"#808080" }}>+{dayItems.length-2}件</div>}
@@ -504,7 +518,10 @@ const CalendarPage = ({ data, setData }) => {
 
           {/* Legend */}
           <div style={{ display:"flex", gap:"8px", marginTop:"6px", flexWrap:"wrap" }}>
-            {(calMode === "delivery" ? [{ label:"配送", color:EVENT_TYPE_COLOR.delivery }] : BUSINESS_LEGEND).map((item)=>(
+            {(calMode === "delivery" ? [
+              { label:"ルート配送", color:"#0000cc" },
+              { label:"チャーター便", color:"#008800" },
+            ] : BUSINESS_LEGEND).map((item)=>(
               <div key={item.label} style={{ display:"flex", alignItems:"center", gap:"3px" }}>
                 <div style={{ width:"8px", height:"8px", background:item.color }}/>
                 <span style={{ fontFamily:"monospace", fontSize:"9px" }}>{item.label}</span>
@@ -534,9 +551,20 @@ const CalendarPage = ({ data, setData }) => {
                     <div style={{ width:"10px", height:"10px", background:item.color, flexShrink:0 }}/>
                     <div style={{ flex:1, fontFamily:"monospace", fontSize:"12px" }}>
                       <span style={{ background:item.color, color:"#fff", padding:"1px 6px", fontSize:"10px", marginRight:"6px" }}>
-                        {item.source === "driver" ? "免許更新" : item.source === "vehicle" ? "車検" : EVENT_TYPE_LABEL[item.type] || item.type}
+                        {item.source === "order"
+                          ? item.deliveryType === "charter" ? "チャーター便" : "ルート配送"
+                          : item.source === "driver"
+                            ? "免許更新"
+                            : item.source === "vehicle"
+                              ? "車検"
+                              : EVENT_TYPE_LABEL[item.type] || item.type}
                       </span>
                       {item.title}
+                      {item.source === "order" && (
+                        <div style={{ marginTop:"2px", fontSize:"10px", color:"#404040" }}>
+                          ドライバー：{item.subtitle || "未配車"}
+                        </div>
+                      )}
                     </div>
                     {(item.source === "order" || item.source === "event") && <span style={{ fontSize:"10px", color:"#000080" }}>編集</span>}
                   </div>
@@ -569,6 +597,12 @@ const CalendarPage = ({ data, setData }) => {
                 <RetroSelect value={newOrder.customerId} onChange={(e)=>setNewOrder((v)=>({...v, customerId:e.target.value}))}>
                   <option value="">選択</option>
                   {customers.map((c)=><option key={c?.id||`c-${Math.random()}`} value={c?.id||""}>{c?.name||""}</option>)}
+                </RetroSelect>
+              </Fl>
+              <Fl label="配送種別">
+                <RetroSelect value={newOrder.deliveryType} onChange={(e)=>setNewOrder((v)=>({...v, deliveryType:e.target.value}))}>
+                  <option value="route">ルート配送</option>
+                  <option value="charter">チャーター便</option>
                 </RetroSelect>
               </Fl>
               <Fl label="配達日"><RetroInput type="date" value={newOrder.deliveryDate} onChange={(e)=>setNewOrder((v)=>({...v, deliveryDate:e.target.value}))}/></Fl>
@@ -608,6 +642,12 @@ const CalendarPage = ({ data, setData }) => {
                 <RetroSelect value={editOrder.customerId} onChange={(e)=>setEditOrder((v)=>({...v, customerId:e.target.value}))}>
                   <option value="">選択</option>
                   {customers.map((c)=><option key={c?.id||`c-edit-${Math.random()}`} value={c?.id||""}>{c?.name||""}</option>)}
+                </RetroSelect>
+              </Fl>
+              <Fl label="配送種別">
+                <RetroSelect value={editOrder.deliveryType} onChange={(e)=>setEditOrder((v)=>({...v, deliveryType:e.target.value}))}>
+                  <option value="route">ルート配送</option>
+                  <option value="charter">チャーター便</option>
                 </RetroSelect>
               </Fl>
               <Fl label="配達日"><RetroInput type="date" value={editOrder.deliveryDate} onChange={(e)=>setEditOrder((v)=>({...v, deliveryDate:e.target.value}))}/></Fl>
@@ -901,7 +941,7 @@ const DashboardPage = ({ data, setData, setPage }) => {
 // ===== OTHER PAGES (simplified) =====
 const OrdersPage = ({ data, setData }) => {
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+  const [form, setForm] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   const [search, setSearch] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState(null);
   const [orderEditMode, setOrderEditMode] = useState(false);
@@ -971,9 +1011,9 @@ const OrdersPage = ({ data, setData }) => {
   };
   const handleAdd = () => {
     const c = customers.find(x=>x.id===form.customerId);
-    const o = { id:`ORD-${String(orders.length+1).padStart(3,"0")}`, customerId:form.customerId, customerName:c?.name||"", date:fmt(today.getDate()), deliveryDate:form.deliveryDate, from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, notes:form.notes };
+    const o = { id:`ORD-${String(orders.length+1).padStart(3,"0")}`, customerId:form.customerId, customerName:c?.name||"", deliveryType:form.deliveryType || "route", date:fmt(today.getDate()), deliveryDate:form.deliveryDate, from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, notes:form.notes };
     setData(d=>({ ...d, orders:[o,...(Array.isArray(d?.orders) ? d.orders : [])], events:[...(Array.isArray(d?.events) ? d.events : []),{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
-    setShowModal(false); setForm({ customerId:"", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+    setShowModal(false); setForm({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   };
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
@@ -1015,9 +1055,15 @@ const OrdersPage = ({ data, setData }) => {
         </table>
       </div>
       {showModal&&<Modal title="新規受注登録" icon="📋" onClose={()=>setShowModal(false)}>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px 12px" }}>
           <Fl label="顧客"><RetroSelect value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}><option value="">選択</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</RetroSelect></Fl>
           <Fl label="配達日"><RetroInput type="date" value={form.deliveryDate} onChange={e=>setForm(f=>({...f,deliveryDate:e.target.value}))}/></Fl>
+          <Fl label="配送種別">
+            <RetroSelect value={form.deliveryType} onChange={e=>setForm(f=>({...f,deliveryType:e.target.value}))}>
+              <option value="route">ルート配送</option>
+              <option value="charter">チャーター便</option>
+            </RetroSelect>
+          </Fl>
         </div>
         <Fl label="出発地"><RetroInput value={form.from} onChange={e=>setForm(f=>({...f,from:e.target.value}))}/></Fl>
         <Fl label="配送先"><RetroInput value={form.to} onChange={e=>setForm(f=>({...f,to:e.target.value}))}/></Fl>
@@ -1047,6 +1093,12 @@ const OrdersPage = ({ data, setData }) => {
               </Fl>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
                 <Fl label="配達日"><RetroInput type="date" value={orderDraft?.deliveryDate || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), deliveryDate:e.target.value }))}/></Fl>
+                <Fl label="配送種別">
+                  <RetroSelect value={orderDraft?.deliveryType || "route"} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), deliveryType:e.target.value }))}>
+                    <option value="route">ルート配送</option>
+                    <option value="charter">チャーター便</option>
+                  </RetroSelect>
+                </Fl>
                 <Fl label="状態">
                   <RetroSelect value={orderDraft?.status || "pending"} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), status:e.target.value }))}>
                     <option value="pending">未配車</option>
@@ -1074,6 +1126,7 @@ const OrdersPage = ({ data, setData }) => {
               <Panel>
                 <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontFamily:"monospace", fontSize:"12px" }}>
                   <div>顧客</div><div>{selectedOrder?.customerName || ""}</div>
+                  <div>配送種別</div><div>{selectedOrder?.deliveryType === "charter" ? "チャーター便" : "ルート配送"}</div>
                   <div>配達日</div><div>{selectedOrder?.deliveryDate || ""}</div>
                   <div>出発地</div><div>{selectedOrder?.from || ""}</div>
                   <div>配送先</div><div>{selectedOrder?.to || ""}</div>
