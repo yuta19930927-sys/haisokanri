@@ -12,12 +12,80 @@ const winBg = "#d4d0c8";
 const today = new Date();
 const y = today.getFullYear(), mo = today.getMonth();
 const fmt = (d) => `${y}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+const PAYMENT_SITE_OPTIONS = [
+  "当月末払い",
+  "翌月末払い",
+  "翌々月末払い",
+  "翌月10日払い",
+  "翌月15日払い",
+  "翌月20日払い",
+  "翌月25日払い",
+];
+const CLOSING_DAY_OPTIONS = [5, 10, 15, 20, 25, 31];
+
+const parseDate = (value) => {
+  if (!value) return null;
+  const [yy, mm, dd] = String(value).slice(0, 10).split("-").map(Number);
+  if (!yy || !mm || !dd) return null;
+  return new Date(yy, mm - 1, dd);
+};
+
+const formatDate = (date) => {
+  const yy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+};
+
+const endOfMonth = (year, monthIndex) => new Date(year, monthIndex + 1, 0).getDate();
+
+const calcDueDateByTerms = (deliveredDate, closingDay = 31, paymentSite = "翌月末払い") => {
+  const base = parseDate(deliveredDate) || new Date();
+  const closeDayNum = Number(closingDay) || 31;
+  const closeDay = closeDayNum === 31 ? endOfMonth(base.getFullYear(), base.getMonth()) : closeDayNum;
+  const inCurrentClosing = base.getDate() <= closeDay;
+  const closingMonthOffset = inCurrentClosing ? 0 : 1;
+  const closingYear = base.getFullYear();
+  const closingMonth = base.getMonth() + closingMonthOffset;
+
+  let targetYear = closingYear;
+  let targetMonth = closingMonth;
+  let targetDay = 31;
+
+  if (paymentSite === "当月末払い") {
+    targetDay = 31;
+  } else if (paymentSite === "翌月末払い") {
+    targetMonth += 1;
+    targetDay = 31;
+  } else if (paymentSite === "翌々月末払い") {
+    targetMonth += 2;
+    targetDay = 31;
+  } else if (paymentSite === "翌月10日払い") {
+    targetMonth += 1;
+    targetDay = 10;
+  } else if (paymentSite === "翌月15日払い") {
+    targetMonth += 1;
+    targetDay = 15;
+  } else if (paymentSite === "翌月20日払い") {
+    targetMonth += 1;
+    targetDay = 20;
+  } else if (paymentSite === "翌月25日払い") {
+    targetMonth += 1;
+    targetDay = 25;
+  }
+
+  targetYear += Math.floor(targetMonth / 12);
+  targetMonth %= 12;
+  const lastDay = endOfMonth(targetYear, targetMonth);
+  const safeDay = targetDay === 31 ? lastDay : Math.min(targetDay, lastDay);
+  return formatDate(new Date(targetYear, targetMonth, safeDay));
+};
 
 const initialData = {
   customers: [
-    { id:"C001", name:"株式会社田中商事", contact:"田中 太郎", phone:"03-1234-5678", email:"tanaka@tanakashoji.co.jp", address:"東京都中央区1-2-3", notes:"月末締め翌月払い" },
-    { id:"C002", name:"山田運輸有限会社", contact:"山田 花子", phone:"06-2345-6789", email:"yamada@yamada-unyu.co.jp", address:"大阪府大阪市北区4-5-6", notes:"午前中納品希望" },
-    { id:"C003", name:"鈴木食品株式会社", contact:"鈴木 次郎", phone:"052-3456-7890", email:"suzuki@suzukifood.co.jp", address:"愛知県名古屋市中区7-8-9", notes:"冷凍便あり" },
+    { id:"C001", name:"株式会社田中商事", contact:"田中 太郎", phone:"03-1234-5678", email:"tanaka@tanakashoji.co.jp", address:"東京都中央区1-2-3", notes:"月末締め翌月払い", unitPrice:600, closingDay:31, paymentSite:"翌月末払い" },
+    { id:"C002", name:"山田運輸有限会社", contact:"山田 花子", phone:"06-2345-6789", email:"yamada@yamada-unyu.co.jp", address:"大阪府大阪市北区4-5-6", notes:"午前中納品希望", unitPrice:850, closingDay:15, paymentSite:"翌月15日払い" },
+    { id:"C003", name:"鈴木食品株式会社", contact:"鈴木 次郎", phone:"052-3456-7890", email:"suzuki@suzukifood.co.jp", address:"愛知県名古屋市中区7-8-9", notes:"冷凍便あり", unitPrice:1200, closingDay:20, paymentSite:"翌々月末払い" },
   ],
   orders: [
     { id:"ORD-001", customerId:"C001", customerName:"株式会社田中商事", deliveryType:"route", deliveryDate:fmt(8), from:"東京都江東区", to:"東京都港区", cargo:"電子部品", weight:"500kg", status:"delivered", amount:45000 },
@@ -991,12 +1059,67 @@ const OrdersPage = ({ data, setData }) => {
   const goNextStatus = (orderId, currentStatus) => {
     const next = statusNext[currentStatus];
     if (!next) return;
-    setData((d) => ({
-      ...d,
-      orders: (Array.isArray(d?.orders) ? d.orders : []).map((x) =>
+    setData((d) => {
+      const currentOrders = Array.isArray(d?.orders) ? d.orders : [];
+      const currentInvoices = Array.isArray(d?.invoices) ? d.invoices : [];
+      const currentCustomers = Array.isArray(d?.customers) ? d.customers : [];
+      const targetOrder = currentOrders.find((x) => x?.id === orderId);
+      const nextOrders = currentOrders.map((x) =>
         x?.id === orderId ? { ...x, status: next } : x
-      ),
-    }));
+      );
+
+      if (next !== "delivered" || !targetOrder) {
+        return { ...d, orders: nextOrders };
+      }
+
+      const alreadyExists = currentInvoices.some((inv) => inv?.orderId === orderId);
+      if (alreadyExists) {
+        return { ...d, orders: nextOrders };
+      }
+
+      const customer = currentCustomers.find((c) => c?.id === targetOrder?.customerId);
+      const baseAmount = Number(targetOrder?.amount) || Number(customer?.unitPrice) || 0;
+      const tax = Math.round(baseAmount * 0.1);
+      const issueDate = targetOrder?.deliveryDate || formatDate(new Date());
+      const dueDate = calcDueDateByTerms(
+        issueDate,
+        customer?.closingDay ?? 31,
+        customer?.paymentSite || "翌月末払い"
+      );
+      const nextInvoice = {
+        id:`INV-${String(currentInvoices.length+1).padStart(3,"0")}`,
+        orderId: targetOrder?.id,
+        customerId: targetOrder?.customerId,
+        customerName: targetOrder?.customerName || customer?.name || "",
+        issueDate,
+        dueDate,
+        amount: baseAmount,
+        tax,
+        total: baseAmount + tax,
+        status:"unpaid",
+        bankRef:"",
+        paidDate:null,
+        note:"",
+      };
+      const nextEvents = [
+        ...(Array.isArray(d?.events) ? d.events : []),
+        {
+          id:`EV-INV${Date.now()}`,
+          date: dueDate,
+          type:"payment_due",
+          title:`入金期日：${nextInvoice.customerName}`,
+          color:"#660099",
+          invoiceId: nextInvoice.id,
+        },
+      ];
+
+      return {
+        ...d,
+        orders: nextOrders,
+        invoices: [nextInvoice, ...currentInvoices],
+        events: nextEvents,
+      };
+    });
   };
 
   const goPrevStatus = (orderId, currentStatus) => {
@@ -1056,7 +1179,14 @@ const OrdersPage = ({ data, setData }) => {
       </div>
       {showModal&&<Modal title="新規受注登録" icon="📋" onClose={()=>setShowModal(false)}>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="顧客"><RetroSelect value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}><option value="">選択</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</RetroSelect></Fl>
+          <Fl label="顧客"><RetroSelect value={form.customerId} onChange={e=>{
+            const selectedCustomer = customers.find((c) => c?.id === e.target.value);
+            setForm(f=>({
+              ...f,
+              customerId:e.target.value,
+              amount: selectedCustomer?.unitPrice != null ? String(selectedCustomer.unitPrice) : f.amount,
+            }));
+          }}><option value="">選択</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</RetroSelect></Fl>
           <Fl label="配達日"><RetroInput type="date" value={form.deliveryDate} onChange={e=>setForm(f=>({...f,deliveryDate:e.target.value}))}/></Fl>
           <Fl label="配送種別">
             <RetroSelect value={form.deliveryType} onChange={e=>setForm(f=>({...f,deliveryType:e.target.value}))}>
@@ -1201,16 +1331,16 @@ const CustomersPage = ({ data, setData }) => {
   const customers = Array.isArray(data?.customers) ? data.customers : [];
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ name:"", contact:"", phone:"", email:"", address:"", notes:"" });
+  const [form, setForm] = useState({ name:"", contact:"", phone:"", email:"", address:"", notes:"", unitPrice:"", closingDay:31, paymentSite:"翌月末払い" });
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [customerEditMode, setCustomerEditMode] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(null);
   const selectedCustomer = customers.find((c) => c?.id === selectedCustomerId) || null;
 
   const add = () => {
-    setData(d=>({...d,customers:[...(Array.isArray(d?.customers) ? d.customers : []),{id:`C${String((Array.isArray(d?.customers) ? d.customers.length : 0)+1).padStart(3,"0")}`, ...form}]}));
+    setData(d=>({...d,customers:[...(Array.isArray(d?.customers) ? d.customers : []),{id:`C${String((Array.isArray(d?.customers) ? d.customers.length : 0)+1).padStart(3,"0")}`, ...form, unitPrice:Number(form.unitPrice)||0, closingDay:Number(form.closingDay)||31 }]}));
     setShowModal(false);
-    setForm({name:"",contact:"",phone:"",email:"",address:"",notes:""});
+    setForm({name:"",contact:"",phone:"",email:"",address:"",notes:"",unitPrice:"",closingDay:31,paymentSite:"翌月末払い"});
   };
 
   const openCustomerDetail = (customer) => {
@@ -1253,7 +1383,7 @@ const CustomersPage = ({ data, setData }) => {
         <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"11px" }}>
           <thead>
             <tr style={{ background:"#000080", position:"sticky", top:0 }}>
-              {["ID","会社名","担当者","電話","案件数","累計売上"].map((h)=><th key={h} style={{ color:"#fff", padding:"3px 8px", textAlign:"left", fontWeight:"bold", whiteSpace:"nowrap", borderRight:"1px solid #4040a0" }}>{h}</th>)}
+              {["ID","会社名","担当者","電話","単価","締め日/支払サイト","案件数","累計売上"].map((h)=><th key={h} style={{ color:"#fff", padding:"3px 8px", textAlign:"left", fontWeight:"bold", whiteSpace:"nowrap", borderRight:"1px solid #4040a0" }}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -1265,12 +1395,14 @@ const CustomersPage = ({ data, setData }) => {
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.name||""}</td>
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.contact||""}</td>
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.phone||""}</td>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{(Number(c?.unitPrice)||0).toLocaleString()}</td>
+                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.closingDay===31?"月末":`${c?.closingDay}日`} / {c?.paymentSite||"—"}</td>
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{ords.length}件</td>
                   <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{ords.reduce((s,o)=>s+(Number(o?.amount)||0),0).toLocaleString()}</td>
                 </tr>
               );
             })}
-            {customers.length===0&&<tr><td colSpan={6} style={{ padding:"16px", textAlign:"center", color:"#808080" }}>データなし</td></tr>}
+            {customers.length===0&&<tr><td colSpan={8} style={{ padding:"16px", textAlign:"center", color:"#808080" }}>データなし</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1282,6 +1414,19 @@ const CustomersPage = ({ data, setData }) => {
         </div>
         <Fl label="メール"><RetroInput value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))}/></Fl>
         <Fl label="住所"><RetroInput value={form.address} onChange={e=>setForm(f=>({...f,address:e.target.value}))}/></Fl>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px 12px"}}>
+          <Fl label="単価（円）"><RetroInput type="number" value={form.unitPrice} onChange={e=>setForm(f=>({...f,unitPrice:e.target.value}))}/></Fl>
+          <Fl label="締め日">
+            <RetroSelect value={form.closingDay} onChange={e=>setForm(f=>({...f,closingDay:Number(e.target.value)}))}>
+              {CLOSING_DAY_OPTIONS.map((day)=><option key={day} value={day}>{day===31?"月末(31)":`${day}日`}</option>)}
+            </RetroSelect>
+          </Fl>
+          <Fl label="支払サイト">
+            <RetroSelect value={form.paymentSite} onChange={e=>setForm(f=>({...f,paymentSite:e.target.value}))}>
+              {PAYMENT_SITE_OPTIONS.map((site)=><option key={site} value={site}>{site}</option>)}
+            </RetroSelect>
+          </Fl>
+        </div>
         <Fl label="メモ"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
         <div style={{display:"flex",justifyContent:"flex-end",gap:"6px",marginTop:"8px"}}>
           <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
@@ -1299,6 +1444,19 @@ const CustomersPage = ({ data, setData }) => {
               </div>
               <Fl label="メール"><RetroInput value={customerDraft?.email || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), email:e.target.value }))}/></Fl>
               <Fl label="住所"><RetroInput value={customerDraft?.address || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), address:e.target.value }))}/></Fl>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px 12px"}}>
+                <Fl label="単価（円）"><RetroInput type="number" value={customerDraft?.unitPrice ?? ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), unitPrice:Number(e.target.value)||0 }))}/></Fl>
+                <Fl label="締め日">
+                  <RetroSelect value={customerDraft?.closingDay ?? 31} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), closingDay:Number(e.target.value) }))}>
+                    {CLOSING_DAY_OPTIONS.map((day)=><option key={day} value={day}>{day===31?"月末(31)":`${day}日`}</option>)}
+                  </RetroSelect>
+                </Fl>
+                <Fl label="支払サイト">
+                  <RetroSelect value={customerDraft?.paymentSite || "翌月末払い"} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), paymentSite:e.target.value }))}>
+                    {PAYMENT_SITE_OPTIONS.map((site)=><option key={site} value={site}>{site}</option>)}
+                  </RetroSelect>
+                </Fl>
+              </div>
               <Fl label="メモ"><RetroTextarea value={customerDraft?.notes || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), notes:e.target.value }))}/></Fl>
               <div style={{display:"flex",justifyContent:"flex-end",gap:"6px",marginTop:"8px"}}>
                 <RetroBtn onClick={()=>{ setCustomerEditMode(false); setCustomerDraft(selectedCustomer ? { ...selectedCustomer } : null); }}>キャンセル</RetroBtn>
@@ -1314,6 +1472,9 @@ const CustomersPage = ({ data, setData }) => {
                   <div>電話</div><div>{selectedCustomer?.phone || ""}</div>
                   <div>メール</div><div>{selectedCustomer?.email || ""}</div>
                   <div>住所</div><div>{selectedCustomer?.address || "—"}</div>
+                  <div>単価</div><div>¥{(Number(selectedCustomer?.unitPrice)||0).toLocaleString()}</div>
+                  <div>締め日</div><div>{selectedCustomer?.closingDay===31?"月末":`${selectedCustomer?.closingDay || "—"}日`}</div>
+                  <div>支払サイト</div><div>{selectedCustomer?.paymentSite || "—"}</div>
                   <div>メモ</div><div>{selectedCustomer?.notes || "—"}</div>
                 </div>
               </Panel>
@@ -1336,12 +1497,19 @@ const InvoicesPage = ({ data, setData }) => {
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
   const events = Array.isArray(data?.events) ? data.events : [];
+  const customers = Array.isArray(data?.customers) ? data.customers : [];
   const deliveredNoInv = orders.filter(o=>o?.status==="delivered"&&!invoices.find(i=>i?.orderId===o?.id));
   const createInv = (o) => {
     const tax=Math.round((Number(o?.amount)||0)*0.1);
-    const dueDate=`${y}-${String(mo+1).padStart(2,"0")}-${String(Math.min(today.getDate()+30,28)).padStart(2,"0")}`;
+    const customer = customers.find((c) => c?.id === o?.customerId);
+    const issueDate = o?.deliveryDate || fmt(today.getDate());
+    const dueDate = calcDueDateByTerms(
+      issueDate,
+      customer?.closingDay ?? 31,
+      customer?.paymentSite || "翌月末払い"
+    );
     const baseAmount = Number(o?.amount)||0;
-    const inv={ id:`INV-${String(invoices.length+1).padStart(3,"0")}`, orderId:o?.id, customerId:o?.customerId, customerName:o?.customerName||"", issueDate:fmt(today.getDate()), dueDate, amount:baseAmount, tax, total:baseAmount+tax, status:"unpaid", bankRef:"", paidDate:null, note:"" };
+    const inv={ id:`INV-${String(invoices.length+1).padStart(3,"0")}`, orderId:o?.id, customerId:o?.customerId, customerName:o?.customerName||"", issueDate, dueDate, amount:baseAmount, tax, total:baseAmount+tax, status:"unpaid", bankRef:"", paidDate:null, note:"" };
     setData(d=>({...d, invoices:[inv,...(Array.isArray(d?.invoices) ? d.invoices : [])], events:[...(Array.isArray(d?.events) ? d.events : events),{id:`EV-INV${Date.now()}`,date:dueDate,type:"payment_due",title:`${inv.id} 入金期日：${o?.customerName||""}`,color:"#660099"}] }));
   };
   return (
