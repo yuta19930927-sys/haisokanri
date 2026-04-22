@@ -1109,7 +1109,7 @@ const OrdersPage = ({ data, setData }) => {
   const [orderDraft, setOrderDraft] = useState(null);
   if (!data) {
     return (
-      <div style={{ ...inset3d, background:"#fff", padding:"24px", textAlign:"center", fontFamily:"monospace", fontSize:"12px", color:"#808080" }}>
+      <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", padding:"24px", textAlign:"center", fontSize:"12px", color:"#999" }}>
         読み込み中...
       </div>
     );
@@ -1231,46 +1231,54 @@ const OrdersPage = ({ data, setData }) => {
     setData(d=>({ ...d, orders:[o,...(Array.isArray(d?.orders) ? d.orders : [])], events:[...(Array.isArray(d?.events) ? d.events : []),{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
     setShowModal(false); setForm({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   };
+  const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
+  const nextIcon = <Icon size={12}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></Icon>;
+  const prevIcon = <Icon size={12}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 5,12 12,19"/></Icon>;
+  const orderIcon = <Icon size={14}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></Icon>;
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-      <div style={{ display:"flex", gap:"6px", alignItems:"center" }}>
-        <RetroBtn onClick={()=>setShowModal(true)} color="#d0e0ff">📋 新規受注</RetroBtn>
-        <span style={{ fontFamily:"monospace", fontSize:"11px" }}>検索：</span>
-        <RetroInput value={search} onChange={e=>setSearch(e.target.value)} style={{ width:"200px" }}/>
+    <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+      <div style={{ display:"flex", gap:"10px", alignItems:"center", flexWrap:"wrap" }}>
+        <RetroBtn onClick={()=>setShowModal(true)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}新規受注</RetroBtn>
+        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+          <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>検索</span>
+          <RetroInput value={search} onChange={e=>setSearch(e.target.value)} style={{ width:"240px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
+        </div>
       </div>
-      <div style={{ ...inset3d, background:"#fff", overflow:"auto", maxHeight:"320px" }}>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"11px" }}>
+      <div style={{ border:`1px solid ${UI.border}`, borderRadius:"6px", background:"#fff", overflow:"auto", maxHeight:"320px" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"12px" }}>
           <thead>
-            <tr style={{ background:"#000080", position:"sticky", top:0 }}>
-              {["ID","顧客","荷物","配達日","金額","状態","操作"].map((h)=><th key={h} style={{ color:"#fff", padding:"3px 8px", textAlign:"left", fontWeight:"bold", whiteSpace:"nowrap", borderRight:"1px solid #4040a0" }}>{h}</th>)}
+            <tr style={{ background:"#fafbfc", position:"sticky", top:0 }}>
+              {["ID","顧客","荷物","配達日","金額","状態","操作"].map((h)=><th key={h} style={{ color:"#666", fontSize:"11px", padding:"8px 10px", textAlign:"left", fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder }}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
             {filtered.map((o, index) => (
-              <tr key={o?.id || `order-${index}`} onClick={() => openOrderDetail(o)} style={{ background:index%2===0?"#fff":"#f0f0f8", borderBottom:"1px solid #ddd", cursor:"pointer" }}>
-                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}><span style={{ color:"#000080", fontWeight:"bold" }}>{o?.id||"—"}</span></td>
-                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{o?.customerName||""}</td>
-                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{`${o?.cargo||""}(${o?.weight||""})`}</td>
-                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{o?.deliveryDate||""}</td>
-                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{(Number(o?.amount)||0).toLocaleString()}</td>
-                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}><StatusPill s={o?.status}/></td>
-                <td style={{ padding:"3px 8px", borderRight:"1px solid #eee", whiteSpace:"nowrap" }}>
+              <tr key={o?.id || `order-${index}`} onClick={() => openOrderDetail(o)} style={{ background:"#fff", borderBottom:"1px solid #f0f0f0", cursor:"pointer" }}
+                onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"}
+                onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+                <td style={{ padding:"8px 10px" }}><span style={{ color:"#007a74", fontWeight:700 }}>{o?.id||"—"}</span></td>
+                <td style={{ padding:"8px 10px" }}>{o?.customerName||""}</td>
+                <td style={{ padding:"8px 10px" }}>{`${o?.cargo||""}(${o?.weight||""})`}</td>
+                <td style={{ padding:"8px 10px" }}>{o?.deliveryDate||""}</td>
+                <td style={{ padding:"8px 10px" }}>¥{(Number(o?.amount)||0).toLocaleString()}</td>
+                <td style={{ padding:"8px 10px" }}><StatusPill s={o?.status}/></td>
+                <td style={{ padding:"8px 10px", whiteSpace:"nowrap" }}>
                   <div style={{ display:"flex", gap:"4px" }}>
                     {statusPrev[o?.status] && (
-                      <RetroBtn small onClick={(e)=>{ e.stopPropagation(); goPrevStatus(o?.id, o?.status); }}>←戻る</RetroBtn>
+                      <RetroBtn small onClick={(e)=>{ e.stopPropagation(); goPrevStatus(o?.id, o?.status); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>{prevIcon}戻る</RetroBtn>
                     )}
                     {statusNext[o?.status] && (
-                      <RetroBtn small onClick={(e)=>{ e.stopPropagation(); goNextStatus(o?.id, o?.status); }}>次へ→</RetroBtn>
+                      <RetroBtn small onClick={(e)=>{ e.stopPropagation(); goNextStatus(o?.id, o?.status); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>次へ{nextIcon}</RetroBtn>
                     )}
                   </div>
                 </td>
               </tr>
             ))}
-            {filtered.length===0&&<tr><td colSpan={7} style={{ padding:"16px", textAlign:"center", color:"#808080" }}>データなし</td></tr>}
+            {filtered.length===0&&<tr><td colSpan={7} style={{ padding:"16px", textAlign:"center", color:"#999" }}>データなし</td></tr>}
           </tbody>
         </table>
       </div>
-      {showModal&&<Modal title="新規受注登録" icon="📋" onClose={()=>setShowModal(false)}>
+      {showModal&&<Modal title="新規受注登録" icon={orderIcon} onClose={()=>setShowModal(false)}>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px 12px" }}>
           <Fl label="顧客"><RetroSelect value={form.customerId} onChange={e=>{
             const selectedCustomer = customers.find((c) => c?.id === e.target.value);
@@ -1298,11 +1306,11 @@ const OrdersPage = ({ data, setData }) => {
         <Fl label="備考"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
         <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
           <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
-          <RetroBtn onClick={handleAdd} color="#d0e0ff">　登録する　</RetroBtn>
+          <RetroBtn onClick={handleAdd} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>登録する</RetroBtn>
         </div>
       </Modal>}
       {selectedOrder && (
-        <Modal title={`受注詳細 ${selectedOrder?.id || ""}`} icon="📋" onClose={closeOrderDetail} width={520}>
+        <Modal title={`受注詳細 ${selectedOrder?.id || ""}`} icon={orderIcon} onClose={closeOrderDetail} width={520}>
           {orderEditMode ? (
             <>
               <Fl label="顧客">
@@ -1341,13 +1349,13 @@ const OrdersPage = ({ data, setData }) => {
               <Fl label="備考"><RetroTextarea value={orderDraft?.notes || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), notes:e.target.value }))}/></Fl>
               <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
                 <RetroBtn onClick={()=>{ setOrderEditMode(false); setOrderDraft(selectedOrder ? { ...selectedOrder } : null); }}>キャンセル</RetroBtn>
-                <RetroBtn onClick={saveOrderDetail} color="#d0e0ff">保存</RetroBtn>
+                <RetroBtn onClick={saveOrderDetail} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存</RetroBtn>
               </div>
             </>
           ) : (
             <>
               <Panel>
-                <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontFamily:"monospace", fontSize:"12px" }}>
+                <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
                   <div>顧客</div><div>{selectedOrder?.customerName || ""}</div>
                   <div>配送種別</div><div>{selectedOrder?.deliveryType === "charter" ? "チャーター便" : "ルート配送"}</div>
                   <div>配達日</div><div>{selectedOrder?.deliveryDate || ""}</div>
@@ -1362,7 +1370,7 @@ const OrdersPage = ({ data, setData }) => {
               </Panel>
               <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
                 <RetroBtn onClick={closeOrderDetail}>閉じる</RetroBtn>
-                <RetroBtn onClick={()=>{ setOrderDraft(selectedOrder ? { ...selectedOrder } : null); setOrderEditMode(true); }} color="#d0e0ff">編集</RetroBtn>
+                <RetroBtn onClick={()=>{ setOrderDraft(selectedOrder ? { ...selectedOrder } : null); setOrderEditMode(true); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
               </div>
             </>
           )}
@@ -1385,32 +1393,36 @@ const DispatchPage = ({ data, setData }) => {
     setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(o=>o?.id===sel?{...o,driverId:aD,vehicleId:aV,status:"scheduled"}:o)}));
     setSel(null); setAD(""); setAV("");
   };
+  const warnIcon = <Icon size={14}><path d="M12 3 2.5 20h19L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17"/></Icon>;
+  const truckIcon = <Icon size={14}><rect x="2" y="8" width="15" height="8"/><path d="M17 10h3l2 3v3h-5"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>;
+  const userIcon = <Icon size={12}><circle cx="12" cy="8" r="3"/><path d="M5 20c1.4-3 4-4.5 7-4.5s5.6 1.5 7 4.5"/></Icon>;
+  const checkIcon = <Icon size={12}><polyline points="4,12 9,17 20,6"/></Icon>;
   return (
-    <div style={{ display:"flex", gap:"10px" }}>
+    <div style={{ display:"flex", gap:"12px", flexWrap:"wrap" }}>
       <div style={{ flex:1 }}>
-        <Panel title={`未配車（${pending.length}件）`} icon="⚠">
+        <Panel title={`未配車（${pending.length}件）`} icon={warnIcon}>
           {pending.map(o=>(
-            <div key={o?.id||`pending-${Math.random()}`} onClick={()=>setSel(o?.id===sel?null:o?.id)} style={{ ...inset3d, background:sel===o?.id?"#cce0ff":"#fff", padding:"7px 10px", marginBottom:"5px", cursor:"pointer" }}>
-              <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{o?.id||"—"} — {o?.customerName||""}</div>
-              <div style={{ fontFamily:"monospace", fontSize:"11px", color:"#404040" }}>{o?.cargo||""}（{o?.weight||""}）配達日：{o?.deliveryDate||""}</div>
+            <div key={o?.id||`pending-${Math.random()}`} onClick={()=>setSel(o?.id===sel?null:o?.id)} style={{ border:cardBorder, background:sel===o?.id?"#e8f5f4":"#fff", padding:"8px 10px", marginBottom:"6px", cursor:"pointer", borderRadius:"6px" }}>
+              <div style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>{o?.id||"—"} — {o?.customerName||""}</div>
+              <div style={{ fontSize:"12px", color:"#666" }}>{o?.cargo||""}（{o?.weight||""}）配達日：{o?.deliveryDate||""}</div>
             </div>
           ))}
         </Panel>
-        {sel&&<Panel title="配車アサイン" icon="🚛" style={{ marginTop:"8px", border:"2px solid #000080" }}>
+        {sel&&<Panel title="配車アサイン" icon={truckIcon} style={{ marginTop:"10px" }}>
           <Fl label="ドライバー"><RetroSelect value={aD} onChange={e=>setAD(e.target.value)}><option value="">選択</option>{drivers.filter(d=>d?.status==="available").map(d=><option key={d?.id||`driver-${Math.random()}`} value={d?.id||""}>{d?.name||""}（{d?.license||""}）</option>)}</RetroSelect></Fl>
           <Fl label="車両"><RetroSelect value={aV} onChange={e=>setAV(e.target.value)}><option value="">選択</option>{vehicles.filter(v=>v?.status==="available").map(v=><option key={v?.id||`vehicle-${Math.random()}`} value={v?.id||""}>{v?.plate||""}</option>)}</RetroSelect></Fl>
-          <RetroBtn onClick={doAssign} color="#d0ffd0">🚛 配車確定</RetroBtn>
+          <RetroBtn onClick={doAssign} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{truckIcon}配車確定</RetroBtn>
         </Panel>}
       </div>
       <div style={{ flex:1 }}>
-        <Panel title={`配車済（${scheduled.length}件）`} icon="✓">
+        <Panel title={`配車済（${scheduled.length}件）`} icon={checkIcon}>
           {scheduled.map(o=>{
             const dr=drivers.find(d=>d?.id===o?.driverId); const vh=vehicles.find(v=>v?.id===o?.vehicleId);
-            return <div key={o?.id||`scheduled-${Math.random()}`} style={{ ...inset3d, background:"#f0fff0", padding:"7px 10px", marginBottom:"5px" }}>
-              <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{o?.id||"—"} — {o?.customerName||""}</div>
+            return <div key={o?.id||`scheduled-${Math.random()}`} style={{ border:cardBorder, background:"#fff", padding:"8px 10px", marginBottom:"6px", borderRadius:"6px" }}>
+              <div style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>{o?.id||"—"} — {o?.customerName||""}</div>
               <div style={{ display:"flex", gap:"6px", marginTop:"3px" }}>
-                {dr&&<span style={{ background:"#000080", color:"#fff", fontFamily:"monospace", fontSize:"10px", padding:"1px 6px" }}>👤{dr?.name||""}</span>}
-                {vh&&<span style={{ background:"#006600", color:"#fff", fontFamily:"monospace", fontSize:"10px", padding:"1px 6px" }}>🚛{vh?.plate||""}</span>}
+                {dr&&<span style={{ background:"#e3f2fd", color:"#1565c0", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{userIcon}{dr?.name||""}</span>}
+                {vh&&<span style={{ background:"#e8f5e9", color:"#2e7d32", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{truckIcon}{vh?.plate||""}</span>}
               </div>
             </div>;
           })}
@@ -1476,37 +1488,41 @@ const CustomersPage = ({ data, setData }) => {
     closeCustomerDetail();
   };
 
+  const customerIcon = <Icon size={14}><circle cx="9" cy="8" r="3"/><circle cx="16" cy="9" r="2.5"/><path d="M3 20c1.4-3 3.8-4.5 6-4.5"/><path d="M10 20c1.8-3 4.6-4.5 7-4.5"/></Icon>;
+  const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-      <div><RetroBtn onClick={()=>setShowModal(true)} color="#d0e0ff">👥 顧客追加</RetroBtn></div>
-      <div style={{ ...inset3d, background:"#fff", overflow:"auto", maxHeight:"320px" }}>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"11px" }}>
+      <div><RetroBtn onClick={()=>setShowModal(true)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}顧客追加</RetroBtn></div>
+      <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", overflow:"auto", maxHeight:"320px" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"12px" }}>
           <thead>
-            <tr style={{ background:"#000080", position:"sticky", top:0 }}>
-              {["ID","会社名","担当者","電話","単価","締め日/支払サイト","案件数","累計売上"].map((h)=><th key={h} style={{ color:"#fff", padding:"3px 8px", textAlign:"left", fontWeight:"bold", whiteSpace:"nowrap", borderRight:"1px solid #4040a0" }}>{h}</th>)}
+            <tr style={{ background:"#fafbfc", position:"sticky", top:0 }}>
+              {["ID","会社名","担当者","電話","単価","締め日/支払サイト","案件数","累計売上"].map((h)=><th key={h} style={{ color:"#666", fontSize:"11px", padding:"8px 10px", textAlign:"left", fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder }}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
             {customers.map((c, index) => {
               const ords = orders.filter((o)=>o?.customerId===c?.id);
               return (
-                <tr key={c?.id || `customer-${index}`} onClick={()=>openCustomerDetail(c)} style={{ background:index%2===0?"#fff":"#f0f0f8", borderBottom:"1px solid #ddd", cursor:"pointer" }}>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}><span style={{color:"#000080",fontWeight:"bold"}}>{c?.id||"—"}</span></td>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.name||""}</td>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.contact||""}</td>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{c?.phone||""}</td>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{(Number(c?.unitPrice)||0).toLocaleString()}</td>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{formatClosingDay(c?.closingDay)} / {formatPaymentSite(c?.paymentSite)}</td>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>{ords.length}件</td>
-                  <td style={{ padding:"3px 8px", borderRight:"1px solid #eee" }}>¥{ords.reduce((s,o)=>s+(Number(o?.amount)||0),0).toLocaleString()}</td>
+                <tr key={c?.id || `customer-${index}`} onClick={()=>openCustomerDetail(c)} style={{ background:"#fff", borderBottom:"1px solid #f0f0f0", cursor:"pointer" }}
+                  onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"}
+                  onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+                  <td style={{ padding:"8px 10px" }}><span style={{color:"#007a74",fontWeight:700}}>{c?.id||"—"}</span></td>
+                  <td style={{ padding:"8px 10px" }}>{c?.name||""}</td>
+                  <td style={{ padding:"8px 10px" }}>{c?.contact||""}</td>
+                  <td style={{ padding:"8px 10px" }}>{c?.phone||""}</td>
+                  <td style={{ padding:"8px 10px" }}>¥{(Number(c?.unitPrice)||0).toLocaleString()}</td>
+                  <td style={{ padding:"8px 10px" }}>{formatClosingDay(c?.closingDay)} / {formatPaymentSite(c?.paymentSite)}</td>
+                  <td style={{ padding:"8px 10px" }}>{ords.length}件</td>
+                  <td style={{ padding:"8px 10px" }}>¥{ords.reduce((s,o)=>s+(Number(o?.amount)||0),0).toLocaleString()}</td>
                 </tr>
               );
             })}
-            {customers.length===0&&<tr><td colSpan={8} style={{ padding:"16px", textAlign:"center", color:"#808080" }}>データなし</td></tr>}
+            {customers.length===0&&<tr><td colSpan={8} style={{ padding:"16px", textAlign:"center", color:"#999" }}>データなし</td></tr>}
           </tbody>
         </table>
       </div>
-      {showModal&&<Modal title="顧客追加" icon="👥" onClose={()=>setShowModal(false)}>
+      {showModal&&<Modal title="顧客追加" icon={customerIcon} onClose={()=>setShowModal(false)}>
         <Fl label="会社名"><RetroInput value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></Fl>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 12px"}}>
           <Fl label="担当者"><RetroInput value={form.contact} onChange={e=>setForm(f=>({...f,contact:e.target.value}))}/></Fl>
@@ -1530,11 +1546,11 @@ const CustomersPage = ({ data, setData }) => {
         <Fl label="メモ"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
         <div style={{display:"flex",justifyContent:"flex-end",gap:"6px",marginTop:"8px"}}>
           <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
-          <RetroBtn onClick={add} color="#d0e0ff">　登録する　</RetroBtn>
+          <RetroBtn onClick={add} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>登録する</RetroBtn>
         </div>
       </Modal>}
       {selectedCustomer && (
-        <Modal title={`顧客詳細 ${selectedCustomer?.id || ""}`} icon="👥" onClose={closeCustomerDetail} width={520}>
+        <Modal title={`顧客詳細 ${selectedCustomer?.id || ""}`} icon={customerIcon} onClose={closeCustomerDetail} width={520}>
           {customerEditMode ? (
             <>
               <Fl label="会社名"><RetroInput value={customerDraft?.name || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), name:e.target.value }))}/></Fl>
@@ -1562,13 +1578,13 @@ const CustomersPage = ({ data, setData }) => {
               <Fl label="メモ"><RetroTextarea value={customerDraft?.notes || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), notes:e.target.value }))}/></Fl>
               <div style={{display:"flex",justifyContent:"flex-end",gap:"6px",marginTop:"8px"}}>
                 <RetroBtn onClick={()=>{ setCustomerEditMode(false); setCustomerDraft(selectedCustomer ? { ...selectedCustomer } : null); }}>キャンセル</RetroBtn>
-                <RetroBtn onClick={saveCustomer} color="#d0e0ff">保存</RetroBtn>
+                <RetroBtn onClick={saveCustomer} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存</RetroBtn>
               </div>
             </>
           ) : (
             <>
               <Panel>
-                <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontFamily:"monospace", fontSize:"12px" }}>
+                <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
                   <div>会社名</div><div>{selectedCustomer?.name || ""}</div>
                   <div>担当者</div><div>{selectedCustomer?.contact || ""}</div>
                   <div>電話</div><div>{selectedCustomer?.phone || ""}</div>
@@ -1581,10 +1597,10 @@ const CustomersPage = ({ data, setData }) => {
                 </div>
               </Panel>
               <div style={{display:"flex",justifyContent:"space-between",gap:"6px",marginTop:"8px"}}>
-                <RetroBtn color="#ffd0d0" onClick={()=>deleteCustomer(selectedCustomer?.id)}>削除</RetroBtn>
+                <RetroBtn style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }} onClick={()=>deleteCustomer(selectedCustomer?.id)}>削除</RetroBtn>
                 <div style={{ display:"flex", gap:"6px" }}>
                   <RetroBtn onClick={closeCustomerDetail}>閉じる</RetroBtn>
-                  <RetroBtn onClick={()=>{ setCustomerDraft(selectedCustomer ? { ...selectedCustomer } : null); setCustomerEditMode(true); }} color="#d0e0ff">編集</RetroBtn>
+                  <RetroBtn onClick={()=>{ setCustomerDraft(selectedCustomer ? { ...selectedCustomer } : null); setCustomerEditMode(true); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
                 </div>
               </div>
             </>
@@ -2083,30 +2099,35 @@ const DriversPage = ({ data, setData }) => {
       drivers: (Array.isArray(d?.drivers) ? d.drivers : []).filter((driver) => driver?.id !== id),
     }));
   };
+  const driverIcon = <Icon size={14}><circle cx="12" cy="8" r="3.5"/><path d="M5 20c1.4-3.2 4.2-4.8 7-4.8s5.6 1.6 7 4.8"/></Icon>;
+  const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
       <div>
-        <RetroBtn onClick={openAdd} color="#d0e0ff">👤 ドライバー追加</RetroBtn>
+        <RetroBtn onClick={openAdd} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}ドライバー追加</RetroBtn>
       </div>
       <RetroTable
         headers={["ID","氏名","免許種別","免許更新日","電話","状態","メモ","操作"]}
         rows={drivers.map((driver)=>[
-          <span style={{ color:"#000080", fontWeight:"bold" }}>{driver?.id || "—"}</span>,
-          driver?.name || "",
+          <span style={{ color:"#007a74", fontWeight:700 }}>{driver?.id || "—"}</span>,
+          <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+            <div style={{ width:"24px", height:"24px", borderRadius:"50%", background:"#e8f5f4", color:"#00a09a", display:"grid", placeItems:"center", fontWeight:700, fontSize:"11px" }}>{(driver?.name || "?").slice(0,1)}</div>
+            <span>{driver?.name || ""}</span>
+          </div>,
           driver?.license || "",
-          driver?.license_expiry || "",
+          <span style={{ color:"#555", fontWeight:600 }}>{driver?.license_expiry || "未設定"}</span>,
           driver?.phone || "",
           <StatusPill s={driver?.status}/>,
-          <span style={{ fontSize:"10px", color:"#808080" }}>{driver?.notes || "—"}</span>,
+          <span style={{ fontSize:"11px", color:"#888" }}>{driver?.notes || "—"}</span>,
           <div style={{ display:"flex", gap:"4px" }}>
-            <RetroBtn small onClick={()=>openEdit(driver)}>編集</RetroBtn>
-            <RetroBtn small color="#ffd0d0" onClick={()=>deleteDriver(driver?.id)}>削除</RetroBtn>
+            <RetroBtn small onClick={()=>openEdit(driver)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
+            <RetroBtn small onClick={()=>deleteDriver(driver?.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
           </div>
         ])}
       />
       {showModal && (
-        <Modal title={editingId ? "ドライバー編集" : "ドライバー追加"} icon="👤" onClose={()=>setShowModal(false)} width={460}>
+        <Modal title={editingId ? "ドライバー編集" : "ドライバー追加"} icon={driverIcon} onClose={()=>setShowModal(false)} width={460}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
             <Fl label="氏名"><RetroInput value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></Fl>
             <Fl label="免許種別">
@@ -2118,7 +2139,7 @@ const DriversPage = ({ data, setData }) => {
             </Fl>
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-            <Fl label="免許更新日"><RetroInput type="date" value={form.license_expiry} onChange={e=>setForm(f=>({...f,license_expiry:e.target.value}))}/></Fl>
+            <Fl label="免許更新日（有効期限）"><RetroInput type="date" value={form.license_expiry} onChange={e=>setForm(f=>({...f,license_expiry:e.target.value}))}/></Fl>
             <Fl label="電話"><RetroInput value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></Fl>
           </div>
           <Fl label="状態">
@@ -2131,7 +2152,7 @@ const DriversPage = ({ data, setData }) => {
           <Fl label="メモ"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
             <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
-            <RetroBtn onClick={saveDriver} color="#d0e0ff">　保存する　</RetroBtn>
+            <RetroBtn onClick={saveDriver} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存する</RetroBtn>
           </div>
         </Modal>
       )}
@@ -2191,35 +2212,37 @@ const VehiclesPage = ({ data, setData }) => {
       vehicles: (Array.isArray(d?.vehicles) ? d.vehicles : []).filter((vehicle) => vehicle?.id !== id),
     }));
   };
+  const vehicleIcon = <Icon size={14}><rect x="3" y="9" width="18" height="7" rx="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>;
+  const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
       <div>
-        <RetroBtn onClick={openAdd} color="#d0e0ff">🚗 車両追加</RetroBtn>
+        <RetroBtn onClick={openAdd} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}車両追加</RetroBtn>
       </div>
       <RetroTable
         headers={["ID","ナンバー","車種","車検日","状態","メモ","操作"]}
         rows={vehicles.map((vehicle)=>[
-          <span style={{ color:"#000080", fontWeight:"bold" }}>{vehicle?.id || "—"}</span>,
+          <span style={{ color:"#007a74", fontWeight:700 }}>{vehicle?.id || "—"}</span>,
           vehicle?.plate || "",
           vehicle?.type || "",
-          vehicle?.nextInspection || "",
+          <span style={{ color:"#555", fontWeight:600 }}>{vehicle?.nextInspection || "未設定"}</span>,
           <StatusPill s={vehicle?.status}/>,
-          <span style={{ fontSize:"10px", color:"#808080" }}>{vehicle?.notes || "—"}</span>,
+          <span style={{ fontSize:"11px", color:"#888" }}>{vehicle?.notes || "—"}</span>,
           <div style={{ display:"flex", gap:"4px" }}>
-            <RetroBtn small onClick={()=>openEdit(vehicle)}>編集</RetroBtn>
-            <RetroBtn small color="#ffd0d0" onClick={()=>deleteVehicle(vehicle?.id)}>削除</RetroBtn>
+            <RetroBtn small onClick={()=>openEdit(vehicle)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
+            <RetroBtn small onClick={()=>deleteVehicle(vehicle?.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
           </div>
         ])}
       />
       {showModal && (
-        <Modal title={editingId ? "車両編集" : "車両追加"} icon="🚗" onClose={()=>setShowModal(false)} width={460}>
+        <Modal title={editingId ? "車両編集" : "車両追加"} icon={vehicleIcon} onClose={()=>setShowModal(false)} width={460}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
             <Fl label="ナンバー"><RetroInput value={form.plate} onChange={e=>setForm(f=>({...f,plate:e.target.value}))}/></Fl>
             <Fl label="車種"><RetroInput value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))}/></Fl>
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-            <Fl label="車検日"><RetroInput type="date" value={form.nextInspection} onChange={e=>setForm(f=>({...f,nextInspection:e.target.value}))}/></Fl>
+            <Fl label="車検日（次回）"><RetroInput type="date" value={form.nextInspection} onChange={e=>setForm(f=>({...f,nextInspection:e.target.value}))}/></Fl>
             <Fl label="状態">
               <RetroSelect value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>
                 <option value="available">待機中</option>
@@ -2231,7 +2254,7 @@ const VehiclesPage = ({ data, setData }) => {
           <Fl label="メモ"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
             <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
-            <RetroBtn onClick={saveVehicle} color="#d0e0ff">　保存する　</RetroBtn>
+            <RetroBtn onClick={saveVehicle} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存する</RetroBtn>
           </div>
         </Modal>
       )}
