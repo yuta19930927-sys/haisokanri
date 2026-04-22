@@ -67,7 +67,7 @@ const tabBtn = (active) => ({
   fontSize: "13px",
 });
 
-const AUTH_INIT_TIMEOUT_MS = 30000;
+const SESSION_INIT_TIMEOUT_MS = 15000;
 
 function withTimeout(promise, ms) {
   return new Promise((resolve, reject) => {
@@ -160,7 +160,7 @@ export default function App() {
 
     (async () => {
       try {
-        const res = await withTimeout(supabase.auth.getSession(), AUTH_INIT_TIMEOUT_MS);
+        const res = await withTimeout(supabase.auth.getSession(), SESSION_INIT_TIMEOUT_MS);
         if (cancelled) return;
         if (res.error) throw res.error;
         const s = res.data?.session ?? null;
@@ -213,13 +213,10 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      const { data, error: signErr } = await withTimeout(
-        supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        }),
-        AUTH_INIT_TIMEOUT_MS
-      );
+      const { data, error: signErr } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
       if (signErr) throw signErr;
 
       const p = await loadProfile(data.user.id);
@@ -239,7 +236,10 @@ export default function App() {
       setSession(data.session);
       setPassword("");
     } catch (err) {
-      setError(err.message || String(err));
+      const msg = err?.message && err.message !== "timeout"
+        ? err.message
+        : "ログインに失敗しました。メールアドレスとパスワードをご確認ください。";
+      setError(msg);
     } finally {
       setBusy(false);
     }
