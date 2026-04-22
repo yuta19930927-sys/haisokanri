@@ -67,7 +67,7 @@ const tabBtn = (active) => ({
   fontSize: "13px",
 });
 
-const AUTH_INIT_TIMEOUT_MS = 5000;
+const AUTH_INIT_TIMEOUT_MS = 30000;
 
 function withTimeout(promise, ms) {
   return new Promise((resolve, reject) => {
