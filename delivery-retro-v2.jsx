@@ -399,7 +399,7 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
         date: targetDate,
         type: event?.type || "task",
         title: event?.title || "",
-        color: event?.color || EVENT_TYPE_COLOR[event?.type] || "#808080",
+        color: event?.color || EVENT_TYPE_COLOR[event?.type] || "#999",
         raw: event,
       }));
     const invoiceItems = invoices
@@ -502,7 +502,7 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
         date:normalizeDateString(addDate),
         type:newEvent.type,
         title:newEvent.title,
-        color:EVENT_TYPE_COLOR[newEvent.type]||"#808080",
+        color:EVENT_TYPE_COLOR[newEvent.type]||"#999",
         note:newEvent.note,
       };
       setData((d) => ({ ...d, events:[...(Array.isArray(d?.events) ? d.events : []), nextEvent] }));
@@ -585,7 +585,7 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
                 type: editEvent.type,
                 title: editEvent.title,
                 note: editEvent.note,
-                color: EVENT_TYPE_COLOR[editEvent.type] || "#808080",
+                color: EVENT_TYPE_COLOR[editEvent.type] || "#999",
               }
             : ev
         ),
@@ -614,33 +614,33 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
 
   const prevMonth = () => { if(calMonth===0){setCalYear(y=>y-1);setCalMonth(11);}else setCalMonth(m=>m-1); };
   const nextMonth = () => { if(calMonth===11){setCalYear(y=>y+1);setCalMonth(0);}else setCalMonth(m=>m+1); };
+  const calendarIcon = <Icon size={14}><rect x="3" y="4" width="18" height="18"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></Icon>;
+  const listIcon = <Icon size={14}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></Icon>;
+  const editIcon = <Icon size={12}><path d="M12 20h9"/><path d="m16.5 3.5 4 4L7 21l-4 1 1-4Z"/></Icon>;
+  const leftIcon = <Icon size={12}><polyline points="15,18 9,12 15,6"/></Icon>;
+  const rightIcon = <Icon size={12}><polyline points="9,18 15,12 9,6"/></Icon>;
+  const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
+  const modalEditIcon = <Icon size={14}><path d="M12 20h9"/><path d="m16.5 3.5 4 4L7 21l-4 1 1-4Z"/></Icon>;
 
   return (
-    <div style={{ display:"flex", flexDirection:isMobile?"column":"row", gap:"10px" }}>
-      {/* Left: Calendar */}
-      <div style={{ flex:"0 0 auto", width:isMobile?"100%":"420px" }}>
-        <Panel title={`${calYear}年${calMonth+1}月`} icon="📅" style={{ marginBottom:"8px" }}>
-          <div style={{ display:"flex", gap:"6px", marginBottom:"8px" }}>
-            <RetroBtn onClick={()=>setCalMode("delivery")} color={calMode==="delivery" ? "#c0c0c0" : winBg} style={calMode==="delivery" ? pressed : raised}>配送カレンダー</RetroBtn>
-            <RetroBtn onClick={()=>setCalMode("business")} color={calMode==="business" ? "#c0c0c0" : winBg} style={calMode==="business" ? pressed : raised}>業務カレンダー</RetroBtn>
+    <div style={{ display:"flex", flexDirection:isMobile?"column":"row", gap:"12px" }}>
+      <div style={{ flex:"0 0 auto", width:isMobile?"100%":"440px" }}>
+        <Panel title={`${calYear}年${calMonth+1}月`} icon={calendarIcon} style={{ marginBottom:"8px" }}>
+          <div style={{ display:"flex", gap:"8px", marginBottom:"10px" }}>
+            <button onClick={()=>setCalMode("delivery")} style={{ border:"1px solid #d0d0d0", borderRadius:"3px", padding:"7px 12px", background:calMode==="delivery"?"#00a09a":"#fff", color:calMode==="delivery"?"#fff":"#555", fontSize:"13px", fontWeight:600, cursor:"pointer" }}>配送カレンダー</button>
+            <button onClick={()=>setCalMode("business")} style={{ border:"1px solid #d0d0d0", borderRadius:"3px", padding:"7px 12px", background:calMode==="business"?"#00a09a":"#fff", color:calMode==="business"?"#fff":"#555", fontSize:"13px", fontWeight:600, cursor:"pointer" }}>業務カレンダー</button>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"8px" }}>
-            <RetroBtn onClick={prevMonth}>◀</RetroBtn>
-            <span style={{ fontFamily:"monospace", fontSize:"13px", fontWeight:"bold", flex:1, textAlign:"center" }}>{calYear}年 {calMonth+1}月</span>
-            <RetroBtn onClick={nextMonth}>▶</RetroBtn>
+          <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"10px" }}>
+            <RetroBtn small onClick={prevMonth} style={{ background:"#fff", borderColor:"#d0d0d0", color:"#666" }}>{leftIcon}</RetroBtn>
+            <span style={{ fontSize:"16px", fontWeight:600, flex:1, textAlign:"center", color:"#222" }}>{calYear}年 {calMonth+1}月</span>
+            <RetroBtn small onClick={nextMonth} style={{ background:"#fff", borderColor:"#d0d0d0", color:"#666" }}>{rightIcon}</RetroBtn>
           </div>
 
-          {/* Weekday headers */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:"1px", marginBottom:"2px" }}>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:"1px", marginBottom:"2px", border:"1px solid #e8e8e8", borderRadius:"4px", overflow:"hidden" }}>
             {["日","月","火","水","木","金","土"].map((w,i)=>(
-              <div key={w} style={{ textAlign:"center", fontSize:"11px", fontWeight:"bold", fontFamily:"monospace",
-                color:i===0?"#cc0000":i===6?"#0000cc":"#000", padding:"2px 0" }}>{w}</div>
+              <div key={w} style={{ textAlign:"center", fontSize:"12px", fontWeight:600, color:i===0?"#e63946":i===6?"#2196f3":"#666", padding:"6px 0", background:"#fafbfc" }}>{w}</div>
             ))}
-          </div>
-
-          {/* Days grid */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:"1px" }}>
-            {Array.from({length:firstDay}).map((_,i)=><div key={`e${i}`} style={{ background:"#c8c8c8", minHeight:"54px" }}/>)}
+            {Array.from({length:firstDay}).map((_,i)=><div key={`e${i}`} style={{ background:"#f6f6f6", minHeight:isMobile?"54px":"68px", borderTop:"1px solid #e8e8e8" }}/>)}
             {Array.from({length:daysInMonth}).map((_,i)=>{
               const d = i+1;
               const ds = getDayStr(d);
@@ -650,108 +650,77 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
               const dow = (firstDay+i)%7;
               return (
                 <div key={d} onClick={()=>setSelectedDate(ds===selectedDate?null:ds)}
-                  style={{ background:isSelected?"#cce0ff":isToday?"#ffffc0":"#fff",
-                    ...inset3d, minHeight:isMobile?"44px":"54px", cursor:"pointer", padding:"2px", overflow:"hidden",
-                    outline:isSelected?"2px solid #000080":"none" }}>
-                  <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:isToday?"bold":"normal",
-                    color:dow===0?"#cc0000":dow===6?"#0000cc":"#000",
-                    display:"flex", alignItems:"center", gap:"2px" }}>
-                    {isToday&&<span style={{ background:"#000080", color:"#fff", fontSize:"9px", padding:"0 2px" }}>今日</span>}
+                  style={{ background:isSelected?"#cce0ff":isToday?"#e8f5f4":"#fff", borderTop:"1px solid #e8e8e8", borderLeft:"1px solid #e8e8e8",
+                    minHeight:isMobile?"54px":"68px", cursor:"pointer", padding:"4px", overflow:"hidden", borderColor:isSelected?"#00a09a":"#e8e8e8" }}>
+                  <div style={{ fontSize:"11px", fontWeight:isToday?700:500, color:dow===0?"#e63946":dow===6?"#2196f3":"#333", display:"flex", alignItems:"center", gap:"4px" }}>
+                    {isToday&&<span style={{ background:"#00a09a", color:"#fff", fontSize:"9px", padding:"0 4px", borderRadius:"2px" }}>今日</span>}
                     {d}
                   </div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:"1px" }}>
-                    {(isMobile ? [{ id:`count-${ds}`, title:`${dayItems.length}件`, color:"#808080", source:"count" }] : dayItems.slice(0,2)).map(item=>(
-                      <div key={item.id} style={{ background:item.color, color:"#fff", fontSize:"9px", fontFamily:"monospace", padding:"1px 3px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
+                  <div style={{ display:"flex", flexDirection:"column", gap:"2px", marginTop:"2px" }}>
+                    {(isMobile ? [{ id:`count-${ds}`, title:`${dayItems.length}件`, color:"#999", source:"count" }] : dayItems.slice(0,2)).map(item=>(
+                      <div key={item.id} style={{ background:item.color, color:"#fff", fontSize:"9px", padding:"1px 4px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis", borderRadius:"2px" }}>
                         <div>{item.title}</div>
-                        {item.source === "order" && !isMobile && (
-                          <div style={{ fontSize:"8px", opacity:0.9 }}>
-                            {item.subtitle || "未配車"}
-                          </div>
-                        )}
+                        {item.source === "order" && !isMobile && <div style={{ fontSize:"8px", opacity:0.9 }}>{item.subtitle || "未配車"}</div>}
                       </div>
                     ))}
-                    {!isMobile && dayItems.length>2&&<div style={{ fontSize:"9px", fontFamily:"monospace", color:"#808080" }}>+{dayItems.length-2}件</div>}
+                    {!isMobile && dayItems.length>2&&<div style={{ fontSize:"9px", color:"#999" }}>+{dayItems.length-2}件</div>}
                   </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Legend */}
-          <div style={{ display:"flex", gap:"8px", marginTop:"6px", flexWrap:"wrap" }}>
-            {(calMode === "delivery" ? [
-              { label:"ルート配送", color:"#0000cc" },
-              { label:"チャーター便", color:"#008800" },
-            ] : BUSINESS_LEGEND).map((item)=>(
-              <div key={item.label} style={{ display:"flex", alignItems:"center", gap:"3px" }}>
-                <div style={{ width:"8px", height:"8px", background:item.color }}/>
-                <span style={{ fontFamily:"monospace", fontSize:"9px" }}>{item.label}</span>
+          <div style={{ display:"flex", gap:"8px", marginTop:"8px", flexWrap:"wrap", border:"1px solid #e8e8e8", borderRadius:"4px", padding:"6px" }}>
+            {(calMode === "delivery" ? [{ label:"ルート配送", color:"#0000cc" },{ label:"チャーター便", color:"#008800" }] : BUSINESS_LEGEND).map((item)=>(
+              <div key={item.label} style={{ display:"flex", alignItems:"center", gap:"4px" }}>
+                <div style={{ width:"8px", height:"8px", background:item.color, borderRadius:"50%" }}/>
+                <span style={{ fontSize:"10px", color:"#666" }}>{item.label}</span>
               </div>
             ))}
           </div>
         </Panel>
       </div>
 
-      {/* Right: Day detail */}
       <div style={{ flex:1 }}>
         {selectedDate ? (
-          <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+          <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-              <div style={{ fontFamily:"monospace", fontSize:"14px", fontWeight:"bold" }}>
-                📅 {selectedDate} の{calMode === "delivery" ? "配送予定" : "業務予定"}
-              </div>
-              <RetroBtn onClick={()=>openAddModal(selectedDate)} color="#d0e0ff">
-                ＋この日に予定を追加
-              </RetroBtn>
+              <div style={{ fontSize:"15px", fontWeight:700, color:"#222", display:"flex", alignItems:"center", gap:"6px" }}>{calendarIcon}{selectedDate} の{calMode === "delivery" ? "配送予定" : "業務予定"}</div>
+              <RetroBtn onClick={()=>openAddModal(selectedDate)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}この日に予定を追加</RetroBtn>
             </div>
 
             {selectedItems.length>0&&(
-              <Panel title={calMode === "delivery" ? "配送予定一覧" : "業務予定一覧"} icon="📋">
+              <Panel title={calMode === "delivery" ? "配送予定一覧" : "業務予定一覧"} icon={listIcon}>
                 {selectedItems.map(item=>(
-                  <div key={item.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"5px 0", borderBottom:"1px solid #ddd", cursor:"pointer" }} onClick={() => openEditModal(item)}>
-                    <div style={{ width:"10px", height:"10px", background:item.color, flexShrink:0 }}/>
-                    <div style={{ flex:1, fontFamily:"monospace", fontSize:"12px" }}>
-                      <span style={{ background:item.color, color:"#fff", padding:"1px 6px", fontSize:"10px", marginRight:"6px" }}>
-                        {item.source === "order"
-                          ? item.deliveryType === "charter" ? "チャーター便" : "ルート配送"
-                          : item.source === "driver"
-                            ? "免許更新"
-                            : item.source === "vehicle"
-                              ? "車検"
-                              : EVENT_TYPE_LABEL[item.type] || item.type}
+                  <div key={item.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 10px", border:"1px solid #e8e8e8", borderLeft:`4px solid ${item.color}`, borderRadius:"4px", background:"#fff", cursor:"pointer", marginBottom:"6px" }} onClick={() => openEditModal(item)}>
+                    <div style={{ flex:1, fontSize:"12px" }}>
+                      <span style={{ background:item.color, color:"#fff", padding:"2px 6px", fontSize:"10px", marginRight:"6px", borderRadius:"2px" }}>
+                        {item.source === "order" ? item.deliveryType === "charter" ? "チャーター便" : "ルート配送" : item.source === "driver" ? "免許更新" : item.source === "vehicle" ? "車検" : EVENT_TYPE_LABEL[item.type] || item.type}
                       </span>
                       {item.title}
-                      {item.source === "order" && (
-                        <div style={{ marginTop:"2px", fontSize:"10px", color:"#404040" }}>
-                          ドライバー：{item.subtitle || "未配車"}
-                        </div>
-                      )}
+                      {item.source === "order" && <div style={{ marginTop:"2px", fontSize:"10px", color:"#666" }}>ドライバー：{item.subtitle || "未配車"}</div>}
                     </div>
-                    {(item.source === "order" || item.source === "event") && <span style={{ fontSize:"10px", color:"#000080" }}>編集</span>}
+                    {(item.source === "order" || item.source === "event") && <span style={{ fontSize:"10px", color:"#00a09a", display:"inline-flex", alignItems:"center", gap:"3px" }}>{editIcon}編集</span>}
                   </div>
                 ))}
               </Panel>
             )}
 
             {selectedItems.length===0&&(
-              <div style={{ ...inset3d, background:"#fff", padding:"24px", textAlign:"center", fontFamily:"monospace", fontSize:"12px", color:"#808080" }}>
+              <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", padding:"24px", textAlign:"center", fontSize:"12px", color:"#999" }}>
                 この日の予定・記録はありません<br/>
-                <RetroBtn onClick={()=>openAddModal(selectedDate)} color="#d0e0ff" style={{ marginTop:"10px" }}>＋予定を追加する</RetroBtn>
+                <RetroBtn onClick={()=>openAddModal(selectedDate)} style={{ marginTop:"10px", background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}予定を追加する</RetroBtn>
               </div>
             )}
           </div>
         ) : (
-          <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-            <div style={{ fontFamily:"monospace", fontSize:"11px", color:"#808080", textAlign:"center" }}>
-              カレンダーの日付をクリックすると詳細が表示されます
-            </div>
-          </div>
+          <div style={{ fontSize:"12px", color:"#999", textAlign:"center", marginTop:"20px" }}>カレンダーの日付をクリックすると詳細が表示されます</div>
         )}
       </div>
 
       {/* Add event modal */}
       {showAddModal&&(
-        <Modal title={calMode === "delivery" ? "配送予定追加" : "業務予定追加"} icon="📅" onClose={()=>setShowAddModal(false)} width={420}>
+        <Modal title={calMode === "delivery" ? "配送予定追加" : "業務予定追加"} icon={calendarIcon} onClose={()=>setShowAddModal(false)} width={420}>
           {calMode === "delivery" ? (
             <>
               <Fl label="顧客">
@@ -790,13 +759,13 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
           )}
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"10px" }}>
             <RetroBtn onClick={()=>setShowAddModal(false)}>キャンセル</RetroBtn>
-            <RetroBtn onClick={saveNewItem} color="#d0e0ff">　追加する　</RetroBtn>
+            <RetroBtn onClick={saveNewItem} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>追加する</RetroBtn>
           </div>
         </Modal>
       )}
 
       {showEditModal&&editingItem&&(
-        <Modal title="予定編集" icon="📝" onClose={()=>{setShowEditModal(false);setEditingItem(null);}} width={420}>
+        <Modal title="予定編集" icon={modalEditIcon} onClose={()=>{setShowEditModal(false);setEditingItem(null);}} width={420}>
           {editingItem.source === "order" ? (
             <>
               <Fl label="顧客">
@@ -833,17 +802,17 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
               <Fl label="メモ"><RetroTextarea value={editEvent.note} onChange={(e)=>setEditEvent((v)=>({...v, note:e.target.value}))}/></Fl>
             </>
           ) : (
-            <div style={{ fontFamily:"monospace", fontSize:"12px", color:"#404040" }}>
+            <div style={{ fontSize:"12px", color:"#666" }}>
               この予定は自動表示項目のため編集できません。
             </div>
           )}
           <div style={{ display:"flex", justifyContent:"space-between", gap:"6px", marginTop:"10px" }}>
-            <RetroBtn color="#ffd0d0" onClick={deleteEditingItem} style={{ visibility:(editingItem.source==="order"||editingItem.source==="event")?"visible":"hidden" }}>
+            <RetroBtn onClick={deleteEditingItem} style={{ visibility:(editingItem.source==="order"||editingItem.source==="event")?"visible":"hidden", background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
               削除
             </RetroBtn>
             <div style={{ display:"flex", gap:"6px" }}>
               <RetroBtn onClick={()=>{setShowEditModal(false);setEditingItem(null);}}>キャンセル</RetroBtn>
-              <RetroBtn onClick={saveEditedItem} color="#d0e0ff" style={{ visibility:(editingItem.source==="order"||editingItem.source==="event")?"visible":"hidden" }}>
+              <RetroBtn onClick={saveEditedItem} style={{ visibility:(editingItem.source==="order"||editingItem.source==="event")?"visible":"hidden", background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
                  保存
               </RetroBtn>
             </div>
@@ -873,42 +842,46 @@ const BankPage = ({ data, setData }) => {
     setData(d=>({...d, bankTransactions:[tx,...(Array.isArray(d?.bankTransactions) ? d.bankTransactions : [])]}));
     setAddTx(false); setForm({ date:todayStr2, amount:"", description:"", direction:"in" });
   };
+  const bankIcon = <Icon size={14}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>;
+  const warningIcon = <Icon size={14}><path d="M12 3 2.5 20h19L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17"/></Icon>;
+  const invoiceIcon = <Icon size={14}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>;
+  const payableIcon = <Icon size={14}><circle cx="12" cy="12" r="9"/><path d="M12 7v10"/><path d="M8 11h8"/></Icon>;
+  const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
+  const checkIcon = <Icon size={12}><polyline points="4,12 9,17 20,6"/></Icon>;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
-      {/* Stats */}
-      <div style={{ display:"flex", gap:"8px" }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"8px" }}>
         {[
-          ["未照合入金", "¥"+totalUnmatched.toLocaleString(), "#cc6600"],
-          ["未払い請求", "¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(), "#0000cc"],
-          ["延滞金額", "¥"+overdueTotal.toLocaleString(), "#cc0000"],
-          ["入金済", "¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(), "#006600"],
+          ["未照合入金", "¥"+totalUnmatched.toLocaleString(), "#ff9800"],
+          ["未払い請求", "¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(), "#2196f3"],
+          ["延滞金額", "¥"+overdueTotal.toLocaleString(), "#e63946"],
+          ["入金済", "¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(), "#4caf50"],
         ].map(([l,v,c])=>(
-          <div key={l} style={{ ...inset3d, background:"#fff", padding:"8px 12px", flex:1, textAlign:"center" }}>
-            <div style={{ fontFamily:"monospace", fontSize:"10px", color:"#404040", marginBottom:"3px" }}>{l}</div>
-            <div style={{ fontFamily:"monospace", fontSize:"16px", fontWeight:"bold", color:c }}>{v}</div>
+          <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
+            <div style={{ fontSize:"11px", color:"#888", marginBottom:"3px", fontWeight:700 }}>{l}</div>
+            <div style={{ fontSize:"18px", fontWeight:700, color:c }}>{v}</div>
           </div>
         ))}
       </div>
 
-      {/* Unmatched alert */}
       {unmatchedBanks.length>0&&(
-        <Panel style={{ border:"2px solid #cc6600", background:"#fff8e0" }}>
-          <div style={{ fontFamily:"monospace", fontSize:"12px", fontWeight:"bold", color:"#cc6600", marginBottom:"8px" }}>
-            ★ 未照合の入金 {unmatchedBanks.length}件 — 請求書と照合してください
+        <Panel style={{ borderColor:"#ffcc80", background:"#fff3e0" }}>
+          <div style={{ fontSize:"12px", fontWeight:700, color:"#e65100", marginBottom:"8px", display:"flex", alignItems:"center", gap:"6px" }}>
+            {warningIcon}未照合の入金 {unmatchedBanks.length}件 — 請求書と照合してください
           </div>
           {unmatchedBanks.map(b=>(
-            <div key={b.id} style={{ ...inset3d, background:"#fff", padding:"8px 10px", marginBottom:"6px" }}>
+            <div key={b.id} style={{ border:cardBorder, borderRadius:"6px", background:"#fff", padding:"8px 10px", marginBottom:"6px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"6px" }}>
                 <div>
-                  <span style={{ fontFamily:"monospace", fontSize:"12px", fontWeight:"bold" }}>{b.date}</span>
-                  <span style={{ fontFamily:"monospace", fontSize:"12px", marginLeft:"10px", color:"#006600", fontWeight:"bold" }}>¥{b.amount.toLocaleString()} 入金</span>
-                  <span style={{ fontFamily:"monospace", fontSize:"11px", color:"#404040", marginLeft:"10px" }}>{b.description}</span>
+                  <span style={{ fontSize:"12px", fontWeight:700 }}>{b.date}</span>
+                  <span style={{ fontSize:"12px", marginLeft:"10px", color:"#007a74", fontWeight:700 }}>¥{b.amount.toLocaleString()} 入金</span>
+                  <span style={{ fontSize:"11px", color:"#666", marginLeft:"10px" }}>{b.description}</span>
                 </div>
                 <StatusPill s={b.status}/>
               </div>
               <div style={{ display:"flex", gap:"6px", alignItems:"center" }}>
-                <span style={{ fontFamily:"monospace", fontSize:"11px" }}>照合：</span>
+                <span style={{ fontSize:"11px", color:"#666" }}>照合：</span>
                 <RetroSelect style={{ width:"250px" }} onChange={e=>{
                   if(!e.target.value) return;
                   const inv = invoices.find(i=>i?.id===e.target.value);
@@ -930,20 +903,19 @@ const BankPage = ({ data, setData }) => {
         </Panel>
       )}
 
-      {/* All bank transactions */}
-      <Panel title="口座入出金履歴" icon="🏦">
+      <Panel title="口座入出金履歴" icon={bankIcon}>
         <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:"6px" }}>
-          <RetroBtn onClick={()=>setAddTx(true)} color="#d0e0ff">＋入出金を手動追加</RetroBtn>
+          <RetroBtn onClick={()=>setAddTx(true)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}入出金を手動追加</RetroBtn>
         </div>
         <RetroTable
           headers={["日付","内容（振込名義等）","金額","照合状況","照合先"]}
           rows={bankTransactions.map(b=>[
             b?.date||"",
-            <span style={{ fontFamily:"monospace", fontSize:"11px" }}>{b?.description||""}</span>,
-            <span style={{ color:"#006600", fontWeight:"bold" }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
+            <span style={{ fontSize:"12px" }}>{b?.description||""}</span>,
+            <span style={{ color:"#007a74", fontWeight:700 }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
             <StatusPill s={b?.status}/>,
             b?.matchedInvoice ? (
-              <span style={{ color:"#006600", fontFamily:"monospace", fontSize:"11px" }}>
+              <span style={{ color:"#2e7d32", fontSize:"11px" }}>
                 {b.matchedInvoice} / {invoices.find(i=>i?.id===b.matchedInvoice)?.customerName||""}
               </span>
             ) : "—",
@@ -951,22 +923,20 @@ const BankPage = ({ data, setData }) => {
         />
       </Panel>
 
-      {/* Invoices with status */}
-      <Panel title="入金管理（請求書別）" icon="💴">
+      <Panel title="入金管理（請求書別）" icon={invoiceIcon}>
         <RetroTable
           headers={["請求書","顧客","発行日","期日","金額","状態","メモ"]}
           rows={invoices.map(inv=>[
-            <span style={{ color:"#000080", fontWeight:"bold" }}>{inv?.id||"—"}</span>,
+            <span style={{ color:"#007a74", fontWeight:700 }}>{inv?.id||"—"}</span>,
             inv?.customerName||"", inv?.issueDate||"", inv?.dueDate||"",
-            <span style={{ fontWeight:"bold" }}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
+            <span style={{ fontWeight:700 }}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
             <StatusPill s={inv?.status}/>,
-            <span style={{ fontSize:"10px", color:"#808080" }}>{inv?.note||"—"}</span>,
+            <span style={{ fontSize:"11px", color:"#999" }}>{inv?.note||"—"}</span>,
           ])}
         />
       </Panel>
 
-      {/* Payables */}
-      <Panel title="支払管理（支払予定一覧）" icon="💸">
+      <Panel title="支払管理（支払予定一覧）" icon={payableIcon}>
         <RetroTable
           headers={["支払先","区分","期日","金額","状態","操作"]}
           rows={payables.map(p=>[
@@ -974,20 +944,20 @@ const BankPage = ({ data, setData }) => {
             "¥"+(Number(p?.amount)||0).toLocaleString(),
             <StatusPill s={p?.status}/>,
             p?.status==="unpaid"
-              ? <RetroBtn small color="#d0ffd0" onClick={()=>setData(d=>({...d,payables:(Array.isArray(d?.payables) ? d.payables : []).map(x=>x?.id===p?.id?{...x,status:"paid"}:x)}))}>✓ 支払済</RetroBtn>
-              : <span style={{ fontFamily:"monospace", fontSize:"10px", color:"#808080" }}>済</span>
+              ? <RetroBtn small onClick={()=>setData(d=>({...d,payables:(Array.isArray(d?.payables) ? d.payables : []).map(x=>x?.id===p?.id?{...x,status:"paid"}:x)}))} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{checkIcon}支払済</RetroBtn>
+              : <span style={{ fontSize:"10px", color:"#999" }}>済</span>
           ])}
         />
       </Panel>
 
       {addTx&&(
-        <Modal title="入出金を手動追加" icon="🏦" onClose={()=>setAddTx(false)} width={400}>
+        <Modal title="入出金を手動追加" icon={bankIcon} onClose={()=>setAddTx(false)} width={400}>
           <Fl label="日付"><RetroInput type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/></Fl>
           <Fl label="金額（円）"><RetroInput type="number" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="50000"/></Fl>
           <Fl label="摘要・振込名義"><RetroInput value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="タナカシヨウジ　カブ"/></Fl>
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"10px" }}>
             <RetroBtn onClick={()=>setAddTx(false)}>キャンセル</RetroBtn>
-            <RetroBtn onClick={addTxn} color="#d0e0ff">　追加する　</RetroBtn>
+            <RetroBtn onClick={addTxn} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>追加する</RetroBtn>
           </div>
         </Modal>
       )}
@@ -1826,7 +1796,7 @@ const InvoicesPage = ({ data, setData }) => {
       @media print{.print-bar{display:none} body{padding:0.4cm}}
     </style></head><body>
       <div class="container">
-        <div class="print-bar"><button onclick="window.print()">🖨️ PDF印刷</button></div>
+        <div class="print-bar"><button onclick="window.print()">PDF印刷</button></div>
         <div class="topbar"></div>
         <div class="header">
           <div>
@@ -1939,27 +1909,34 @@ const InvoicesPage = ({ data, setData }) => {
     }));
     setShowCompanyModal(false);
   };
+  const invoiceIcon = <Icon size={14}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>;
+  const companyIcon = <Icon size={14}><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/></Icon>;
+  const mailIcon = <Icon size={14}><rect x="3" y="5" width="18" height="14" rx="2"/><polyline points="3,7 12,13 21,7"/></Icon>;
+  const warningIcon = <Icon size={14}><path d="M12 3 2.5 20h19L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17"/></Icon>;
+  const fileIcon = <Icon size={12}><path d="M14 2H6a2 2 0 0 0-2 2v16h16V8z"/><polyline points="14,2 14,8 20,8"/></Icon>;
+  const plusIcon = <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
+  const trashIcon = <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></Icon>;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
       <div style={{ display:"flex", justifyContent:"flex-end" }}>
-        <RetroBtn onClick={()=>setShowCompanyModal(true)} color="#d0e0ff">⚙ 会社情報設定</RetroBtn>
+        <RetroBtn onClick={()=>setShowCompanyModal(true)} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>{companyIcon}会社情報設定</RetroBtn>
       </div>
-      <div style={{ display:"flex", gap:"8px" }}>
-        {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#660099"],["入金済","¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#006600"],["未回収","¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#cc0000"]].map(([l,v,c])=>(
-          <div key={l} style={{ ...inset3d, background:"#fff", padding:"8px 12px", flex:1, textAlign:"center" }}>
-            <div style={{ fontFamily:"monospace", fontSize:"10px", color:"#404040" }}>{l}</div>
-            <div style={{ fontFamily:"monospace", fontSize:"18px", fontWeight:"bold", color:c }}>{v}</div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"8px" }}>
+        {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#7b1fa2"],["入金済","¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#4caf50"],["未回収","¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#e63946"]].map(([l,v,c])=>(
+          <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
+            <div style={{ fontSize:"11px", color:"#888", fontWeight:700 }}>{l}</div>
+            <div style={{ fontSize:"20px", fontWeight:700, color:c }}>{v}</div>
           </div>
         ))}
       </div>
       {deliveredNoInv.length>0&&(
-        <Panel style={{ border:"2px solid #cc6600", background:"#fff8e0" }}>
-          <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", color:"#cc6600", marginBottom:"6px" }}>⚠ 請求書未発行</div>
+        <Panel style={{ borderColor:"#ffcc80", background:"#fff3e0" }}>
+          <div style={{ fontSize:"12px", fontWeight:700, color:"#e65100", marginBottom:"6px", display:"flex", alignItems:"center", gap:"6px" }}>{warningIcon}請求書未発行</div>
           {deliveredNoInv.map(o=>(
             <div key={o.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0" }}>
-              <span style={{ fontFamily:"monospace", fontSize:"11px" }}>{o?.id||"—"} — {o?.customerName||""}（¥{(Number(o?.amount)||0).toLocaleString()}）</span>
-              <RetroBtn small color="#ffe0a0" onClick={()=>createInv(o)}>📄 発行</RetroBtn>
+              <span style={{ fontSize:"11px" }}>{o?.id||"—"} — {o?.customerName||""}（¥{(Number(o?.amount)||0).toLocaleString()}）</span>
+              <RetroBtn small onClick={()=>createInv(o)} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>{fileIcon}発行</RetroBtn>
             </div>
           ))}
         </Panel>
@@ -1967,17 +1944,17 @@ const InvoicesPage = ({ data, setData }) => {
       <RetroTable
         headers={["請求書","顧客","期日","合計","状態","送付","備考"]}
         rows={invoices.map(inv=>[
-          <span style={{color:"#000080",fontWeight:"bold", cursor:"pointer"}} onClick={()=>openInvoiceModal(inv)}>{inv?.id||"—"}</span>,
+          <span style={{color:"#00a09a",fontWeight:700, cursor:"pointer"}} onClick={()=>openInvoiceModal(inv)}>{inv?.id||"—"}</span>,
           inv?.customerName||"", inv?.dueDate||"",
-          <span style={{fontWeight:"bold"}}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
+          <span style={{fontWeight:700}}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
           <StatusPill s={inv?.status}/>,
-          inv?.sentAt ? <span style={{ color:"#006600", fontWeight:"bold" }}>送付済</span> : <span style={{ color:"#808080" }}>未送付</span>,
-          <span style={{fontSize:"10px",color:"#808080"}}>{inv?.note||"—"}</span>
+          inv?.sentAt ? <span style={{ color:"#2e7d32", fontWeight:700 }}>送付済</span> : <span style={{ color:"#999" }}>未送付</span>,
+          <span style={{fontSize:"11px",color:"#999"}}>{inv?.note||"—"}</span>
         ])}
       />
 
       {showInvoiceModal && invoiceDraft && (
-        <Modal title={`請求書詳細 ${invoiceDraft.id}`} icon="💴" onClose={()=>setShowInvoiceModal(false)} width={780}>
+        <Modal title={`請求書詳細 ${invoiceDraft.id}`} icon={invoiceIcon} onClose={()=>setShowInvoiceModal(false)} width={780}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 12px" }}>
             <Fl label="発行日"><RetroInput type="date" value={invoiceDraft.issueDate || ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), issueDate:e.target.value }))}/></Fl>
             <Fl label="支払期日"><RetroInput type="date" value={invoiceDraft.dueDate || ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), dueDate:e.target.value }))}/></Fl>
@@ -1986,48 +1963,48 @@ const InvoicesPage = ({ data, setData }) => {
             <Fl label="合計"><RetroInput type="number" value={invoiceDraft.total ?? ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), total:Number(e.target.value)||0 }))}/></Fl>
             <Fl label="備考"><RetroInput value={invoiceDraft.note || ""} onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), note:e.target.value }))}/></Fl>
           </div>
-          <Panel title="明細" icon="📄" style={{ marginTop:"8px" }}>
+          <Panel title="明細" icon={fileIcon} style={{ marginTop:"8px" }}>
             {(invoiceDraft.lineItems || []).map((item)=>(
               <div key={item.id} style={{ display:"grid", gridTemplateColumns:"2fr 70px 120px 120px auto", gap:"6px", alignItems:"end", marginBottom:"6px" }}>
                 <Fl label="品目"><RetroInput value={item.name || ""} onChange={(e)=>updateLineItem(item.id, "name", e.target.value)}/></Fl>
                 <Fl label="数量"><RetroInput type="number" value={item.qty ?? 0} onChange={(e)=>updateLineItem(item.id, "qty", Number(e.target.value)||0)}/></Fl>
                 <Fl label="単価"><RetroInput type="number" value={item.unitPrice ?? 0} onChange={(e)=>updateLineItem(item.id, "unitPrice", Number(e.target.value)||0)}/></Fl>
                 <Fl label="小計"><RetroInput type="number" value={item.subtotal ?? 0} readOnly/></Fl>
-                <RetroBtn small color="#ffd0d0" onClick={()=>removeLineItem(item.id)}>削除</RetroBtn>
+                <RetroBtn small onClick={()=>removeLineItem(item.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>{trashIcon}</RetroBtn>
               </div>
             ))}
-            <RetroBtn small onClick={addLineItem} color="#d0e0ff">＋明細追加</RetroBtn>
+            <RetroBtn small onClick={addLineItem} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>{plusIcon}明細追加</RetroBtn>
           </Panel>
           <div style={{ display:"flex", justifyContent:"space-between", gap:"6px", marginTop:"10px" }}>
             <div style={{ display:"flex", gap:"6px" }}>
-              <RetroBtn onClick={openPreview}>PDFプレビュー</RetroBtn>
-              <RetroBtn onClick={openMailModal}>メール送付</RetroBtn>
+              <RetroBtn onClick={openPreview} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>PDFプレビュー</RetroBtn>
+              <RetroBtn onClick={openMailModal} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>{mailIcon}メール送付</RetroBtn>
             </div>
             <div style={{ display:"flex", gap:"6px" }}>
               <RetroBtn onClick={()=>setShowInvoiceModal(false)}>キャンセル</RetroBtn>
-              <RetroBtn onClick={saveInvoice} color="#d0e0ff">保存</RetroBtn>
+              <RetroBtn onClick={saveInvoice} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存</RetroBtn>
             </div>
           </div>
         </Modal>
       )}
 
       {showMailModal && (
-        <Modal title="メール送付" icon="✉️" onClose={()=>setShowMailModal(false)} width={560}>
+        <Modal title="メール送付" icon={mailIcon} onClose={()=>setShowMailModal(false)} width={560}>
           <Fl label="送付先メール"><RetroInput value={mailDraft.to} onChange={(e)=>setMailDraft((v)=>({ ...(v||{}), to:e.target.value }))}/></Fl>
           <Fl label="件名"><RetroInput value={mailDraft.subject} onChange={(e)=>setMailDraft((v)=>({ ...(v||{}), subject:e.target.value }))}/></Fl>
           <Fl label="本文"><RetroTextarea value={mailDraft.body} onChange={(e)=>setMailDraft((v)=>({ ...(v||{}), body:e.target.value }))} style={{ minHeight:"140px" }}/></Fl>
           <div style={{ display:"flex", justifyContent:"space-between", gap:"6px", marginTop:"10px" }}>
-            <RetroBtn onClick={recordSent} color="#d0ffd0">送付記録</RetroBtn>
+            <RetroBtn onClick={recordSent} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>送付記録</RetroBtn>
             <div style={{ display:"flex", gap:"6px" }}>
               <RetroBtn onClick={()=>setShowMailModal(false)}>閉じる</RetroBtn>
-              <RetroBtn onClick={openMailer} color="#d0e0ff">メーラーで送る</RetroBtn>
+              <RetroBtn onClick={openMailer} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>メーラーで送る</RetroBtn>
             </div>
           </div>
         </Modal>
       )}
 
       {showCompanyModal && (
-        <Modal title="会社情報設定" icon="🏢" onClose={()=>setShowCompanyModal(false)} width={620}>
+        <Modal title="会社情報設定" icon={companyIcon} onClose={()=>setShowCompanyModal(false)} width={620}>
           <Fl label="会社名"><RetroInput value={companyDraft.name} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), name:e.target.value }))}/></Fl>
           <Fl label="住所"><RetroInput value={companyDraft.address} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), address:e.target.value }))}/></Fl>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 12px" }}>
@@ -2038,7 +2015,7 @@ const InvoicesPage = ({ data, setData }) => {
           <Fl label="印影画像(base64)"><RetroTextarea value={companyDraft.stampImage} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), stampImage:e.target.value }))}/></Fl>
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
             <RetroBtn onClick={()=>setShowCompanyModal(false)}>キャンセル</RetroBtn>
-            <RetroBtn onClick={saveCompanyInfo} color="#d0e0ff">保存</RetroBtn>
+            <RetroBtn onClick={saveCompanyInfo} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存</RetroBtn>
           </div>
         </Modal>
       )}
