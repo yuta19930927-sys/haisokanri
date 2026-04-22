@@ -68,6 +68,7 @@ const tabBtn = (active) => ({
 });
 
 const SESSION_INIT_TIMEOUT_MS = 15000;
+const LOGIN_TIMEOUT_MS = 5000;
 
 function withTimeout(promise, ms) {
   return new Promise((resolve, reject) => {
@@ -213,10 +214,13 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      const { data, error: signErr } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
+      const { data, error: signErr } = await withTimeout(
+        supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        }),
+        LOGIN_TIMEOUT_MS
+      );
       if (signErr) throw signErr;
 
       const p = await loadProfile(data.user.id);
