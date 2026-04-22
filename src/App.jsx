@@ -67,7 +67,7 @@ const tabBtn = (active) => ({
   fontSize: "13px",
 });
 
-const SESSION_INIT_TIMEOUT_MS = 15000;
+const AUTH_INIT_TIMEOUT_MS = 5000;
 
 function withTimeout(promise, ms) {
   return new Promise((resolve, reject) => {
@@ -121,50 +121,40 @@ export default function App() {
     return data;
   }, []);
 
-  const resolveSessionProfile = useCallback(
-    async (nextSession, { signOutOnMissing = false } = {}) => {
-      if (!nextSession?.user) {
-        setSession(null);
-        setProfile(null);
-        return;
-      }
-
-      let p = null;
-      try {
-        p = await loadProfile(nextSession.user.id);
-      } catch (profileErr) {
-        console.warn("loadProfile failed:", profileErr);
-      }
-
-      if (!p) {
-        if (signOutOnMissing) {
-          try {
-            await supabase.auth.signOut();
-          } catch (signOutErr) {
-            console.warn("signOut after missing profile:", signOutErr);
-          }
-        }
-        setSession(null);
-        setProfile(null);
-        return;
-      }
-
-      setSession(nextSession);
-      setProfile(p);
-    },
-    [loadProfile]
-  );
-
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const res = await withTimeout(supabase.auth.getSession(), SESSION_INIT_TIMEOUT_MS);
+        const res = await withTimeout(supabase.auth.getSession(), AUTH_INIT_TIMEOUT_MS);
         if (cancelled) return;
         if (res.error) throw res.error;
         const s = res.data?.session ?? null;
-        await resolveSessionProfile(s, { signOutOnMissing: true });
+
+        if (s?.user) {
+          let p = null;
+          try {
+            p = await withTimeout(loadProfile(s.user.id), AUTH_INIT_TIMEOUT_MS);
+          } catch (profileErr) {
+            console.warn("loadProfile failed or timed out:", profileErr);
+          }
+          if (cancelled) return;
+          if (!p) {
+            try {
+              await withTimeout(supabase.auth.signOut(), AUTH_INIT_TIMEOUT_MS);
+            } catch (signOutErr) {
+              console.warn("signOut after missing profile:", signOutErr);
+            }
+            setSession(null);
+            setProfile(null);
+          } else {
+            setSession(s);
+            setProfile(p);
+          }
+        } else {
+          setSession(null);
+          setProfile(null);
+        }
       } catch (e) {
         console.warn("getSession failed or timed out:", e);
         if (!cancelled) {
@@ -176,21 +166,27 @@ export default function App() {
       }
     })();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, s) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, s) => {
       try {
-        if (event === "SIGNED_OUT") {
-          setSession(null);
-          setProfile(null);
-          return;
-        }
-
-        if (event === "TOKEN_REFRESHED") {
-          setSession(s);
-          return;
-        }
-
         if (s?.user) {
-          await resolveSessionProfile(s, { signOutOnMissing: true });
+          let p = null;
+          try {
+            p = await withTimeout(loadProfile(s.user.id), AUTH_INIT_TIMEOUT_MS);
+          } catch (profileErr) {
+            console.warn("onAuthStateChange loadProfile failed or timed out:", profileErr);
+          }
+          if (!p) {
+            try {
+              await withTimeout(supabase.auth.signOut(), AUTH_INIT_TIMEOUT_MS);
+            } catch (signOutErr) {
+              console.warn("signOut:", signOutErr);
+            }
+            setSession(null);
+            setProfile(null);
+            return;
+          }
+          setSession(s);
+          setProfile(p);
         } else {
           setSession(null);
           setProfile(null);
@@ -206,7 +202,7 @@ export default function App() {
       cancelled = true;
       subscription.unsubscribe();
     };
-  }, [resolveSessionProfile]);
+  }, [loadProfile]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -236,10 +232,7 @@ export default function App() {
       setSession(data.session);
       setPassword("");
     } catch (err) {
-      const msg = err?.message && err.message !== "timeout"
-        ? err.message
-        : "ログインに失敗しました。メールアドレスとパスワードをご確認ください。";
-      setError(msg);
+      setError(err.message || String(err));
     } finally {
       setBusy(false);
     }
