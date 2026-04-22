@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { supabase } from "./lib/supabase";
 import { DeliveryManagementApp } from "../delivery-retro-v2.jsx";
 const MOBILE_BREAKPOINT = 768;
+const FONT_LINK_ID = "noto-sans-jp-font-link";
 
 const useIsMobile = () => {
   const getValue = () =>
@@ -17,51 +18,53 @@ const useIsMobile = () => {
 
 const loginBox = {
   width: "100%",
-  maxWidth: "380px",
-  background: "#d4d0c8",
-  borderTop: "2px solid #fff",
-  borderLeft: "2px solid #fff",
-  borderBottom: "2px solid #404040",
-  borderRight: "2px solid #404040",
-  padding: "20px",
-  fontFamily: "'MS Gothic','Noto Sans JP',monospace",
+  maxWidth: "400px",
+  background: "#ffffff",
+  border: "1px solid #e8e8e8",
+  borderRadius: "6px",
+  boxShadow: "0 12px 32px rgba(23, 43, 77, 0.08)",
+  padding: "24px",
+  fontFamily: "'Noto Sans JP', sans-serif",
 };
 
 const inputStyle = {
   width: "100%",
   boxSizing: "border-box",
-  padding: "8px 10px",
+  padding: "10px 12px",
   marginTop: "4px",
-  borderTop: "2px solid #808080",
-  borderLeft: "2px solid #808080",
-  borderBottom: "2px solid #fff",
-  borderRight: "2px solid #fff",
-  fontSize: "14px",
+  border: "1px solid #d0d0d0",
+  borderRadius: "4px",
+  fontSize: "13px",
+  color: "#333",
+  background: "#fff",
+  outline: "none",
 };
 
 const btnStyle = {
   width: "100%",
   marginTop: "14px",
   padding: "10px",
-  fontWeight: "bold",
+  fontWeight: 600,
   cursor: "pointer",
-  borderTop: "2px solid #fff",
-  borderLeft: "2px solid #fff",
-  borderBottom: "2px solid #404040",
-  borderRight: "2px solid #404040",
-  background: "#d4d0c8",
-  fontFamily: "'MS Gothic','Noto Sans JP',monospace",
+  border: "1px solid #00a09a",
+  borderRadius: "4px",
+  color: "#fff",
+  background: "#00a09a",
+  fontFamily: "'Noto Sans JP', sans-serif",
+  fontSize: "13px",
 };
 
 const tabBtn = (active) => ({
   flex: 1,
   padding: "8px",
-  fontWeight: "bold",
+  fontWeight: 600,
   cursor: "pointer",
-  border: "2px solid #808080",
-  background: active ? "#000080" : "#c0c0c0",
-  color: active ? "#fff" : "#000",
-  fontFamily: "'MS Gothic','Noto Sans JP',monospace",
+  border: "1px solid #d8dce0",
+  borderRadius: "4px",
+  background: active ? "#00a09a" : "#fff",
+  color: active ? "#fff" : "#555",
+  fontFamily: "'Noto Sans JP', sans-serif",
+  fontSize: "13px",
 });
 
 const AUTH_INIT_TIMEOUT_MS = 5000;
@@ -92,6 +95,18 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!document.getElementById(FONT_LINK_ID)) {
+      const link = document.createElement("link");
+      link.id = FONT_LINK_ID;
+      link.rel = "stylesheet";
+      link.href =
+        "https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap";
+      document.head.appendChild(link);
+    }
+  }, []);
 
   const loadProfile = useCallback(async (userId) => {
     const { data, error: qErr } = await supabase
@@ -232,8 +247,8 @@ export default function App() {
 
   if (!authReady) {
     return (
-      <div style={{ minHeight: "100vh", background: "#008080", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "sans-serif" }}>
-        <p style={{ color: "#fff" }}>認証情報を確認しています…</p>
+      <div style={{ minHeight: "100vh", background: "#f7f8f9", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Noto Sans JP', sans-serif" }}>
+        <p style={{ color: "#555" }}>認証情報を確認しています…</p>
       </div>
     );
   }
@@ -242,10 +257,13 @@ export default function App() {
 
   if (!authed) {
     return (
-      <div style={{ minHeight: "100vh", background: "#008080", display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? "8px" : "16px" }}>
+      <div style={{ minHeight: "100vh", background: "#f7f8f9", display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? "8px" : "16px", fontFamily: "'Noto Sans JP', sans-serif", fontSize: "13px", fontWeight: 400 }}>
         <div style={{ ...loginBox, maxWidth: isMobile ? "100%" : "380px", padding: isMobile ? "14px" : "20px" }}>
-          <div style={{ background: "linear-gradient(to right,#000080,#1084d0)", margin: isMobile ? "-14px -14px 12px -14px" : "-20px -20px 16px -20px", padding: "8px 12px", color: "#fff", fontWeight: "bold", fontSize: isMobile ? "12px" : "13px" }}>
-            配送管理システム — ログイン
+          <div style={{ background: "#00a09a", margin: isMobile ? "-14px -14px 12px -14px" : "-20px -20px 16px -20px", padding: "8px 12px", color: "#fff", fontWeight: 700, fontSize: isMobile ? "12px" : "13px", borderTopLeftRadius: "6px", borderTopRightRadius: "6px" }}>
+            T-LINK 配送管理システム
+          </div>
+          <div style={{ marginBottom: "12px", color: "#555", fontSize: "12px", fontWeight: 500 }}>
+            配送管理システム - ログイン
           </div>
           <div style={{ display: "flex", gap: "6px", marginBottom: "14px" }}>
             <button type="button" style={tabBtn(loginRole === "admin")} onClick={() => { setLoginRole("admin"); setError(""); }}>
@@ -256,22 +274,22 @@ export default function App() {
             </button>
           </div>
           <form onSubmit={handleLogin}>
-            <label style={{ fontSize: "12px", fontWeight: "bold" }}>
+            <label style={{ fontSize: "12px", fontWeight: 600, color: "#555" }}>
               メールアドレス
-              <input type="email" autoComplete="username" value={email} onChange={(ev) => setEmail(ev.target.value)} required style={{ ...inputStyle, fontSize: "16px", padding: "10px 12px" }} />
+              <input type="email" autoComplete="username" value={email} onChange={(ev) => setEmail(ev.target.value)} required style={inputStyle} />
             </label>
-            <label style={{ fontSize: "12px", fontWeight: "bold", display: "block", marginTop: "10px" }}>
+            <label style={{ fontSize: "12px", fontWeight: 600, color: "#555", display: "block", marginTop: "10px" }}>
               パスワード
-              <input type="password" autoComplete="current-password" value={password} onChange={(ev) => setPassword(ev.target.value)} required style={{ ...inputStyle, fontSize: "16px", padding: "10px 12px" }} />
+              <input type="password" autoComplete="current-password" value={password} onChange={(ev) => setPassword(ev.target.value)} required style={inputStyle} />
             </label>
             {error && (
-              <div style={{ marginTop: "10px", fontSize: "12px", color: "#c00", fontWeight: "bold" }}>{error}</div>
+              <div style={{ marginTop: "10px", fontSize: "12px", color: "#e63946", fontWeight: 600 }}>{error}</div>
             )}
             <button type="submit" disabled={busy} style={{ ...btnStyle, opacity: busy ? 0.7 : 1 }}>
               {busy ? "ログイン中…" : "ログイン"}
             </button>
           </form>
-          <p style={{ marginTop: "14px", fontSize: "10px", color: "#444", lineHeight: 1.5 }}>
+          <p style={{ marginTop: "14px", fontSize: "11px", color: "#888", lineHeight: 1.5 }}>
             アカウントは Supabase Auth で作成し、ユーザー metadata に <code>role</code>（<code>admin</code> または <code>driver</code>）を設定してください。初回は SQL のトリガーで <code>profiles</code> に反映されます。
           </p>
         </div>

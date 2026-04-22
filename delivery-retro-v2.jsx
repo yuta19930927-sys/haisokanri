@@ -1,12 +1,37 @@
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "./src/lib/supabase";
 
-// ===== WIN95 STYLE =====
-const raised = { borderTop:"2px solid #fff", borderLeft:"2px solid #fff", borderBottom:"2px solid #404040", borderRight:"2px solid #404040" };
-const pressed = { borderTop:"2px solid #404040", borderLeft:"2px solid #404040", borderBottom:"2px solid #fff", borderRight:"2px solid #fff" };
-const inset3d = { borderTop:"2px solid #808080", borderLeft:"2px solid #808080", borderBottom:"2px solid #fff", borderRight:"2px solid #fff" };
-const groove = { border:"2px groove #808080" };
-const winBg = "#d4d0c8";
+// ===== T-LINK THEME =====
+const UI = {
+  accent: "#00a09a",
+  accentDark: "#007a74",
+  accentLight: "#e8f5f4",
+  mainBg: "#f7f8f9",
+  sidebarBg: "#f0f2f5",
+  sidebarHeader: "#e6e9ed",
+  sidebarBorder: "#d8dce0",
+  white: "#ffffff",
+  textDark: "#222",
+  text: "#333",
+  textMuted: "#888",
+  textMuted2: "#999",
+  border: "#e8e8e8",
+  softBorder: "#d0d0d0",
+};
+const cardBorder = `1px solid ${UI.border}`;
+const softShadow = "0 8px 24px rgba(23, 43, 77, 0.08)";
+const inputBase = {
+  border: `1px solid ${UI.softBorder}`,
+  borderRadius: "4px",
+  background: UI.white,
+};
+const interactive = { transition: "all .18s ease" };
+// Legacy aliases for existing page layouts (visuals updated to new theme)
+const raised = { border:`1px solid ${UI.sidebarBorder}`, borderRadius:"4px" };
+const pressed = { border:`1px solid ${UI.sidebarBorder}`, borderRadius:"4px", boxShadow:"inset 0 2px 4px rgba(0,0,0,.12)" };
+const inset3d = { border:`1px solid ${UI.border}`, borderRadius:"4px" };
+const groove = { border:`1px solid ${UI.sidebarBorder}`, borderRadius:"6px" };
+const winBg = UI.white;
 
 // ===== MOCK DATA =====
 const today = new Date();
@@ -156,92 +181,137 @@ const initialData = {
 };
 
 // ===== UI COMPONENTS =====
+const Icon = ({ children, size = 18, style }) => (
+  <svg
+    viewBox="0 0 24 24"
+    width={size}
+    height={size}
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    style={style}
+  >
+    {children}
+  </svg>
+);
+
 const RetroBtn = ({ children, onClick, color, wide, small, style:ext }) => {
   const [dn, setDn] = useState(false);
+  const custom = color
+    ? {
+        background: color,
+        borderColor: color,
+        color: color === "#fff" || color === "#ffffff" ? UI.text : UI.white,
+      }
+    : {};
   return (
     <button onMouseDown={()=>setDn(true)} onMouseUp={()=>setDn(false)} onMouseLeave={()=>setDn(false)} onClick={onClick}
-      style={{ background:color||winBg, fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:small?"11px":"12px", fontWeight:"bold", color:"#000", cursor:"pointer",
-        padding:small?"2px 8px":wide?"8px 16px":"5px 10px", display:"inline-flex", alignItems:"center", gap:"4px", userSelect:"none",
-        minHeight:"44px",
-        ...(dn?pressed:raised), ...ext }}>
+      style={{
+        background: UI.white,
+        border: `1px solid ${UI.softBorder}`,
+        borderRadius: "3px",
+        fontFamily:"'Noto Sans JP', sans-serif",
+        fontSize:small?"12px":"13px",
+        fontWeight:600,
+        color: UI.text,
+        cursor:"pointer",
+        padding:small?"4px 10px":wide?"10px 16px":"7px 12px",
+        display:"inline-flex",
+        alignItems:"center",
+        justifyContent:"center",
+        gap:"6px",
+        userSelect:"none",
+        minHeight: small ? "30px" : "36px",
+        boxShadow: dn ? "inset 0 2px 4px rgba(0,0,0,.12)" : "none",
+        ...interactive,
+        ...custom,
+        ...ext
+      }}>
       {children}
     </button>
   );
 };
 const RetroInput = (props) => (
-  <input {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"16px", padding:"8px 10px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", ...props.style }} />
+  <input {...props} style={{ ...inputBase, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", padding:"9px 10px", color:UI.text, outline:"none", width:"100%", boxSizing:"border-box", ...props.style }} />
 );
 const RetroSelect = ({ children, ...props }) => (
-  <select {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"16px", padding:"8px 10px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", ...props.style }}>
+  <select {...props} style={{ ...inputBase, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", padding:"9px 10px", color:UI.text, outline:"none", width:"100%", boxSizing:"border-box", ...props.style }}>
     {children}
   </select>
 );
 const RetroTextarea = (props) => (
-  <textarea {...props} style={{ ...inset3d, background:"#fff", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"16px", padding:"8px 10px", color:"#000", outline:"none", width:"100%", boxSizing:"border-box", resize:"vertical", minHeight:"80px", ...props.style }} />
+  <textarea {...props} style={{ ...inputBase, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", padding:"9px 10px", color:UI.text, outline:"none", width:"100%", boxSizing:"border-box", resize:"vertical", minHeight:"80px", ...props.style }} />
 );
 const Fl = ({ label, children }) => (
-  <div style={{ marginBottom:"6px" }}>
-    <div style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", marginBottom:"2px" }}>{label}</div>
+  <div style={{ marginBottom:"8px" }}>
+    <div style={{ fontFamily:"'Noto Sans JP', sans-serif", fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"4px" }}>{label}</div>
     {children}
   </div>
 );
 const StatusPill = ({ s }) => {
   const map = {
-    pending:["未配車","#ffcc00","#000"], scheduled:["配車済","#0000cc","#fff"],
-    in_transit:["配送中","#660099","#fff"], delivered:["完了","#006600","#fff"],
-    unpaid:["未払い","#808080","#fff"], pending_confirmation:["確認待ち","#cc6600","#fff"],
-    overdue:["延滞","#cc0000","#fff"], paid:["入金済","#006600","#fff"],
-    available:["待機中","#006600","#fff"], on_duty:["稼働中","#0000cc","#fff"], off:["休暇","#808080","#fff"],
-    in_use:["使用中","#0000cc","#fff"], maintenance:["整備中","#cc6600","#fff"],
-    matched:["照合済","#006600","#fff"], unmatched:["未照合","#cc0000","#fff"],
+    pending:["未配車","#fff3e0","#e65100","#ff9800"], scheduled:["配車済","#e3f2fd","#1565c0","#2196f3"],
+    in_transit:["配送中","#00a09a","#fff","#00a09a"], delivered:["完了","#4caf50","#fff","#4caf50"],
+    unpaid:["未払い","#e8e8e8","#555","#d0d0d0"], pending_confirmation:["確認待ち","#fff3e0","#e65100","#ff9800"],
+    overdue:["延滞","#ffebee","#c62828","#e63946"], paid:["入金済","#e8f5e9","#2e7d32","#4caf50"],
+    available:["待機中","#e8f5e9","#2e7d32","#4caf50"], on_duty:["稼働中","#e8f5f4","#007a74","#00a09a"], off:["休暇","#f1f3f5","#666","#d0d0d0"],
+    in_use:["使用中","#e3f2fd","#1565c0","#2196f3"], maintenance:["整備中","#f3e5f5","#6a1b9a","#7b1fa2"],
+    matched:["照合済","#e8f5e9","#2e7d32","#4caf50"], unmatched:["未照合","#ffebee","#c62828","#e63946"],
   };
-  const [label,bg,fg] = map[s]||[s,"#ccc","#000"];
-  return <span style={{ background:bg, color:fg, fontSize:"10px", fontWeight:"bold", padding:"1px 7px", fontFamily:"monospace" }}>{label}</span>;
+  const [label,bg,fg,border] = map[s]||[s,"#e8e8e8","#555","#d0d0d0"];
+  return <span style={{ background:bg, color:fg, fontSize:"11px", fontWeight:700, padding:"2px 8px", fontFamily:"'Noto Sans JP', sans-serif", border:`1px solid ${border}`, borderRadius:"999px", display:"inline-flex", alignItems:"center" }}>{label}</span>;
 };
 const RetroTable = ({ headers, rows }) => (
-  <div style={{ ...inset3d, background:"#fff", overflow:"auto", maxHeight:"280px" }}>
-    <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"11px" }}>
+  <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", overflow:"auto", maxHeight:"280px" }}>
+    <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"12px" }}>
       <thead>
-        <tr style={{ background:"#000080", position:"sticky", top:0 }}>
-          {headers.map((h,i)=><th key={i} style={{ color:"#fff", padding:"3px 8px", textAlign:"left", fontWeight:"bold", whiteSpace:"nowrap", borderRight:"1px solid #4040a0" }}>{h}</th>)}
+        <tr style={{ background:"#fafbfc", position:"sticky", top:0 }}>
+          {headers.map((h,i)=><th key={i} style={{ color:"#666", fontSize:"11px", padding:"8px 10px", textAlign:"left", fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder }}>{h}</th>)}
         </tr>
       </thead>
       <tbody>
         {rows.map((row,ri)=>(
-          <tr key={ri} style={{ background:ri%2===0?"#fff":"#f0f0f8", borderBottom:"1px solid #ddd" }}
-            onMouseEnter={e=>e.currentTarget.style.background="#eef4ff"}
-            onMouseLeave={e=>e.currentTarget.style.background=ri%2===0?"#fff":"#f0f0f8"}>
-            {row.map((cell,ci)=><td key={ci} style={{ padding:"3px 8px", borderRight:"1px solid #eee", whiteSpace:"nowrap" }}>{cell}</td>)}
+          <tr key={ri} style={{ background:"#fff", borderBottom:"1px solid #f0f0f0" }}
+            onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"}
+            onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+            {row.map((cell,ci)=><td key={ci} style={{ padding:"8px 10px", whiteSpace:"nowrap", color:UI.text }}>{cell}</td>)}
           </tr>
         ))}
-        {rows.length===0&&<tr><td colSpan={headers.length} style={{ padding:"16px", textAlign:"center", color:"#808080" }}>データなし</td></tr>}
+        {rows.length===0&&<tr><td colSpan={headers.length} style={{ padding:"16px", textAlign:"center", color:"#999" }}>データなし</td></tr>}
       </tbody>
     </table>
   </div>
 );
 const TitleBar = ({ title, icon }) => (
-  <div style={{ background:"linear-gradient(to right,#000080,#1084d0)", padding:"3px 6px", display:"flex", alignItems:"center", gap:"6px" }}>
-    <span style={{ fontSize:"14px" }}>{icon}</span>
-    <span style={{ color:"#fff", fontFamily:"'MS Gothic','ＭＳ ゴシック','Noto Sans JP',monospace", fontSize:"12px", fontWeight:"bold", flex:1 }}>{title}</span>
-    {["－","□","✕"].map((c,i)=><div key={i} style={{ ...raised, background:winBg, width:"14px", height:"12px", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"8px", cursor:"pointer" }}>{c}</div>)}
+  <div style={{ background:"#fff", borderBottom:cardBorder, height:"48px", padding:"0 12px", display:"flex", alignItems:"center", gap:"8px" }}>
+    <span style={{ color:UI.accent }}>{icon}</span>
+    <span style={{ color:UI.textDark, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", fontWeight:700, flex:1 }}>{title}</span>
   </div>
 );
 const Panel = ({ title, icon, children, style:ext }) => (
-  <fieldset style={{ ...groove, padding:"6px 10px", ...ext }}>
-    {title&&<legend style={{ fontFamily:"monospace", fontSize:"11px", fontWeight:"bold", padding:"0 4px" }}>{icon&&icon+" "}{title}</legend>}
-    {children}
-  </fieldset>
+  <section style={{ background:UI.sidebarBg, border:`1px solid ${UI.sidebarBorder}`, borderRadius:"6px", overflow:"hidden", ...ext }}>
+    {title && (
+      <div style={{ background:UI.sidebarHeader, borderBottom:`1px solid ${UI.sidebarBorder}`, padding:"10px 12px", display:"flex", alignItems:"center", gap:"8px" }}>
+        <div style={{ width:"3px", height:"16px", background:UI.accent, borderRadius:"2px" }} />
+        {icon && <span style={{ color:"#555", display:"inline-flex" }}>{icon}</span>}
+        <span style={{ fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", fontWeight:700, color:UI.textDark }}>{title}</span>
+      </div>
+    )}
+    <div className="panel-body" style={{ background:"#fff", padding:"10px" }}>{children}</div>
+  </section>
 );
 
 // ===== MODAL =====
 const Modal = ({ title, icon, onClose, children, width=480 }) => (
-  <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center" }}>
-    <div style={{ background:winBg, ...raised, width:`min(${typeof width === "number" ? `${width}px` : width}, 95vw)`, maxWidth:"95vw", maxHeight:"90vh", overflow:"auto" }}>
-      <div style={{ background:"linear-gradient(to right,#000080,#1084d0)", padding:"3px 6px", display:"flex", alignItems:"center", gap:"6px" }}>
-        <span style={{ fontSize:"14px" }}>{icon}</span>
-        <span style={{ color:"#fff", fontFamily:"'MS Gothic','ＭＳ ゴシック','Noto Sans JP',monospace", fontSize:"12px", fontWeight:"bold", flex:1 }}>{title}</span>
-        <button onClick={onClose} style={{ ...raised, background:winBg, width:"14px", height:"12px", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"8px", cursor:"pointer", padding:0 }}>
-          ✕
+  <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:"12px" }}>
+    <div style={{ background:"#fff", width:`min(${typeof width === "number" ? `${width}px` : width}, 95vw)`, maxWidth:"95vw", maxHeight:"90vh", overflow:"auto", borderRadius:"6px", boxShadow:softShadow, border:cardBorder }}>
+      <div style={{ background:"#fff", padding:"10px 12px", display:"flex", alignItems:"center", gap:"8px", borderBottom:cardBorder }}>
+        <span style={{ color:UI.accent, display:"inline-flex" }}>{icon}</span>
+        <span style={{ color:UI.textDark, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"14px", fontWeight:700, flex:1 }}>{title}</span>
+        <button onClick={onClose} style={{ border:"none", background:"transparent", color:"#666", cursor:"pointer", padding:"2px 6px", fontSize:"18px", lineHeight:1 }}>
+          ×
         </button>
       </div>
       <div style={{ padding:"14px" }}>{children}</div>
@@ -942,84 +1012,84 @@ const DashboardPage = ({ data, setData, setPage }) => {
   const totalRevenue = invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0);
   const unpaidTotal = invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0);
 
+  const alertCard = (bg, color, title, body, onClick) => (
+    <div style={{ background:bg, border:cardBorder, borderLeft:`4px solid ${color}`, borderRadius:"6px", padding:"10px 12px", flex:1, cursor:"pointer" }} onClick={onClick}>
+      <div style={{ color, fontWeight:700, fontSize:"12px", marginBottom:"2px" }}>{title}</div>
+      <div style={{ color:"#666", fontSize:"12px" }}>{body}</div>
+    </div>
+  );
+
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
-      {/* Alert row */}
-      <div style={{ display:"flex", gap:"8px" }}>
-        {unmatchedCount>0&&(
-          <div style={{ ...inset3d, background:"#fff8e0", padding:"8px 12px", flex:1, borderLeft:"4px solid #cc6600", cursor:"pointer" }} onClick={()=>setPage("bank")}>
-            <span style={{ fontFamily:"monospace", fontSize:"12px", fontWeight:"bold", color:"#cc6600" }}>★ 未照合入金 {unmatchedCount}件 → 口座照合へ</span>
-          </div>
-        )}
-        {overdueCount>0&&(
-          <div style={{ ...inset3d, background:"#fff0f0", padding:"8px 12px", flex:1, borderLeft:"4px solid #cc0000", cursor:"pointer" }} onClick={()=>setPage("bank")}>
-            <span style={{ fontFamily:"monospace", fontSize:"12px", fontWeight:"bold", color:"#cc0000" }}>⚠ 支払延滞 {overdueCount}件 — 要対応</span>
-          </div>
-        )}
+    <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
+      <div style={{ display:"flex", gap:"10px", flexWrap:"wrap" }}>
+        {unmatchedCount>0 && alertCard("#fff3e0", "#ff9800", "未照合入金があります", `${unmatchedCount}件の入金照合が未処理です`, ()=>setPage("bank"))}
+        {overdueCount>0 && alertCard("#ffebee", "#e63946", "支払延滞があります", `${overdueCount}件の延滞が発生しています`, ()=>setPage("bank"))}
       </div>
 
-      {/* Stats */}
-      <div style={{ display:"flex", gap:"8px" }}>
-        {[["稼働中案件",activeOrders+"件","#000080"],["待機ドライバー",availableDrivers+"名","#006600"],["入金済売上","¥"+totalRevenue.toLocaleString(),"#660099"],["未回収","¥"+unpaidTotal.toLocaleString(),"#cc0000"]].map(([l,v,c])=>(
-          <div key={l} style={{ ...inset3d, background:"#fff", padding:"8px 12px", flex:1, textAlign:"center" }}>
-            <div style={{ fontFamily:"monospace", fontSize:"10px", color:"#404040", marginBottom:"3px" }}>{l}</div>
-            <div style={{ fontFamily:"monospace", fontSize:"18px", fontWeight:"bold", color:c }}>{v}</div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"10px" }}>
+        {[["稼働中案件",activeOrders+"件","#00a09a"],["待機ドライバー",availableDrivers+"名","#2196f3"],["入金済売上","¥"+totalRevenue.toLocaleString(),"#7b1fa2"],["未回収","¥"+unpaidTotal.toLocaleString(),"#e63946"]].map(([l,v,c])=>(
+          <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
+            <div style={{ fontSize:"11px", color:"#888", marginBottom:"6px", fontWeight:700 }}>{l}</div>
+            <div style={{ fontSize:"21px", fontWeight:700, color:c }}>{v}</div>
           </div>
         ))}
       </div>
 
-      <div style={{ display:"flex", gap:"10px" }}>
-        {/* Today's schedule */}
-        <div style={{ flex:1 }}>
-          <Panel title={`本日の予定（${todayStr}）`} icon="📅">
-            {todayEvents.length===0&&todayBanks.length===0&&(
-              <div style={{ fontFamily:"monospace", fontSize:"11px", color:"#808080", padding:"8px" }}>本日の予定はありません</div>
-            )}
-            {todayEvents.map(ev=>(
-              <div key={ev.id} style={{ display:"flex", alignItems:"center", gap:"6px", padding:"4px 0", borderBottom:"1px solid #ddd" }}>
-                <div style={{ width:"8px", height:"8px", background:ev.color }}/>
-                <span style={{ fontFamily:"monospace", fontSize:"11px", flex:1 }}>{ev.title}</span>
-                <span style={{ background:ev.color, color:"#fff", fontSize:"9px", fontFamily:"monospace", padding:"1px 5px" }}>{EVENT_TYPE_LABEL[ev.type]||ev.type}</span>
-              </div>
-            ))}
-            {todayBanks.map(b=>(
-              <div key={b.id} style={{ display:"flex", alignItems:"center", gap:"6px", padding:"4px 0", borderBottom:"1px solid #ddd" }}>
-                <div style={{ width:"8px", height:"8px", background:"#006600" }}/>
-                <span style={{ fontFamily:"monospace", fontSize:"11px", flex:1 }}>💰 入金 ¥{b.amount.toLocaleString()} {b.description}</span>
-                <StatusPill s={b.status}/>
-              </div>
-            ))}
-          </Panel>
-        </div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))", gap:"12px" }}>
+        <Panel title={`本日の予定（${todayStr}）`} icon={<Icon size={14}><rect x="3" y="4" width="18" height="18"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></Icon>}>
+          {todayEvents.length===0&&todayBanks.length===0&&<div style={{ fontSize:"12px", color:"#999", padding:"8px" }}>本日の予定はありません</div>}
+          {todayEvents.map(ev=>(
+            <div key={ev.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 4px", borderBottom:"1px solid #f0f0f0" }}>
+              <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:ev.color }}/>
+              <span style={{ fontSize:"12px", flex:1 }}>{ev.title}</span>
+              <span style={{ background:"#f5f7f8", color:"#666", fontSize:"10px", padding:"2px 6px", borderRadius:"999px" }}>{EVENT_TYPE_LABEL[ev.type]||ev.type}</span>
+            </div>
+          ))}
+          {todayBanks.map(b=>(
+            <div key={b.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 4px", borderBottom:"1px solid #f0f0f0" }}>
+              <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:"#00a09a" }}/>
+              <span style={{ fontSize:"12px", flex:1 }}>入金 ¥{b.amount.toLocaleString()} {b.description}</span>
+              <StatusPill s={b.status}/>
+            </div>
+          ))}
+        </Panel>
 
-        {/* Recent orders */}
-        <div style={{ flex:1.5 }}>
-          <Panel title="最近の案件" icon="🚛">
-            <RetroTable
-              headers={["ID","顧客","配達日","状態"]}
-              rows={[...orders].reverse().slice(0,5).map(o=>[
-                <span style={{ color:"#000080", fontWeight:"bold" }}>{o?.id||"—"}</span>,
-                o?.customerName||"", o?.deliveryDate||"", <StatusPill s={o?.status}/>
-              ])}
-            />
-          </Panel>
-        </div>
-      </div>
-
-      <div style={{ display:"flex", gap:"10px" }}>
-        <Panel title="ドライバー状況" icon="👤" style={{ flex:1 }}>
+        <Panel title="最近の案件" icon={<Icon size={14}><path d="M3 7h18"/><path d="M5 7v12h14V7"/><path d="M9 11h6"/></Icon>}>
           <RetroTable
-            headers={["氏名","免許","状態"]}
-            rows={drivers.map(d=>[d?.name||"", d?.license||"", <StatusPill s={d?.status}/>])}
+            headers={["ID","顧客","配達日","状態"]}
+            rows={[...orders].reverse().slice(0,5).map(o=>[
+              <span style={{ color:"#007a74", fontWeight:700 }}>{o?.id||"—"}</span>,
+              o?.customerName||"", o?.deliveryDate||"", <StatusPill s={o?.status}/>
+            ])}
           />
         </Panel>
-        <Panel title="口座照合が必要な入金" icon="🏦" style={{ flex:1 }}>
+
+        <Panel title="ドライバー状況" icon={<Icon size={14}><circle cx="12" cy="8" r="4"/><path d="M4 20c1.8-3.5 5-5 8-5s6.2 1.5 8 5"/></Icon>}>
+          <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+            {drivers.map((d)=>(
+              <div key={d?.id || d?.name} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"#fff", border:cardBorder, borderRadius:"6px", padding:"8px 10px" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                  <div style={{ width:"28px", height:"28px", borderRadius:"50%", background:"#e8f5f4", color:"#00a09a", fontWeight:700, display:"grid", placeItems:"center", fontSize:"12px" }}>
+                    {(d?.name || "?").slice(0,1)}
+                  </div>
+                  <div>
+                    <div style={{ fontSize:"12px", fontWeight:600 }}>{d?.name||""}</div>
+                    <div style={{ fontSize:"11px", color:"#888" }}>{d?.license||""}</div>
+                  </div>
+                </div>
+                <StatusPill s={d?.status}/>
+              </div>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title="口座照合が必要な入金" icon={<Icon size={14}><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>}>
           <RetroTable
             headers={["日付","金額","摘要","状態"]}
             rows={bankTransactions.filter(b=>b?.status==="unmatched").map(b=>[
               b?.date||"",
-              <span style={{ color:"#006600", fontWeight:"bold" }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
-              <span style={{ fontSize:"10px" }}>{b?.description||""}</span>,
+              <span style={{ color:"#007a74", fontWeight:700 }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
+              <span style={{ fontSize:"12px" }}>{b?.description||""}</span>,
               <StatusPill s={b?.status}/>
             ])}
           />
@@ -2171,15 +2241,15 @@ const VehiclesPage = ({ data, setData }) => {
 
 // ===== MAIN =====
 const MENU = [
-  { id:"dashboard", icon:"🏠", label:"ダッシュボード" },
-  { id:"calendar",  icon:"📅", label:"カレンダー" },
-  { id:"orders",    icon:"📋", label:"受注管理" },
-  { id:"dispatch",  icon:"🚛", label:"配車管理" },
-  { id:"drivers",   icon:"👤", label:"ドライバー管理" },
-  { id:"vehicles",  icon:"🚗", label:"車両管理" },
-  { id:"customers", icon:"👥", label:"顧客管理" },
-  { id:"invoices",  icon:"💴", label:"請求管理" },
-  { id:"bank",      icon:"🏦", label:"口座・入金" },
+  { id:"dashboard", icon:<Icon size={16}><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></Icon>, label:"ダッシュボード", section:"メイン" },
+  { id:"calendar",  icon:<Icon size={16}><rect x="3" y="4" width="18" height="18"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></Icon>, label:"カレンダー", section:"メイン" },
+  { id:"orders",    icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></Icon>, label:"受注管理", section:"案件管理" },
+  { id:"dispatch",  icon:<Icon size={16}><rect x="2" y="8" width="15" height="8"/><path d="M17 10h3l2 3v3h-5"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>, label:"配車管理", section:"案件管理" },
+  { id:"drivers",   icon:<Icon size={16}><circle cx="12" cy="8" r="4"/><path d="M4 21c1.6-3.8 4.7-5.5 8-5.5s6.4 1.7 8 5.5"/></Icon>, label:"ドライバー管理", section:"マスタ管理" },
+  { id:"vehicles",  icon:<Icon size={16}><rect x="3" y="9" width="18" height="7" rx="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>, label:"車両管理", section:"マスタ管理" },
+  { id:"customers", icon:<Icon size={16}><circle cx="9" cy="8" r="3"/><circle cx="16" cy="9" r="2.5"/><path d="M3 20c1.4-3 3.8-4.5 6-4.5"/><path d="M10 20c1.8-3 4.6-4.5 7-4.5"/></Icon>, label:"顧客管理", section:"マスタ管理" },
+  { id:"invoices",  icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>, label:"請求管理", section:"経理" },
+  { id:"bank",      icon:<Icon size={16}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>, label:"口座・入金", section:"経理" },
 ];
 
 const TABLE_CONFIG = [
@@ -2271,23 +2341,23 @@ const cloneData = (value) => {
 };
 
 const MenuBtn = ({ icon, label, onClick, active, badge }) => {
-  const [dn, setDn] = useState(false);
   return (
     <div style={{ position:"relative" }}>
-      <button onMouseDown={()=>setDn(true)} onMouseUp={()=>setDn(false)} onMouseLeave={()=>setDn(false)} onClick={onClick}
-        style={{ background:active?"#c0c0c0":winBg, fontFamily:"'MS Gothic','Noto Sans JP',monospace", fontSize:"11px", fontWeight:"bold", color:"#000",
-          cursor:"pointer", padding:"8px 4px", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:"4px",
-          width:"110px", height:"64px", userSelect:"none", ...(dn?pressed:raised) }}>
-        <span style={{ fontSize:"22px", lineHeight:1 }}>{icon}</span>
-        <span style={{ fontSize:"11px", whiteSpace:"nowrap" }}>{label}</span>
+      <button onClick={onClick}
+        style={{ width:"100%", border:"none", background:active?"#fff":"transparent", borderLeft:active?"3px solid #00a09a":"3px solid transparent",
+          borderRadius:"4px", color:active?"#007a74":"#333", cursor:"pointer", padding:"8px 10px", display:"flex", alignItems:"center",
+          gap:"8px", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", fontWeight:active?700:500, textAlign:"left" }}>
+        <span style={{ display:"inline-flex", color:active?"#00a09a":"#666" }}>{icon}</span>
+        <span style={{ fontSize:"12px", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{label}</span>
       </button>
-      {badge>0&&<div style={{ position:"absolute", top:"-3px", right:"-3px", background:"#cc0000", color:"#fff", fontSize:"9px", fontWeight:"bold", padding:"1px 5px", border:"1px solid #800000", zIndex:1 }}>{badge}</div>}
+      {badge>0&&<div style={{ position:"absolute", top:"4px", right:"6px", background:"#e63946", color:"#fff", fontSize:"10px", fontWeight:700, minWidth:"18px", height:"18px", borderRadius:"999px", display:"grid", placeItems:"center", zIndex:1 }}>{badge}</div>}
     </div>
   );
 };
 
-export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
-  const isMobile = useIsMobile();
+export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile: mobileProp }) {
+  const isMobileLocal = useIsMobile();
+  const isMobile = typeof mobileProp === "boolean" ? mobileProp : isMobileLocal;
   const [page, setPage] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
   const [data, setData] = useState(initialData);
@@ -2440,77 +2510,92 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail }) {
   const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, drivers:DriversPage, vehicles:VehiclesPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage };
   const PageComponent = pages[page];
 
+  const sectionOrder = ["メイン", "案件管理", "マスタ管理", "経理"];
   return (
-    <div style={{ minHeight:"100vh", background:"#008080", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:isMobile?"6px":"12px", fontFamily:"'MS Gothic','ＭＳ ゴシック','Noto Sans JP',monospace" }}>
-      <div style={{ background:winBg, ...raised, width:"100%", maxWidth:isMobile?"100%":"1100px", boxShadow:"4px 4px 0 #404040" }}>
-        {/* Title bar */}
-        <div style={{ background:"linear-gradient(to right,#000080,#1084d0)", padding:"3px 8px", display:"flex", alignItems:"center", gap:"8px" }}>
-          {isMobile && <RetroBtn small onClick={()=>setMenuOpen(v=>!v)} style={{ minHeight:"32px", padding:"2px 8px" }}>≡</RetroBtn>}
-          <span style={{ fontSize:"16px" }}>🚚</span>
-          <span style={{ color:"#fff", fontFamily:"monospace", fontSize:"13px", fontWeight:"bold", flex:1 }}>{isMobile?"配送管理":"配送管理システム"}</span>
-          {!isMobile && <span style={{ color:"#cce0ff", fontSize:"10px", marginRight:"6px", maxWidth:"200px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={authEmail || ""}>
-            {authRole === "admin" ? "管理者" : authRole === "driver" ? "ドライバー" : ""}{authEmail ? ` · ${authEmail}` : ""}
-          </span>}
-          {!isMobile && <span style={{ color:"#cce0ff", fontSize:"11px", marginRight:"10px" }}>
-            {now.getFullYear()}年{now.getMonth()+1}月{now.getDate()}日　{now.getHours()}:{String(now.getMinutes()).padStart(2,"0")}
-          </span>}
-          {typeof onLogout === "function" && (
-            <RetroBtn small onClick={onLogout} color="#ffcfcf" style={{ marginRight:"6px" }}>ログアウト</RetroBtn>
+    <div style={{ minHeight:"100vh", background:UI.mainBg, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", color:UI.text }}>
+      <div style={{ background:"#fff", borderBottom:cardBorder, height:"48px", display:"flex", alignItems:"center", padding:"0 14px", gap:"10px" }}>
+        {isMobile && (
+          <button onClick={()=>setMenuOpen(v=>!v)} style={{ border:cardBorder, background:"#fff", borderRadius:"4px", width:"32px", height:"32px", display:"grid", placeItems:"center", color:"#666" }}>
+            <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
+          </button>
+        )}
+        <div style={{ width:"30px", height:"30px", borderRadius:"5px", background:"linear-gradient(135deg,#00a09a,#007a74)", color:"#fff", display:"grid", placeItems:"center", fontWeight:700, fontSize:"12px" }}>T-L</div>
+        <div style={{ display:"flex", flexDirection:"column", lineHeight:1.1 }}>
+          <div style={{ fontSize:"14px", color:"#222", fontWeight:500 }}><span style={{ color:"#00a09a", fontWeight:700 }}>T-LINK</span> 配送管理システム</div>
+          <div style={{ fontSize:"10px", color:"#999" }}>Delivery Management System</div>
+        </div>
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
+          <button style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
+            <Icon size={18}><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 5 0c0 1.7-2.5 2-2.5 3.5"/><line x1="12" y1="17.5" x2="12" y2="17.5"/></Icon>
+          </button>
+          <button style={{ position:"relative", border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
+            <Icon size={18}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 6-3 8h18c0-2-3-1-3-8"/><path d="M10 19a2 2 0 0 0 4 0"/></Icon>
+            <span style={{ position:"absolute", top:"0", right:"0", width:"7px", height:"7px", borderRadius:"50%", background:"#e63946" }} />
+          </button>
+          {!isMobile && (
+            <>
+              <div style={{ display:"flex", alignItems:"center", gap:"6px", color:"#666", fontSize:"12px" }}>
+                <span style={{ background:"#e8f5f4", color:"#007a74", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>{authRole === "admin" ? "管理者" : authRole === "driver" ? "ドライバー" : "ユーザー"}</span>
+                <span>{authEmail || "-"}</span>
+              </div>
+              {typeof onLogout === "function" && <RetroBtn small onClick={onLogout}>ログアウト</RetroBtn>}
+            </>
           )}
-          {!isMobile && ["－","□","✕"].map((c,i)=><div key={i} style={{ ...raised, background:winBg, width:"16px", height:"14px", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"9px", cursor:"pointer" }}>{c}</div>)}
         </div>
+      </div>
 
-        {/* Menubar */}
-        {!isMobile && <div style={{ borderBottom:"2px solid #808080", padding:"1px 4px", display:"flex", gap:"2px", background:winBg }}>
-          {["ファイル(F)","編集(E)","表示(V)","ヘルプ(H)"].map(m=>(
-            <div key={m} style={{ padding:"2px 8px", fontSize:"11px", cursor:"pointer", fontFamily:"monospace" }}
-              onMouseEnter={e=>{e.currentTarget.style.background="#000080";e.currentTarget.style.color="#fff";}}
-              onMouseLeave={e=>{e.currentTarget.style.background="";e.currentTarget.style.color="";}}>{m}</div>
-          ))}
-        </div>}
-
-        <div style={{ display:"flex", minHeight:"580px" }}>
-          {/* Sidebar */}
-          {!isMobile && <div style={{ width:"122px", borderRight:"2px solid #808080", padding:"6px", display:"flex", flexDirection:"column", gap:"3px", background:"#c0c0c0", flexShrink:0 }}>
-            {MENU.map(m=>(
-              <MenuBtn key={m.id} icon={m.icon} label={m.label} onClick={()=>setPageWithHistory(m.id)} active={page===m.id} badge={badges[m.id]||0}/>
-            ))}
-          </div>}
-
-          {/* Content */}
-          <div style={{ flex:1, padding:"10px", overflow:"auto" }}>
-            {isMobile && menuOpen && (
-              <div style={{ ...inset3d, background:"#c0c0c0", padding:"6px", marginBottom:"8px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:"4px" }}>
-                {MENU.map(m=>(
-                  <RetroBtn key={m.id} small onClick={()=>{setPageWithHistory(m.id);setMenuOpen(false);}} style={{ justifyContent:"flex-start" }}>
-                    {m.icon} {m.label}
-                  </RetroBtn>
-                ))}
-              </div>
-            )}
-            <div style={{ ...inset3d, background:"#fff", padding:"2px 8px", marginBottom:"8px", display:"flex", alignItems:"center", gap:"6px" }}>
-              <span style={{ fontSize:"11px", color:"#404040" }}>現在：</span>
-              <span style={{ fontSize:"11px", fontWeight:"bold", color:"#000080" }}>{MENU.find(m=>m.id===page)?.icon} {MENU.find(m=>m.id===page)?.label}</span>
+      <div style={{ display:"flex", minHeight:"calc(100vh - 48px)" }}>
+        {!isMobile && (
+          <aside style={{ width:"210px", borderRight:`1px solid ${UI.sidebarBorder}`, background:UI.sidebarBg, padding:"10px", boxSizing:"border-box", flexShrink:0 }}>
+            <div style={{ background:UI.sidebarHeader, border:`1px solid ${UI.sidebarBorder}`, borderRadius:"6px", padding:"8px", marginBottom:"10px" }}>
+              <div style={{ fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"6px" }}>組織</div>
+              <div style={{ background:"#fff", border:cardBorder, borderRadius:"4px", padding:"6px 8px", fontSize:"12px", color:"#333", marginBottom:"6px" }}>T-LINK 本社</div>
+              <div style={{ fontSize:"11px", color:"#888" }}>{now.getFullYear()}年{now.getMonth()+1}月{now.getDate()}日 {now.getHours()}:{String(now.getMinutes()).padStart(2,"0")}</div>
             </div>
-            {!isLoaded ? (
-              <div style={{ ...inset3d, background:"#fff", padding:"24px", textAlign:"center", fontFamily:"monospace", fontSize:"12px", color:"#808080" }}>
-                データを読み込んでいます...
+            {sectionOrder.map((section)=>(
+              <div key={section} style={{ marginBottom:"10px" }}>
+                <div style={{ fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"4px" }}>{section}</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:"2px" }}>
+                  {MENU.filter((m)=>m.section===section).map((m)=>(
+                    <MenuBtn key={m.id} icon={m.icon} label={m.label} onClick={()=>setPageWithHistory(m.id)} active={page===m.id} badge={badges[m.id]||0}/>
+                  ))}
+                </div>
               </div>
-            ) : (
-              <PageComponent data={data} setData={setData} setPage={setPageWithHistory} isMobile={isMobile}/>
-            )}
-          </div>
-        </div>
+            ))}
+          </aside>
+        )}
 
-        {/* Statusbar */}
-        <div style={{ borderTop:"2px solid #808080", padding:"2px 8px", display:"flex", gap:"8px", background:winBg }}>
-          <div style={{ ...inset3d, padding:"1px 8px", flex:1, fontSize:"11px" }}>
-            稼働案件：{(Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="in_transit").length}件　未配車：{pendingCount}件　ドライバー待機：{(Array.isArray(data?.drivers) ? data.drivers : []).filter(d=>d?.status==="available").length}名
+        <main style={{ flex:1, padding:isMobile ? "10px" : "14px", overflow:"auto" }}>
+          {isMobile && menuOpen && (
+            <div style={{ background:UI.sidebarBg, border:`1px solid ${UI.sidebarBorder}`, borderRadius:"6px", padding:"8px", marginBottom:"10px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px" }}>
+              {MENU.map((m)=>(
+                <button key={m.id} onClick={()=>{setPageWithHistory(m.id);setMenuOpen(false);}} style={{ border:cardBorder, background:page===m.id?"#e8f5f4":"#fff", borderRadius:"4px", padding:"8px", display:"flex", alignItems:"center", gap:"6px", color:"#333", fontSize:"12px", fontWeight:600 }}>
+                  {m.icon}{m.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ border:cardBorder, background:"#fff", borderRadius:"6px", padding:"8px 10px", marginBottom:"10px", display:"flex", alignItems:"center", gap:"8px" }}>
+            <span style={{ fontSize:"11px", color:"#888" }}>現在：</span>
+            <span style={{ fontSize:"12px", fontWeight:700, color:"#007a74", display:"inline-flex", alignItems:"center", gap:"6px" }}>{MENU.find(m=>m.id===page)?.icon}{MENU.find(m=>m.id===page)?.label}</span>
           </div>
-          {unmatchedCount>0&&<div style={{ ...inset3d, padding:"1px 8px", fontSize:"11px", color:"#cc6600", fontWeight:"bold" }}>未照合入金：{unmatchedCount}件</div>}
-          {overdueCount>0&&<div style={{ ...inset3d, padding:"1px 8px", fontSize:"11px", color:"#cc0000", fontWeight:"bold" }}>延滞：{overdueCount}件</div>}
-          <div style={{ ...inset3d, padding:"1px 8px", fontSize:"11px" }}>Ver.2.0</div>
+          {!isLoaded ? (
+            <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", padding:"24px", textAlign:"center", fontSize:"12px", color:"#888" }}>
+              データを読み込んでいます...
+            </div>
+          ) : (
+            <PageComponent data={data} setData={setData} setPage={setPageWithHistory} isMobile={isMobile}/>
+          )}
+        </main>
+      </div>
+
+      <div style={{ borderTop:cardBorder, background:"#fff", padding:"6px 12px", display:"flex", gap:"8px", alignItems:"center", flexWrap:"wrap" }}>
+        <div style={{ fontSize:"11px", color:"#666", flex:1 }}>
+          稼働案件：{(Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="in_transit").length}件　未配車：{pendingCount}件　ドライバー待機：{(Array.isArray(data?.drivers) ? data.drivers : []).filter(d=>d?.status==="available").length}名
         </div>
+        {unmatchedCount>0&&<span style={{ fontSize:"11px", color:"#e65100", background:"#fff3e0", border:"1px solid #ff9800", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>未照合入金：{unmatchedCount}件</span>}
+        {overdueCount>0&&<span style={{ fontSize:"11px", color:"#c62828", background:"#ffebee", border:"1px solid #e63946", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>延滞：{overdueCount}件</span>}
+        <span style={{ fontSize:"11px", color:"#999" }}>Ver.2.0</span>
       </div>
     </div>
   );
