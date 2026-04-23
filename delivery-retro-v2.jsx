@@ -830,8 +830,11 @@ const BankPage = ({ data, setData }) => {
   const payables = Array.isArray(data?.payables) ? data.payables : [];
   const events = Array.isArray(data?.events) ? data.events : [];
   const todayStr = new Date().toISOString().split("T")[0];
+  const fileInputRef = useRef(null);
   const [addTx, setAddTx] = useState(false);
   const [form, setForm] = useState({ date:todayStr, amount:"", description:"", direction:"in" });
+  const [uploadingCsv, setUploadingCsv] = useState(false);
+  const [uploadToast, setUploadToast] = useState("");
 
   const todayStr2 = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
   const unmatchedBanks = bankTransactions.filter(b=>b?.status==="unmatched");
@@ -853,11 +856,16 @@ const BankPage = ({ data, setData }) => {
       const mapped = (rows || []).map((row) => ({
         id: row?.id,
         date: row?.transaction_date || "",
+        transaction_date: row?.transaction_date || "",
         description: row?.description || "",
         counterparty: row?.counterparty || "",
         amount: Number(row?.deposit_amount) || Number(row?.withdrawal_amount) || 0,
+        deposit_amount: Number(row?.deposit_amount) || 0,
+        withdrawal_amount: Number(row?.withdrawal_amount) || 0,
         status: row?.match_status || "unmatched",
+        match_status: row?.match_status || "unmatched",
         matchedInvoice: row?.matched_invoice_id || null,
+        matched_invoice_id: row?.matched_invoice_id || null,
       }));
       setBankTransactions(mapped);
     };
@@ -879,9 +887,199 @@ const BankPage = ({ data, setData }) => {
   const payableIcon = <Icon size={14}><circle cx="12" cy="12" r="9"/><path d="M12 7v10"/><path d="M8 11h8"/></Icon>;
   const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
   const checkIcon = <Icon size={12}><polyline points="4,12 9,17 20,6"/></Icon>;
+  const uploadIcon = <Icon size={14}><path d="M12 16V4"/><polyline points="7,9 12,4 17,9"/><rect x="4" y="16" width="16" height="4" rx="1"/></Icon>;
+
+  const showUploadToast = (message) => {
+    setUploadToast(message);
+    setTimeout(() => setUploadToast(""), 3000);
+  };
+
+  const normalizeAmount = (value) => {
+    const raw = String(value ?? "").replace(/,/g, "").trim();
+    if (!raw || raw === "-") return 0;
+    const num = Number(raw);
+    return Number.isFinite(num) ? Math.abs(num) : 0;
+  };
+
+  const toIsoDate = (value) => {
+    const m = String(value || "").trim().match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+    if (!m) return "";
+    return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  };
+
+  const parseCsvLine = (line) => {
+    const out = [];
+    let cur = "";
+    let inQuote = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      if (ch === "\"") {
+        inQuote = !inQuote;
+      } else if (ch === "," && !inQuote) {
+        out.push(cur.trim());
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur.trim());
+    return out;
+  };
+
+  const parseSmbcCsvText = (text) => {
+    const lines = String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length < 2) throw new Error("format");
+    const header = parseCsvLine(lines[0]);
+    const keys = ["お取引日", "摘要", "お取引内容", "お預り（入金）", "お引出し（出金）", "差引残高"];
+    const idx = Object.fromEntries(keys.map((k) => [k, header.indexOf(k)]));
+    if (keys.some((k) => idx[k] < 0)) throw new Error("format");
+
+    return lines.slice(1).map((line) => {
+      const cols = parseCsvLine(line);
+      const transaction_date = toIsoDate(cols[idx["お取引日"]]);
+      if (!transaction_date) return null;
+      return {
+        transaction_date,
+        description: cols[idx["摘要"]] || "",
+        counterparty: cols[idx["お取引内容"]] || "",
+        deposit_amount: normalizeAmount(cols[idx["お預り（入金）"]]),
+        withdrawal_amount: normalizeAmount(cols[idx["お引出し（出金）"]]),
+        balance: normalizeAmount(cols[idx["差引残高"]]),
+        bank_name: "SMBC",
+        match_status: "unmatched",
+        matched_invoice_id: null,
+        matched_at: null,
+        matched_by: null,
+        note: null,
+      };
+    }).filter(Boolean);
+  };
+
+  const decodeCsvFile = async (file) => {
+    const buffer = await file.arrayBuffer();
+    for (const encoding of ["utf-8", "shift-jis"]) {
+      try {
+        const text = new TextDecoder(encoding).decode(buffer);
+        const parsed = parseSmbcCsvText(text);
+        if (parsed.length > 0) return parsed;
+      } catch (_e) {
+        // try next
+      }
+    }
+    throw new Error("format");
+  };
+
+  const onUploadCsv = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploadingCsv(true);
+    try {
+      const parsed = await decodeCsvFile(file);
+      const existingSet = new Set(
+        bankTransactions.map((tx) => {
+          const dateKey = tx?.transaction_date || tx?.date || "";
+          const cp = tx?.counterparty || "";
+          const dep = Number(tx?.deposit_amount) || (Number(tx?.amount) || 0);
+          const wd = Number(tx?.withdrawal_amount) || 0;
+          return `${dateKey}|${cp}|${dep}|${wd}`;
+        })
+      );
+
+      const toInsert = [];
+      let skipped = 0;
+      for (const row of parsed) {
+        const key = `${row.transaction_date}|${row.counterparty || ""}|${Number(row.deposit_amount) || 0}|${Number(row.withdrawal_amount) || 0}`;
+        if (existingSet.has(key)) {
+          skipped += 1;
+          continue;
+        }
+        existingSet.add(key);
+        toInsert.push(row);
+      }
+
+      if (toInsert.length > 0) {
+        const { data: inserted, error: saveErr } = await supabase
+          .from("bank_transactions")
+          .insert(toInsert)
+          .select("*");
+        if (saveErr) throw saveErr;
+        const mapped = (inserted || []).map((row) => ({
+          id: row?.id,
+          date: row?.transaction_date || "",
+          transaction_date: row?.transaction_date || "",
+          description: row?.description || "",
+          counterparty: row?.counterparty || "",
+          amount: Number(row?.deposit_amount) || Number(row?.withdrawal_amount) || 0,
+          deposit_amount: Number(row?.deposit_amount) || 0,
+          withdrawal_amount: Number(row?.withdrawal_amount) || 0,
+          status: row?.match_status || "unmatched",
+          match_status: row?.match_status || "unmatched",
+          matchedInvoice: row?.matched_invoice_id || null,
+          matched_invoice_id: row?.matched_invoice_id || null,
+        }));
+        setBankTransactions((prev) => [...mapped, ...prev]);
+      }
+
+      showUploadToast(`${toInsert.length}件取込、${skipped}件スキップ（重複）`);
+    } catch (err) {
+      if (err?.message === "format") {
+        window.alert("CSVフォーマットが不正です");
+      } else {
+        window.alert(`保存に失敗しました：${err?.message || String(err)}`);
+      }
+    } finally {
+      setUploadingCsv(false);
+    }
+  };
+
+  const transactionRows = [...bankTransactions].sort(
+    (a, b) => String(b?.transaction_date || b?.date || "").localeCompare(String(a?.transaction_date || a?.date || ""))
+  );
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:"8px" }}>
+        <div style={{ fontSize:"12px", color:"#666" }}>SMBC銀行CSVから取引明細を取り込み</div>
+        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+          {uploadingCsv && <span style={{ fontSize:"12px", color:"#666" }}>読み込み中...</span>}
+          <RetroBtn onClick={() => fileInputRef.current?.click()} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+            {uploadIcon}SMBC CSVアップロード
+          </RetroBtn>
+          <input ref={fileInputRef} type="file" accept=".csv" style={{ display:"none" }} onChange={onUploadCsv} />
+        </div>
+      </div>
+      {uploadToast && (
+        <div style={{ position:"fixed", top:"62px", right:"18px", zIndex:10000, background:"#00a09a", color:"#fff", padding:"8px 12px", borderRadius:"6px", boxShadow:softShadow, fontSize:"12px", fontWeight:600 }}>
+          {uploadToast}
+        </div>
+      )}
+
+      <Panel title="アップロード済み銀行取引明細" icon={bankIcon}>
+        <RetroTable
+          headers={["取引日","摘要","振込名義","入金額","出金額","ステータス"]}
+          rows={transactionRows.map((tx) => {
+            const status = tx?.match_status || tx?.status || "unmatched";
+            const badge = {
+              unmatched: ["未照合", "#e8e8e8", "#555", "#d0d0d0"],
+              candidate: ["候補あり", "#fff3e0", "#e65100", "#ff9800"],
+              matched: ["照合済", "#e8f5e9", "#2e7d32", "#4caf50"],
+            }[status] || ["未照合", "#e8e8e8", "#555", "#d0d0d0"];
+            const [label, bg, fg, border] = badge;
+            const dep = Number(tx?.deposit_amount) || 0;
+            const wd = Number(tx?.withdrawal_amount) || 0;
+            return [
+              tx?.transaction_date || tx?.date || "",
+              tx?.description || "",
+              tx?.counterparty || "",
+              dep > 0 ? `¥${dep.toLocaleString()}` : "-",
+              wd > 0 ? `¥${wd.toLocaleString()}` : "-",
+              <span style={{ background:bg, color:fg, border:`1px solid ${border}`, borderRadius:"999px", padding:"2px 8px", fontSize:"11px", fontWeight:700 }}>{label}</span>,
+            ];
+          })}
+        />
+      </Panel>
+
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"8px" }}>
         {[
           ["未照合入金", "¥"+totalUnmatched.toLocaleString(), "#ff9800"],
