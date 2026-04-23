@@ -825,7 +825,7 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
 
 // ===== BANK PAGE =====
 const BankPage = ({ data, setData }) => {
-  const bankTransactions = Array.isArray(data?.bankTransactions) ? data.bankTransactions : [];
+  const [bankTransactions, setBankTransactions] = useState(Array.isArray(data?.bankTransactions) ? data.bankTransactions : []);
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
   const payables = Array.isArray(data?.payables) ? data.payables : [];
   const events = Array.isArray(data?.events) ? data.events : [];
@@ -838,8 +838,38 @@ const BankPage = ({ data, setData }) => {
   const totalUnmatched = unmatchedBanks.reduce((s,b)=>s+(Number(b?.amount)||0),0);
   const overdueTotal = invoices.filter(i=>i?.status==="overdue"||(i?.status==="unpaid"&&(i?.dueDate||"")<todayStr2)).reduce((s,i)=>s+(Number(i?.total)||0),0);
 
+  useEffect(() => {
+    let alive = true;
+    const loadBankTransactions = async () => {
+      const { data: rows, error } = await supabase
+        .from("bank_transactions")
+        .select("*")
+        .order("transaction_date", { ascending: false });
+      if (error) {
+        console.warn("Failed to load bank_transactions:", error);
+        return;
+      }
+      if (!alive) return;
+      const mapped = (rows || []).map((row) => ({
+        id: row?.id,
+        date: row?.transaction_date || "",
+        description: row?.description || "",
+        counterparty: row?.counterparty || "",
+        amount: Number(row?.deposit_amount) || Number(row?.withdrawal_amount) || 0,
+        status: row?.match_status || "unmatched",
+        matchedInvoice: row?.matched_invoice_id || null,
+      }));
+      setBankTransactions(mapped);
+    };
+    loadBankTransactions();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const addTxn = () => {
     const tx = { id:`BNK-${String(bankTransactions.length+1).padStart(3,"0")}`, date:form.date, amount:parseInt(form.amount)||0, description:form.description, matchedInvoice:null, status:"unmatched" };
+    setBankTransactions((prev) => [tx, ...prev]);
     setData(d=>({...d, bankTransactions:[tx,...(Array.isArray(d?.bankTransactions) ? d.bankTransactions : [])]}));
     setAddTx(false); setForm({ date:todayStr2, amount:"", description:"", direction:"in" });
   };
@@ -886,6 +916,9 @@ const BankPage = ({ data, setData }) => {
                 <RetroSelect style={{ width:"250px" }} onChange={e=>{
                   if(!e.target.value) return;
                   const inv = invoices.find(i=>i?.id===e.target.value);
+                  setBankTransactions((prev) =>
+                    prev.map((bt)=>bt?.id===b?.id?{...bt,matchedInvoice:e.target.value,status:"matched"}:bt)
+                  );
                   setData(d=>({
                     ...d,
                     bankTransactions:(Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).map(bt=>bt?.id===b?.id?{...bt,matchedInvoice:e.target.value,status:"matched"}:bt),
@@ -2259,7 +2292,6 @@ const TABLE_CONFIG = [
   { key: "drivers", table: "drivers" },
   { key: "vehicles", table: "vehicles" },
   { key: "invoices", table: "invoices" },
-  { key: "bankTransactions", table: "bank_transactions" },
   { key: "events", table: "events" },
   { key: "payables", table: "payables" },
   { key: "companyInfo", table: "company_info", single: true },
