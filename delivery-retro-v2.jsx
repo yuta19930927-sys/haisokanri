@@ -829,6 +829,7 @@ const BankPage = ({ data, setData }) => {
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
   const payables = Array.isArray(data?.payables) ? data.payables : [];
   const events = Array.isArray(data?.events) ? data.events : [];
+  const todayStr = new Date().toISOString().split("T")[0];
   const [addTx, setAddTx] = useState(false);
   const [form, setForm] = useState({ date:todayStr, amount:"", description:"", direction:"in" });
 
