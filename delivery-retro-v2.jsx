@@ -828,9 +828,12 @@ const BankPage = ({ data, setData }) => {
   const bankTransactions = Array.isArray(data?.bankTransactions) ? data.bankTransactions : [];
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
   const payables = Array.isArray(data?.payables) ? data.payables : [];
-  const events = Array.isArray(data?.events) ? data.events : [];
+  const fileInputRef = useRef(null);
   const [addTx, setAddTx] = useState(false);
   const [form, setForm] = useState({ date:todayStr, amount:"", description:"", direction:"in" });
+  const [uploadedRows, setUploadedRows] = useState([]);
+  const [uploadingCsv, setUploadingCsv] = useState(false);
+  const [uploadToast, setUploadToast] = useState("");
 
   const todayStr2 = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
   const unmatchedBanks = bankTransactions.filter(b=>b?.status==="unmatched");
@@ -848,9 +851,191 @@ const BankPage = ({ data, setData }) => {
   const payableIcon = <Icon size={14}><circle cx="12" cy="12" r="9"/><path d="M12 7v10"/><path d="M8 11h8"/></Icon>;
   const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
   const checkIcon = <Icon size={12}><polyline points="4,12 9,17 20,6"/></Icon>;
+  const uploadIcon = <Icon size={14}><path d="M12 16V4"/><polyline points="7,9 12,4 17,9"/><rect x="4" y="16" width="16" height="4" rx="1"/></Icon>;
+
+  const showToast = (message) => {
+    setUploadToast(message);
+    setTimeout(() => setUploadToast(""), 3000);
+  };
+
+  const normalizeNumber = (value) => {
+    const v = String(value || "").replace(/,/g, "").trim();
+    if (!v || v === "-") return 0;
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.abs(n) : 0;
+  };
+
+  const toIsoDate = (value) => {
+    const m = String(value || "").trim().match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+    if (!m) return "";
+    return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  };
+
+  const parseCsvLine = (line) => {
+    const out = [];
+    let cur = "";
+    let inQuote = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      const quoteChar = ch === "\"" || ch === "“" || ch === "”";
+      if (quoteChar) {
+        inQuote = !inQuote;
+        continue;
+      }
+      if (ch === "," && !inQuote) {
+        out.push(cur.trim());
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur.trim());
+    return out;
+  };
+
+  const parseSmbcCsvText = (text) => {
+    const lines = String(text || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length < 2) throw new Error("format");
+    const header = parseCsvLine(lines[0]);
+    const required = ["お取引日", "摘要", "お取引内容", "お預り（入金）", "お引出し（出金）", "差引残高"];
+    const index = Object.fromEntries(required.map((k) => [k, header.indexOf(k)]));
+    if (required.some((k) => index[k] < 0)) throw new Error("format");
+
+    return lines.slice(1).map((line) => {
+      const c = parseCsvLine(line);
+      const transaction_date = toIsoDate(c[index["お取引日"]]);
+      if (!transaction_date) return null;
+      return {
+        transaction_date,
+        description: c[index["摘要"]] || "",
+        counterparty: c[index["お取引内容"]] || "",
+        deposit_amount: normalizeNumber(c[index["お預り（入金）"]]),
+        withdrawal_amount: normalizeNumber(c[index["お引出し（出金）"]]),
+        balance: normalizeNumber(c[index["差引残高"]]),
+        bank_name: "SMBC",
+        match_status: "unmatched",
+        matched_invoice_id: null,
+        matched_at: null,
+        matched_by: null,
+        note: null,
+      };
+    }).filter(Boolean);
+  };
+
+  const decodeCsvFile = async (file) => {
+    const buf = await file.arrayBuffer();
+    for (const enc of ["utf-8", "shift-jis"]) {
+      try {
+        const text = new TextDecoder(enc).decode(buf);
+        const parsed = parseSmbcCsvText(text);
+        if (parsed.length > 0) return parsed;
+      } catch (_e) {}
+    }
+    throw new Error("format");
+  };
+
+  const loadUploadedRows = async () => {
+    const { data: rows, error } = await supabase
+      .from("bank_transactions")
+      .select("id,transaction_date,description,counterparty,deposit_amount,withdrawal_amount,match_status")
+      .order("transaction_date", { ascending: false });
+    if (!error) setUploadedRows(rows || []);
+  };
+
+  useEffect(() => {
+    loadUploadedRows();
+  }, []);
+
+  const onPickCsv = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploadingCsv(true);
+    try {
+      const parsed = await decodeCsvFile(file);
+      const { data: existingRows, error: existingErr } = await supabase
+        .from("bank_transactions")
+        .select("transaction_date,counterparty,deposit_amount,withdrawal_amount");
+      if (existingErr) throw existingErr;
+
+      const existingSet = new Set(
+        (existingRows || []).map(
+          (r) => `${r.transaction_date}|${r.counterparty || ""}|${Number(r.deposit_amount) || 0}|${Number(r.withdrawal_amount) || 0}`
+        )
+      );
+      const toInsert = [];
+      let skipped = 0;
+      for (const row of parsed) {
+        const k = `${row.transaction_date}|${row.counterparty || ""}|${Number(row.deposit_amount) || 0}|${Number(row.withdrawal_amount) || 0}`;
+        if (existingSet.has(k)) {
+          skipped += 1;
+          continue;
+        }
+        existingSet.add(k);
+        toInsert.push(row);
+      }
+
+      if (toInsert.length > 0) {
+        const { error: saveErr } = await supabase.from("bank_transactions").insert(toInsert);
+        if (saveErr) throw saveErr;
+      }
+      await loadUploadedRows();
+      showToast(`${toInsert.length}件取込、${skipped}件スキップ（重複）`);
+    } catch (err) {
+      if (err.message === "format") {
+        window.alert("CSVフォーマットが不正です");
+      } else {
+        window.alert(`保存に失敗しました：${err.message || String(err)}`);
+      }
+    } finally {
+      setUploadingCsv(false);
+    }
+  };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:"8px", flexWrap:"wrap" }}>
+        <div style={{ fontSize:"12px", color:"#666" }}>SMBC銀行CSVから取引明細を取り込み</div>
+        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+          {uploadingCsv && <span style={{ fontSize:"12px", color:"#666" }}>読み込み中...</span>}
+          <RetroBtn onClick={() => fileInputRef.current?.click()} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+            {uploadIcon}SMBC CSVアップロード
+          </RetroBtn>
+          <input ref={fileInputRef} type="file" accept=".csv" style={{ display:"none" }} onChange={onPickCsv} />
+        </div>
+      </div>
+      {uploadToast && (
+        <div style={{ position:"fixed", top:"62px", right:"18px", zIndex:10000, background:"#00a09a", color:"#fff", padding:"8px 12px", borderRadius:"6px", boxShadow:softShadow, fontSize:"12px", fontWeight:600 }}>
+          {uploadToast}
+        </div>
+      )}
+
+      <Panel title="アップロード済み銀行取引明細" icon={bankIcon}>
+        <RetroTable
+          headers={["取引日","摘要","振込名義","入金額","出金額","ステータス"]}
+          rows={uploadedRows.map((r) => [
+            r?.transaction_date || "",
+            r?.description || "",
+            r?.counterparty || "",
+            Number(r?.deposit_amount) > 0 ? `¥${Number(r.deposit_amount).toLocaleString()}` : "-",
+            Number(r?.withdrawal_amount) > 0 ? `¥${Number(r.withdrawal_amount).toLocaleString()}` : "-",
+            (() => {
+              const map = {
+                unmatched: ["未照合", "#e8e8e8", "#555", "#d0d0d0"],
+                candidate: ["候補あり", "#fff3e0", "#e65100", "#ff9800"],
+                matched: ["照合済", "#e8f5e9", "#2e7d32", "#4caf50"],
+              };
+              const [label, bg, fg, border] = map[r?.match_status] || map.unmatched;
+              return (
+                <span style={{ background:bg, color:fg, border:`1px solid ${border}`, borderRadius:"999px", padding:"2px 8px", fontSize:"11px", fontWeight:700 }}>
+                  {label}
+                </span>
+              );
+            })(),
+          ])}
+        />
+      </Panel>
+
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"8px" }}>
         {[
           ["未照合入金", "¥"+totalUnmatched.toLocaleString(), "#ff9800"],
