@@ -969,39 +969,33 @@ const BankPage = ({ data, setData }) => {
     throw new Error("format");
   };
 
+  const makeDedupeKey = (row) => {
+    const date = String(row?.transaction_date || row?.date || "").trim();
+    const counterparty = String(row?.counterparty || "").trim();
+    const deposit = Number(row?.deposit_amount || 0);
+    const withdrawal = Number(row?.withdrawal_amount || 0);
+    return `${date}|${counterparty}|${deposit}|${withdrawal}`;
+  };
+
   const onUploadCsv = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
     setUploadingCsv(true);
     try {
-      const parsed = await decodeCsvFile(file);
-      const existingSet = new Set(
-        bankTransactions.map((tx) => {
-          const dateKey = tx?.transaction_date || tx?.date || "";
-          const cp = tx?.counterparty || "";
-          const dep = Number(tx?.deposit_amount) || (Number(tx?.amount) || 0);
-          const wd = Number(tx?.withdrawal_amount) || 0;
-          return `${dateKey}|${cp}|${dep}|${wd}`;
-        })
-      );
+      const parsedRows = await decodeCsvFile(file);
+      const existingKeys = new Set(bankTransactions.map(makeDedupeKey));
+      const newRows = parsedRows.filter((row) => !existingKeys.has(makeDedupeKey(row)));
+      const skipped = parsedRows.length - newRows.length;
 
-      const toInsert = [];
-      let skipped = 0;
-      for (const row of parsed) {
-        const key = `${row.transaction_date}|${row.counterparty || ""}|${Number(row.deposit_amount) || 0}|${Number(row.withdrawal_amount) || 0}`;
-        if (existingSet.has(key)) {
-          skipped += 1;
-          continue;
-        }
-        existingSet.add(key);
-        toInsert.push(row);
-      }
+      console.log("[CSV dedupe] 既存キー一覧:", Array.from(existingKeys));
+      console.log("[CSV dedupe] パース結果＋キー:", parsedRows.map((r) => ({ ...r, _key: makeDedupeKey(r) })));
+      console.log("[CSV dedupe] 新規:", newRows.length, "スキップ:", skipped);
 
-      if (toInsert.length > 0) {
+      if (newRows.length > 0) {
         const { data: inserted, error: saveErr } = await supabase
           .from("bank_transactions")
-          .insert(toInsert)
+          .insert(newRows)
           .select("*");
         if (saveErr) throw saveErr;
         const mapped = (inserted || []).map((row) => ({
@@ -1021,7 +1015,7 @@ const BankPage = ({ data, setData }) => {
         setBankTransactions((prev) => [...mapped, ...prev]);
       }
 
-      showUploadToast(`${toInsert.length}件取込、${skipped}件スキップ（重複）`);
+      showUploadToast(`${newRows.length}件取込、${skipped}件スキップ（重複）`);
     } catch (err) {
       if (err?.message === "format") {
         window.alert("CSVフォーマットが不正です");
