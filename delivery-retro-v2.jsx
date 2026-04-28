@@ -1643,9 +1643,11 @@ const CustomersPage = ({ data, setData }) => {
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ name:"", contact:"", phone:"", email:"", payer_kana:"", address:"", notes:"", unitPrice:"", closingDay:31, paymentSite:"翌月末払い" });
+  const [isAddPayerKanaComposing, setIsAddPayerKanaComposing] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [customerEditMode, setCustomerEditMode] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(null);
+  const [isEditPayerKanaComposing, setIsEditPayerKanaComposing] = useState(false);
   const selectedCustomer = customers.find((c) => c?.id === selectedCustomerId) || null;
   const formatClosingDay = (closingDay) => {
     if (closingDay === 31 || Number(closingDay) === 31) return "月末";
@@ -1735,7 +1737,22 @@ const CustomersPage = ({ data, setData }) => {
           <Fl label="電話"><RetroInput value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></Fl>
         </div>
         <Fl label="メール"><RetroInput value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))}/></Fl>
-        <Fl label="振込名義カナ"><RetroInput value={form.payer_kana} placeholder="例：カブシキガイシャタナカショウジ" onChange={e=>setForm(f=>({...f,payer_kana:normalizePayerKana(e.target.value)}))}/></Fl>
+        <Fl label="振込名義カナ"><RetroInput
+          value={form.payer_kana}
+          placeholder="例：カブシキガイシャタナカショウジ"
+          onCompositionStart={()=>setIsAddPayerKanaComposing(true)}
+          onCompositionEnd={(e)=>{
+            setIsAddPayerKanaComposing(false);
+            setForm((f)=>({ ...f, payer_kana:normalizePayerKana(e.target.value) }));
+          }}
+          onChange={(e)=>{
+            if (isAddPayerKanaComposing) {
+              setForm((f)=>({ ...f, payer_kana:e.target.value }));
+              return;
+            }
+            setForm((f)=>({ ...f, payer_kana:normalizePayerKana(e.target.value) }));
+          }}
+        /></Fl>
         <Fl label="住所"><RetroInput value={form.address} onChange={e=>setForm(f=>({...f,address:e.target.value}))}/></Fl>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px 12px"}}>
           <Fl label="単価（円）"><RetroInput type="number" value={form.unitPrice} onChange={e=>setForm(f=>({...f,unitPrice:e.target.value}))}/></Fl>
@@ -1766,7 +1783,22 @@ const CustomersPage = ({ data, setData }) => {
                 <Fl label="電話"><RetroInput value={customerDraft?.phone || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), phone:e.target.value }))}/></Fl>
               </div>
               <Fl label="メール"><RetroInput value={customerDraft?.email || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), email:e.target.value }))}/></Fl>
-              <Fl label="振込名義カナ"><RetroInput value={customerDraft?.payer_kana || ""} placeholder="例：カブシキガイシャタナカショウジ" onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), payer_kana:normalizePayerKana(e.target.value) }))}/></Fl>
+              <Fl label="振込名義カナ"><RetroInput
+                value={customerDraft?.payer_kana || ""}
+                placeholder="例：カブシキガイシャタナカショウジ"
+                onCompositionStart={()=>setIsEditPayerKanaComposing(true)}
+                onCompositionEnd={(e)=>{
+                  setIsEditPayerKanaComposing(false);
+                  setCustomerDraft((prev)=>({ ...(prev||{}), payer_kana:normalizePayerKana(e.target.value) }));
+                }}
+                onChange={(e)=>{
+                  if (isEditPayerKanaComposing) {
+                    setCustomerDraft((prev)=>({ ...(prev||{}), payer_kana:e.target.value }));
+                    return;
+                  }
+                  setCustomerDraft((prev)=>({ ...(prev||{}), payer_kana:normalizePayerKana(e.target.value) }));
+                }}
+              /></Fl>
               <Fl label="住所"><RetroInput value={customerDraft?.address || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), address:e.target.value }))}/></Fl>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px 12px"}}>
                 <Fl label="単価（円）"><RetroInput type="number" value={customerDraft?.unitPrice ?? ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), unitPrice:Number(e.target.value)||0 }))}/></Fl>
