@@ -1735,6 +1735,7 @@ const CustomersPage = ({ data, setData }) => {
           <Fl label="電話"><RetroInput value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></Fl>
         </div>
         <Fl label="メール"><RetroInput value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))}/></Fl>
+        <Fl label="振込名義カナ"><RetroInput value={form.payer_kana} placeholder="例：カブシキガイシャタナカショウジ" onChange={e=>setForm(f=>({...f,payer_kana:normalizePayerKana(e.target.value)}))}/></Fl>
         <Fl label="住所"><RetroInput value={form.address} onChange={e=>setForm(f=>({...f,address:e.target.value}))}/></Fl>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px 12px"}}>
           <Fl label="単価（円）"><RetroInput type="number" value={form.unitPrice} onChange={e=>setForm(f=>({...f,unitPrice:e.target.value}))}/></Fl>
@@ -1765,6 +1766,7 @@ const CustomersPage = ({ data, setData }) => {
                 <Fl label="電話"><RetroInput value={customerDraft?.phone || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), phone:e.target.value }))}/></Fl>
               </div>
               <Fl label="メール"><RetroInput value={customerDraft?.email || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), email:e.target.value }))}/></Fl>
+              <Fl label="振込名義カナ"><RetroInput value={customerDraft?.payer_kana || ""} placeholder="例：カブシキガイシャタナカショウジ" onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), payer_kana:normalizePayerKana(e.target.value) }))}/></Fl>
               <Fl label="住所"><RetroInput value={customerDraft?.address || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), address:e.target.value }))}/></Fl>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px 12px"}}>
                 <Fl label="単価（円）"><RetroInput type="number" value={customerDraft?.unitPrice ?? ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), unitPrice:Number(e.target.value)||0 }))}/></Fl>
