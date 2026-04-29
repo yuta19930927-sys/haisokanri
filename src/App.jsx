@@ -67,24 +67,6 @@ const tabBtn = (active) => ({
   fontSize: "13px",
 });
 
-const AUTH_INIT_TIMEOUT_MS = 5000;
-
-function withTimeout(promise, ms) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("timeout")), ms);
-    Promise.resolve(promise).then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      }
-    );
-  });
-}
-
 export default function App() {
   const isMobile = useIsMobile();
   const [authReady, setAuthReady] = useState(false);
@@ -124,78 +106,48 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      try {
-        const res = await withTimeout(supabase.auth.getSession(), AUTH_INIT_TIMEOUT_MS);
-        if (cancelled) return;
-        if (res.error) throw res.error;
-        const s = res.data?.session ?? null;
-
-        if (s?.user) {
-          let p = null;
-          try {
-            p = await withTimeout(loadProfile(s.user.id), AUTH_INIT_TIMEOUT_MS);
-          } catch (profileErr) {
-            console.warn("loadProfile failed or timed out:", profileErr);
-          }
-          if (cancelled) return;
-          if (!p) {
-            try {
-              await withTimeout(supabase.auth.signOut(), AUTH_INIT_TIMEOUT_MS);
-            } catch (signOutErr) {
-              console.warn("signOut after missing profile:", signOutErr);
-            }
-            setSession(null);
-            setProfile(null);
-          } else {
-            setSession(s);
-            setProfile(p);
-          }
-        } else {
-          setSession(null);
-          setProfile(null);
-        }
-      } catch (e) {
-        console.warn("getSession failed or timed out:", e);
+    const syncProfile = async (s) => {
+      if (!s?.user) {
         if (!cancelled) {
           setSession(null);
           setProfile(null);
         }
-      } finally {
-        if (!cancelled) setAuthReady(true);
+        return;
       }
-    })();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, s) => {
-      try {
-        if (s?.user) {
-          let p = null;
-          try {
-            p = await withTimeout(loadProfile(s.user.id), AUTH_INIT_TIMEOUT_MS);
-          } catch (profileErr) {
-            console.warn("onAuthStateChange loadProfile failed or timed out:", profileErr);
-          }
-          if (!p) {
-            try {
-              await withTimeout(supabase.auth.signOut(), AUTH_INIT_TIMEOUT_MS);
-            } catch (signOutErr) {
-              console.warn("signOut:", signOutErr);
-            }
-            setSession(null);
-            setProfile(null);
-            return;
-          }
-          setSession(s);
-          setProfile(p);
-        } else {
+      const p = await loadProfile(s.user.id);
+      if (cancelled) return;
+      if (!p) {
+        await supabase.auth.signOut();
+        if (!cancelled) {
           setSession(null);
           setProfile(null);
         }
-      } catch (e) {
-        console.warn("onAuthStateChange:", e);
+        return;
+      }
+      setSession(s);
+      setProfile(p);
+    };
+
+    supabase.auth.getSession().then(async ({ data: { session }, error }) => {
+      if (cancelled) return;
+      if (error) {
+        console.warn(error);
         setSession(null);
         setProfile(null);
+      } else {
+        await syncProfile(session);
       }
+      if (!cancelled) setAuthReady(true);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      void syncProfile(session).catch((e) => {
+        console.warn("onAuthStateChange:", e);
+        if (!cancelled) {
+          setSession(null);
+          setProfile(null);
+        }
+      });
     });
 
     return () => {
