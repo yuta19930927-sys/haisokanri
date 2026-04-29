@@ -1085,10 +1085,15 @@ const BankPage = ({ data, setData }) => {
         return;
       }
 
+      console.log("invRows sample:", JSON.stringify(invRows?.[0]));
       const matched = (invRows || []).find((row) => {
-        const pl = row.payload
-          ? (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload)
-          : {};
+        let pl = {};
+        try {
+          pl = row.payload
+            ? (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload)
+            : {};
+          if (pl.payload) pl = typeof pl.payload === "string" ? JSON.parse(pl.payload) : pl.payload;
+        } catch(e) {}
         return pl.id === businessId;
       });
 
