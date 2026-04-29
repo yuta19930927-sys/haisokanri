@@ -132,7 +132,7 @@ const normalizePayerKana = (value) => {
 const initialData = {
   customers: [
     { id:"C001", name:"株式会社田中商事", contact:"田中 太郎", phone:"03-1234-5678", email:"tanaka@tanakashoji.co.jp", address:"東京都中央区1-2-3", notes:"月末締め翌月払い", unitPrice:600, closingDay:31, paymentSite:"翌月末払い" },
-    { id:"C002", name:"山田運輸有限会社", contact:"山田 花子", phone:"06-2345-6789", email:"yamada@yamada-unyu.co.jp", address:"大阪府大阪市北区4-5-6", notes:"午前中納品希望", unitPrice:850, closingDay:15, paymentSite:"翌月15日払い" },
+    { id:"C002", name:"山田運輸有限会社", contact:"山田 花子", phone:"06-2345-6789", email:"yamada@yamada-unyu.co.jp", address:"大阪府大阪市北区4-5-6", notes:"午前中納品希望", unitPrice:850, closingDay:15, paymentSite:"翌月15日払い", payer_kana:"ヤマダウンユ" },
     { id:"C003", name:"鈴木食品株式会社", contact:"鈴木 次郎", phone:"052-3456-7890", email:"suzuki@suzukifood.co.jp", address:"愛知県名古屋市中区7-8-9", notes:"冷凍便あり", unitPrice:1200, closingDay:20, paymentSite:"翌々月末払い" },
   ],
   orders: [
@@ -838,6 +838,29 @@ const BankPage = ({ data, setData }) => {
   const [bankTransactions, setBankTransactions] = useState(Array.isArray(data?.bankTransactions) ? data.bankTransactions : []);
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
   const customers = Array.isArray(data?.customers) ? data.customers : [];
+  const getEntityPayload = (row) => {
+    if (!row || typeof row !== "object") return {};
+    if (row.payload != null && typeof row.payload === "object") return { ...row.payload };
+    return { ...row };
+  };
+  const getInvoiceDbId = (inv) => {
+    if (inv && typeof inv === "object" && inv.payload != null && typeof inv.payload === "object" && inv.id != null && inv.id !== "")
+      return inv.id;
+    const p = getEntityPayload(inv);
+    return p.id != null ? p.id : inv?.id;
+  };
+  const invoiceIsPaid = (inv) => {
+    const s = String(getEntityPayload(inv)?.status || "");
+    return ["paid", "入金済"].includes(s);
+  };
+  /** 入金額（CSVは deposit_amount、手動モックは amount のみの行あり） */
+  const getBankDepositAmount = (tx) => {
+    const dep = Number(tx?.deposit_amount) || 0;
+    if (dep > 0) return dep;
+    const wd = Number(tx?.withdrawal_amount) || 0;
+    if (wd > 0) return 0;
+    return Number(tx?.amount) || 0;
+  };
   const payables = Array.isArray(data?.payables) ? data.payables : [];
   const events = Array.isArray(data?.events) ? data.events : [];
   const todayStr = new Date().toISOString().split("T")[0];
@@ -852,7 +875,15 @@ const BankPage = ({ data, setData }) => {
   const todayStr2 = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
   const unmatchedBanks = bankTransactions.filter(b=>b?.status==="unmatched");
   const totalUnmatched = unmatchedBanks.reduce((s,b)=>s+(Number(b?.amount)||0),0);
-  const overdueTotal = invoices.filter(i=>i?.status==="overdue"||(i?.status==="unpaid"&&(i?.dueDate||"")<todayStr2)).reduce((s,i)=>s+(Number(i?.total)||0),0);
+  const overdueTotal = invoices
+    .filter((i) => {
+      const p = getEntityPayload(i);
+      return p.status === "overdue" || (p.status === "unpaid" && (p.dueDate || "") < todayStr2);
+    })
+    .reduce((s, i) => {
+      const p = getEntityPayload(i);
+      return s + (Number(p.total_amount ?? p.total) || 0);
+    }, 0);
 
   useEffect(() => {
     let alive = true;
@@ -933,54 +964,65 @@ const BankPage = ({ data, setData }) => {
     return corpWords.reduce((acc, word) => acc.replaceAll(word, ""), normalized);
   };
 
-  const isKanaPartiallyMatched = (left, right) => {
-    const a = normalizeKanaForCompare(left);
-    const b = normalizeKanaForCompare(right);
-    if (!a || !b) return false;
-    return a.includes(b) || b.includes(a);
-  };
-
   const findInvoiceCandidates = (bankTx, invoiceRows, customerRows) => {
     try {
-      const deposit = Number(bankTx?.deposit_amount) || 0;
-      const status = bankTx?.match_status || bankTx?.status || "unmatched";
-      if (deposit <= 0) return [];
-      if (status === "matched") return [];
+      const deposit = getBankDepositAmount(bankTx);
+      const txStatus = bankTx?.match_status || bankTx?.status || "unmatched";
+      if (!bankTx || deposit <= 0) return [];
+      if (txStatus === "matched") return [];
 
-      const customerById = new Map(
-        (Array.isArray(customerRows) ? customerRows : []).map((customer) => [customer?.id, customer])
-      );
-      const receivableInvoices = (Array.isArray(invoiceRows) ? invoiceRows : []).filter((invoice) => {
-        const invoiceStatus = String(invoice?.status || "");
-        return invoiceStatus !== "paid" && invoiceStatus !== "入金済" && invoiceStatus !== "cancelled";
+      const candidates = [];
+      const paidLike = ["paid", "入金済", "cancelled", "キャンセル"];
+
+      (invoiceRows || []).forEach((inv) => {
+        const invPayload = getEntityPayload(inv);
+        const invAmount = Number(invPayload.total_amount ?? invPayload.totalAmount ?? invPayload.total ?? 0);
+        const invStatus = String(invPayload.status || "");
+        const invCustomerId = invPayload.customer_id || invPayload.customerId || "";
+
+        if (paidLike.includes(invStatus)) return;
+        if (invAmount <= 0) return;
+
+        const customer = (customerRows || []).find((c) => {
+          const cPayload = getEntityPayload(c);
+          return c.id === invCustomerId || cPayload.id === invCustomerId;
+        });
+        const customerPayload = getEntityPayload(customer || {});
+        const payerKana = customerPayload.payer_kana || "";
+
+        const amountMatch = deposit === invAmount;
+        const counterpartyRaw = bankTx.counterparty || bankTx.description || "";
+        const normalizedCounterparty = normalizeKanaForCompare(counterpartyRaw);
+        const normalizedPayerKana = normalizeKanaForCompare(payerKana);
+        const kanaMatch =
+          normalizedPayerKana.length > 0 &&
+          (normalizedCounterparty.includes(normalizedPayerKana) ||
+            normalizedPayerKana.includes(normalizedCounterparty));
+
+        console.log("[MATCH]", {
+          counterparty: counterpartyRaw,
+          normalizedCounterparty,
+          payerKana,
+          normalizedPayerKana,
+          invAmount,
+          bankAmount: deposit,
+          amountMatch,
+          kanaMatch,
+          invStatus,
+          invId: invPayload.id || getInvoiceDbId(inv),
+        });
+
+        if (amountMatch && kanaMatch) {
+          candidates.push({ invoice: inv, matchType: "exact", reason: "金額・名義一致" });
+        } else if (amountMatch) {
+          candidates.push({ invoice: inv, matchType: "partial_amount", reason: "金額一致" });
+        } else if (kanaMatch) {
+          candidates.push({ invoice: inv, matchType: "partial_kana", reason: "名義一致" });
+        }
       });
 
-      const bankCounterparty = bankTx?.counterparty || bankTx?.description || "";
-      const candidates = receivableInvoices
-        .map((invoice) => {
-          const amount = Number(invoice?.total_amount ?? invoice?.total) || 0;
-          const customerId = invoice?.customer_id || invoice?.customerId;
-          const customer = customerById.get(customerId) || customerById.get(invoice?.customerId) || null;
-          const payerKana = customer?.payer_kana || "";
-          const amountMatched = deposit > 0 && amount > 0 && deposit === amount;
-          const kanaMatched = isKanaPartiallyMatched(bankCounterparty, payerKana);
-          if (!amountMatched && !kanaMatched) return null;
-
-          let matchType = "partial_amount";
-          let reason = "金額一致";
-          if (amountMatched && kanaMatched) {
-            matchType = "exact";
-            reason = "金額と振込名義カナが一致";
-          } else if (kanaMatched) {
-            matchType = "partial_kana";
-            reason = "振込名義カナが部分一致";
-          }
-          return { invoice, matchType, reason };
-        })
-        .filter(Boolean);
-
-      const rank = { exact: 0, partial_amount: 1, partial_kana: 2 };
-      return candidates.sort((a, b) => rank[a.matchType] - rank[b.matchType]);
+      const order = { exact: 0, partial_amount: 1, partial_kana: 2 };
+      return candidates.sort((a, b) => order[a.matchType] - order[b.matchType]);
     } catch (error) {
       console.warn("findInvoiceCandidates failed:", error);
       return [];
@@ -998,7 +1040,7 @@ const BankPage = ({ data, setData }) => {
   const getDisplayMatchStatus = (tx) => {
     const current = tx?.match_status || tx?.status || "unmatched";
     if (current === "matched") return "matched";
-    const deposit = Number(tx?.deposit_amount) || 0;
+    const deposit = getBankDepositAmount(tx);
     if (deposit <= 0) return current;
     const candidates = candidateMap.get(tx?.id) || [];
     if (candidates.length > 0) return "candidate";
@@ -1009,11 +1051,24 @@ const BankPage = ({ data, setData }) => {
     if (!bankTxId || !invoiceId) return;
     try {
       const tx = bankTransactions.find((row) => row?.id === bankTxId);
-      const inv = invoices.find((row) => row?.id === invoiceId);
+      const inv = invoices.find((row) => {
+        const dbId = getInvoiceDbId(row);
+        const pid = getEntityPayload(row).id;
+        return dbId === invoiceId || pid === invoiceId;
+      });
       if (!tx || !inv) return;
 
       const nowIso = new Date().toISOString();
-      const paidAmount = Number(tx?.deposit_amount) || Number(tx?.amount) || 0;
+      const paidAmount = getBankDepositAmount(tx);
+      const invDbId = getInvoiceDbId(inv);
+      const invPayloadNext = { ...getEntityPayload(inv) };
+      invPayloadNext.status = "paid";
+      invPayloadNext.paid_at = nowIso;
+      invPayloadNext.paidDate = String(nowIso).slice(0, 10);
+      invPayloadNext.paid_amount = paidAmount;
+      invPayloadNext.paidAmount = paidAmount;
+      const customerNameForEvent = invPayloadNext.customerName || invPayloadNext.customer_name || "";
+
       let userId = null;
       try {
         const { data: authData } = await supabase.auth.getUser();
@@ -1026,25 +1081,17 @@ const BankPage = ({ data, setData }) => {
         .from("bank_transactions")
         .update({
           match_status: "matched",
-          matched_invoice_id: invoiceId,
+          matched_invoice_id: invDbId,
           matched_at: nowIso,
           matched_by: userId,
         })
         .eq("id", bankTxId);
       if (txErr) throw txErr;
 
-      const invoicePayload = {
-        ...inv,
-        status: "paid",
-        paid_at: nowIso,
-        paidDate: String(nowIso).slice(0, 10),
-        paid_amount: paidAmount,
-        paidAmount,
-      };
       const { error: invErr } = await supabase
         .from("invoices")
-        .update({ payload: invoicePayload })
-        .eq("id", invoiceId);
+        .update({ payload: invPayloadNext })
+        .eq("id", invDbId);
       if (invErr) throw invErr;
 
       setBankTransactions((prev) =>
@@ -1054,8 +1101,8 @@ const BankPage = ({ data, setData }) => {
                 ...row,
                 status: "matched",
                 match_status: "matched",
-                matchedInvoice: invoiceId,
-                matched_invoice_id: invoiceId,
+                matchedInvoice: invDbId,
+                matched_invoice_id: invDbId,
                 matched_at: nowIso,
                 matched_by: userId,
               }
@@ -1071,30 +1118,33 @@ const BankPage = ({ data, setData }) => {
                 ...row,
                 status: "matched",
                 match_status: "matched",
-                matchedInvoice: invoiceId,
-                matched_invoice_id: invoiceId,
+                matchedInvoice: invDbId,
+                matched_invoice_id: invDbId,
                 matched_at: nowIso,
                 matched_by: userId,
               }
             : row
         ),
-        invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((row) =>
-          row?.id === invoiceId
-            ? { ...row, status: "paid", paid_at: nowIso, paidDate: String(nowIso).slice(0, 10), paid_amount: paidAmount, paidAmount }
-            : row
-        ),
+        invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((row) => {
+          const dbId = getInvoiceDbId(row);
+          const pid = getEntityPayload(row).id;
+          if (dbId !== invoiceId && pid !== invoiceId) return row;
+          if (row.payload != null && typeof row.payload === "object")
+            return { ...row, payload: invPayloadNext };
+          return { ...invPayloadNext };
+        }),
         events: [
           ...(Array.isArray(d?.events) ? d.events : []),
           {
             id:`EV-B${Date.now()}`,
             date: tx?.transaction_date || tx?.date || String(nowIso).slice(0, 10),
             type:"bank_in",
-            title:`入金確認：${inv?.customerName||""} ¥${paidAmount.toLocaleString()}`,
+            title:`入金確認：${customerNameForEvent} ¥${paidAmount.toLocaleString()}`,
             color:"#006600",
           },
         ],
       }));
-      showUploadToast(`照合完了：請求書 ${invoiceId}`);
+      showUploadToast(`照合完了：請求書 ${invPayloadNext.id || invDbId}`);
     } catch (error) {
       console.warn("confirmMatch failed:", error);
       window.alert(`照合確定に失敗しました：${error?.message || String(error)}`);
@@ -1288,9 +1338,9 @@ const BankPage = ({ data, setData }) => {
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"8px" }}>
         {[
           ["未照合入金", "¥"+totalUnmatched.toLocaleString(), "#ff9800"],
-          ["未払い請求", "¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(), "#2196f3"],
+          ["未払い請求", "¥"+invoices.filter(i=>!invoiceIsPaid(i)).reduce((s,i)=>s+(Number(getEntityPayload(i).total_amount??getEntityPayload(i).total)||0),0).toLocaleString(), "#2196f3"],
           ["延滞金額", "¥"+overdueTotal.toLocaleString(), "#e63946"],
-          ["入金済", "¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(), "#4caf50"],
+          ["入金済", "¥"+invoices.filter(i=>invoiceIsPaid(i)).reduce((s,i)=>s+(Number(getEntityPayload(i).total_amount??getEntityPayload(i).total)||0),0).toLocaleString(), "#4caf50"],
         ].map(([l,v,c])=>(
           <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
             <div style={{ fontSize:"11px", color:"#888", marginBottom:"3px", fontWeight:700 }}>{l}</div>
@@ -1307,9 +1357,9 @@ const BankPage = ({ data, setData }) => {
           {unmatchedBanks.map(b=>(
             <div key={b.id} style={{ border:cardBorder, borderRadius:"6px", background:"#fff", padding:"8px 10px", marginBottom:"6px" }}>
               <div
-                style={{ display:"flex", justifyContent:"space-between", marginBottom:"6px", cursor:Number(b?.deposit_amount) > 0 ? "pointer" : "default" }}
+                style={{ display:"flex", justifyContent:"space-between", marginBottom:"6px", cursor:getBankDepositAmount(b) > 0 ? "pointer" : "default" }}
                 onClick={() => {
-                  if ((Number(b?.deposit_amount) || 0) <= 0) return;
+                  if (getBankDepositAmount(b) <= 0) return;
                   setExpandedTxId((prev) => (prev === b?.id ? null : b?.id));
                 }}
               >
@@ -1321,19 +1371,23 @@ const BankPage = ({ data, setData }) => {
                 </div>
                 <span style={{ display:"inline-flex", alignItems:"center", gap:"8px" }}>
                   <StatusPill s={b.status}/>
-                  {(Number(b?.deposit_amount) || 0) > 0 && <span style={{ fontSize:"11px", color:"#666" }}>{expandedTxId === b?.id ? "▲" : "▼"}</span>}
+                  {getBankDepositAmount(b) > 0 && <span style={{ fontSize:"11px", color:"#666" }}>{expandedTxId === b?.id ? "▲" : "▼"}</span>}
                 </span>
               </div>
               <div style={{ display:"flex", gap:"6px", alignItems:"center" }}>
                 <span style={{ fontSize:"11px", color:"#666" }}>照合：</span>
                 <RetroSelect style={{ width:"250px" }} onChange={(e)=>confirmMatch(b?.id, e.target.value)}>
                   <option value="">請求書を選択...</option>
-                  {invoices.filter(i=>i?.status!=="paid").map(i=>(
-                    <option key={i?.id||`inv-${Math.random()}`} value={i?.id||""}>{i?.id||"—"} {i?.customerName||""} ¥{(Number(i?.total)||0).toLocaleString()}</option>
-                  ))}
+                  {invoices.filter(i=>!invoiceIsPaid(i)).map(i=>{
+                    const p = getEntityPayload(i);
+                    const rowId = getInvoiceDbId(i);
+                    return (
+                      <option key={rowId||`inv-${Math.random()}`} value={rowId||""}>{p?.id||"—"} {p?.customerName||""} ¥{(Number(p?.total_amount??p?.total)||0).toLocaleString()}</option>
+                    );
+                  })}
                 </RetroSelect>
               </div>
-              {(Number(b?.deposit_amount) || 0) > 0 && expandedTxId === b?.id && (
+              {getBankDepositAmount(b) > 0 && expandedTxId === b?.id && (
                 <div style={{ marginTop:"8px", display:"flex", flexDirection:"column", gap:"6px" }}>
                   {(candidateMap.get(b?.id) || []).length === 0 ? (
                     <div style={{ border:"1px solid #d0d0d0", background:"#f5f5f5", color:"#555", borderRadius:"6px", padding:"8px 10px", fontSize:"12px" }}>
@@ -1342,19 +1396,21 @@ const BankPage = ({ data, setData }) => {
                   ) : (
                     (candidateMap.get(b?.id) || []).map((candidate) => {
                       const inv = candidate?.invoice || {};
+                      const ip = getEntityPayload(inv);
+                      const invRowId = getInvoiceDbId(inv);
                       const isExact = candidate?.matchType === "exact";
                       const tone = isExact
                         ? { bg:"#e8f5e9", border:"#4caf50", title:"🟢 完全一致候補", color:"#2e7d32" }
                         : { bg:"#fff3e0", border:"#ff9800", title:"🟡 候補", color:"#e65100" };
                       return (
-                        <div key={`${b?.id}-${inv?.id}-${candidate?.matchType}`} style={{ border:`1px solid ${tone.border}`, background:tone.bg, borderRadius:"6px", padding:"8px 10px" }}>
+                        <div key={`${b?.id}-${invRowId}-${candidate?.matchType}`} style={{ border:`1px solid ${tone.border}`, background:tone.bg, borderRadius:"6px", padding:"8px 10px" }}>
                           <div style={{ fontSize:"12px", fontWeight:700, color:tone.color }}>{tone.title}</div>
                           <div style={{ fontSize:"12px", color:"#333", marginTop:"4px" }}>
-                            顧客: {inv?.customerName || "—"} / 請求書: {inv?.id || "—"} / 金額: ¥{(Number(inv?.total_amount ?? inv?.total)||0).toLocaleString()} / 発行日: {inv?.issueDate || inv?.issue_date || "—"}
+                            顧客: {ip?.customerName || "—"} / 請求書: {ip?.id || "—"} / 金額: ¥{(Number(ip?.total_amount ?? ip?.total)||0).toLocaleString()} / 発行日: {ip?.issueDate || ip?.issue_date || "—"}
                           </div>
                           {!isExact && <div style={{ fontSize:"11px", color:"#666", marginTop:"2px" }}>理由: {candidate?.reason || "部分一致"}</div>}
                           <div style={{ marginTop:"6px" }}>
-                            <RetroBtn onClick={()=>confirmMatch(b?.id, inv?.id)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+                            <RetroBtn onClick={()=>confirmMatch(b?.id, invRowId)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
                               {checkIcon}この候補で確定
                             </RetroBtn>
                           </div>
@@ -1375,30 +1431,39 @@ const BankPage = ({ data, setData }) => {
         </div>
         <RetroTable
           headers={["日付","内容（振込名義等）","金額","照合状況","照合先"]}
-          rows={bankTransactions.map(b=>[
-            b?.date||"",
-            <span style={{ fontSize:"12px" }}>{b?.description||""}</span>,
-            <span style={{ color:"#007a74", fontWeight:700 }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
-            <StatusPill s={b?.status}/>,
-            b?.matchedInvoice ? (
-              <span style={{ color:"#2e7d32", fontSize:"11px" }}>
-                {b.matchedInvoice} / {invoices.find(i=>i?.id===b.matchedInvoice)?.customerName||""}
-              </span>
-            ) : "—",
-          ])}
+          rows={bankTransactions.map((b) => {
+            const matchedInv = invoices.find(
+              (i) => getInvoiceDbId(i) === b.matchedInvoice || getEntityPayload(i).id === b.matchedInvoice
+            );
+            const matchedName = getEntityPayload(matchedInv || {}).customerName || "";
+            return [
+              b?.date||"",
+              <span style={{ fontSize:"12px" }}>{b?.description||""}</span>,
+              <span style={{ color:"#007a74", fontWeight:700 }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
+              <StatusPill s={b?.status}/>,
+              b?.matchedInvoice ? (
+                <span style={{ color:"#2e7d32", fontSize:"11px" }}>
+                  {b.matchedInvoice} / {matchedName}
+                </span>
+              ) : "—",
+            ];
+          })}
         />
       </Panel>
 
       <Panel title="入金管理（請求書別）" icon={invoiceIcon}>
         <RetroTable
           headers={["請求書","顧客","発行日","期日","金額","状態","メモ"]}
-          rows={invoices.map(inv=>[
-            <span style={{ color:"#007a74", fontWeight:700 }}>{inv?.id||"—"}</span>,
-            inv?.customerName||"", inv?.issueDate||"", inv?.dueDate||"",
-            <span style={{ fontWeight:700 }}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
-            <StatusPill s={inv?.status}/>,
-            <span style={{ fontSize:"11px", color:"#999" }}>{inv?.note||"—"}</span>,
-          ])}
+          rows={invoices.map((inv) => {
+            const p = getEntityPayload(inv);
+            return [
+              <span style={{ color:"#007a74", fontWeight:700 }}>{p?.id||getInvoiceDbId(inv)||"—"}</span>,
+              p?.customerName||"", p?.issueDate||p?.issue_date||"", p?.dueDate||p?.due_date||"",
+              <span style={{ fontWeight:700 }}>¥{(Number(p?.total_amount??p?.total)||0).toLocaleString()}</span>,
+              <StatusPill s={p?.status}/>,
+              <span style={{ fontSize:"11px", color:"#999" }}>{p?.note||"—"}</span>,
+            ];
+          })}
         />
       </Panel>
 
