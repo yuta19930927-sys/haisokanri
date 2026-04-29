@@ -129,6 +129,10 @@ const normalizePayerKana = (value) => {
   }
 };
 
+/** Supabase `invoices.id`（行の UUID）。payload 内の請求番号（INV-xxx）とは別 */
+const INVOICE_ROW_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const initialData = {
   customers: [
     { id:"C001", name:"株式会社田中商事", contact:"田中 太郎", phone:"03-1234-5678", email:"tanaka@tanakashoji.co.jp", address:"東京都中央区1-2-3", notes:"月末締め翌月払い", unitPrice:600, closingDay:31, paymentSite:"翌月末払い" },
@@ -980,6 +984,7 @@ const BankPage = ({ data, setData }) => {
       const paidLike = ["paid", "入金済", "cancelled", "キャンセル"];
 
       (invoiceRows || []).forEach((inv) => {
+        if (!inv._dbId || !INVOICE_ROW_UUID_RE.test(String(inv._dbId))) return;
         const invPayload = getEntityPayload(inv);
         const invAmount = Number(invPayload.total_amount ?? invPayload.totalAmount ?? invPayload.total ?? 0);
         const invStatus = String(invPayload.status || "");
@@ -1052,26 +1057,40 @@ const BankPage = ({ data, setData }) => {
     return "unmatched";
   };
 
-  const confirmMatch = async (bankTxId, invoiceId) => {
-    if (!bankTxId || !invoiceId) return;
+  const confirmMatch = async (bankTxId, invoice) => {
+    if (!bankTxId || !invoice || typeof invoice !== "object") return;
     try {
+      try {
+        console.log("[CONFIRM] invoice:", JSON.stringify(invoice));
+      } catch (_e) {
+        console.log("[CONFIRM] invoice: (serialize skip)", invoice);
+      }
+      console.log("[CONFIRM] _dbId:", invoice._dbId);
+      console.log("[CONFIRM] getInvoiceDbId:", getInvoiceDbId(invoice));
+
+      const invoiceDbId = invoice._dbId;
+      const idStr = invoiceDbId != null ? String(invoiceDbId) : "";
+      if (
+        !idStr ||
+        !INVOICE_ROW_UUID_RE.test(idStr) ||
+        idStr.includes("INV-")
+      ) {
+        window.alert("請求書のIDが正しくありません。ページをリロードして再試行してください。");
+        return;
+      }
+
       const tx = bankTransactions.find((row) => row?.id === bankTxId);
-      const inv = invoices.find((row) => {
-        const dbId = getInvoiceDbId(row);
-        const pid = getEntityPayload(row).id;
-        return dbId === invoiceId || pid === invoiceId;
-      });
-      if (!tx || !inv) return;
+      if (!tx) return;
 
       const nowIso = new Date().toISOString();
       const paidAmount = getBankDepositAmount(tx);
-      const invDbId = getInvoiceDbId(inv);
-      const invPayloadNext = { ...getEntityPayload(inv) };
+      const invPayloadNext = { ...getEntityPayload(invoice) };
       invPayloadNext.status = "paid";
       invPayloadNext.paid_at = nowIso;
       invPayloadNext.paidDate = String(nowIso).slice(0, 10);
       invPayloadNext.paid_amount = paidAmount;
       invPayloadNext.paidAmount = paidAmount;
+      delete invPayloadNext._dbId;
       const customerNameForEvent = invPayloadNext.customerName || invPayloadNext.customer_name || "";
 
       let userId = null;
@@ -1086,7 +1105,7 @@ const BankPage = ({ data, setData }) => {
         .from("bank_transactions")
         .update({
           match_status: "matched",
-          matched_invoice_id: invDbId,
+          matched_invoice_id: invoiceDbId,
           matched_at: nowIso,
           matched_by: userId,
         })
@@ -1096,7 +1115,7 @@ const BankPage = ({ data, setData }) => {
       const { error: invErr } = await supabase
         .from("invoices")
         .update({ payload: invPayloadNext })
-        .eq("id", invDbId);
+        .eq("id", invoiceDbId);
       if (invErr) throw invErr;
 
       setBankTransactions((prev) =>
@@ -1106,8 +1125,8 @@ const BankPage = ({ data, setData }) => {
                 ...row,
                 status: "matched",
                 match_status: "matched",
-                matchedInvoice: invDbId,
-                matched_invoice_id: invDbId,
+                matchedInvoice: invoiceDbId,
+                matched_invoice_id: invoiceDbId,
                 matched_at: nowIso,
                 matched_by: userId,
               }
@@ -1123,26 +1142,16 @@ const BankPage = ({ data, setData }) => {
                 ...row,
                 status: "matched",
                 match_status: "matched",
-                matchedInvoice: invDbId,
-                matched_invoice_id: invDbId,
+                matchedInvoice: invoiceDbId,
+                matched_invoice_id: invoiceDbId,
                 matched_at: nowIso,
                 matched_by: userId,
               }
             : row
         ),
         invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((row) => {
-          const dbId = getInvoiceDbId(row);
-          const pid = getEntityPayload(row).id;
-          const matches =
-            dbId === invoiceId ||
-            pid === invoiceId ||
-            String(dbId) === String(invoiceId) ||
-            String(pid) === String(invoiceId);
-          if (!matches) return row;
-          if (row.payload != null && typeof row.payload === "object" && row.id)
-            return { ...row, payload: invPayloadNext };
-          if (row._dbId != null) return { ...invPayloadNext, _dbId: row._dbId };
-          return { ...invPayloadNext };
+          if (String(row?._dbId || "") !== String(invoiceDbId)) return row;
+          return { ...invPayloadNext, _dbId: invoiceDbId };
         }),
         events: [
           ...(Array.isArray(d?.events) ? d.events : []),
@@ -1155,7 +1164,7 @@ const BankPage = ({ data, setData }) => {
           },
         ],
       }));
-      showUploadToast(`照合完了：請求書 ${invPayloadNext.id || invDbId}`);
+      showUploadToast(`照合完了：請求書 ${invPayloadNext.id || invoiceDbId}`);
     } catch (error) {
       console.warn("confirmMatch failed:", error);
       window.alert(`照合確定に失敗しました：${error?.message || String(error)}`);
@@ -1387,15 +1396,32 @@ const BankPage = ({ data, setData }) => {
               </div>
               <div style={{ display:"flex", gap:"6px", alignItems:"center" }}>
                 <span style={{ fontSize:"11px", color:"#666" }}>照合：</span>
-                <RetroSelect style={{ width:"250px" }} onChange={(e)=>confirmMatch(b?.id, e.target.value)}>
+                <RetroSelect
+                  style={{ width:"250px" }}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) return;
+                    const inv = invoices.find((i) => String(i._dbId || "") === String(v));
+                    if (inv) confirmMatch(b?.id, inv);
+                  }}
+                >
                   <option value="">請求書を選択...</option>
-                  {invoices.filter(i=>!invoiceIsPaid(i)).map(i=>{
-                    const p = getEntityPayload(i);
-                    const rowId = getInvoiceDbId(i);
-                    return (
-                      <option key={rowId||`inv-${Math.random()}`} value={rowId||""}>{p?.id||"—"} {p?.customerName||""} ¥{(Number(p?.total_amount??p?.total)||0).toLocaleString()}</option>
-                    );
-                  })}
+                  {invoices
+                    .filter(
+                      (i) =>
+                        !invoiceIsPaid(i) &&
+                        i._dbId &&
+                        INVOICE_ROW_UUID_RE.test(String(i._dbId))
+                    )
+                    .map((i) => {
+                      const p = getEntityPayload(i);
+                      return (
+                        <option key={String(i._dbId)} value={String(i._dbId)}>
+                          {p?.id || "—"} {p?.customerName || ""} ¥
+                          {(Number(p?.total_amount ?? p?.total) || 0).toLocaleString()}
+                        </option>
+                      );
+                    })}
                 </RetroSelect>
               </div>
               {getBankDepositAmount(b) > 0 && expandedTxId === b?.id && (
@@ -1408,20 +1434,19 @@ const BankPage = ({ data, setData }) => {
                     (candidateMap.get(b?.id) || []).map((candidate) => {
                       const inv = candidate?.invoice || {};
                       const ip = getEntityPayload(inv);
-                      const invRowId = getInvoiceDbId(inv);
                       const isExact = candidate?.matchType === "exact";
                       const tone = isExact
                         ? { bg:"#e8f5e9", border:"#4caf50", title:"🟢 完全一致候補", color:"#2e7d32" }
                         : { bg:"#fff3e0", border:"#ff9800", title:"🟡 候補", color:"#e65100" };
                       return (
-                        <div key={`${b?.id}-${invRowId}-${candidate?.matchType}`} style={{ border:`1px solid ${tone.border}`, background:tone.bg, borderRadius:"6px", padding:"8px 10px" }}>
+                        <div key={`${b?.id}-${inv._dbId || ip?.id}-${candidate?.matchType}`} style={{ border:`1px solid ${tone.border}`, background:tone.bg, borderRadius:"6px", padding:"8px 10px" }}>
                           <div style={{ fontSize:"12px", fontWeight:700, color:tone.color }}>{tone.title}</div>
                           <div style={{ fontSize:"12px", color:"#333", marginTop:"4px" }}>
                             顧客: {ip?.customerName || "—"} / 請求書: {ip?.id || "—"} / 金額: ¥{(Number(ip?.total_amount ?? ip?.total)||0).toLocaleString()} / 発行日: {ip?.issueDate || ip?.issue_date || "—"}
                           </div>
                           {!isExact && <div style={{ fontSize:"11px", color:"#666", marginTop:"2px" }}>理由: {candidate?.reason || "部分一致"}</div>}
                           <div style={{ marginTop:"6px" }}>
-                            <RetroBtn onClick={()=>confirmMatch(b?.id, invRowId)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+                            <RetroBtn onClick={()=>confirmMatch(b?.id, inv)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
                               {checkIcon}この候補で確定
                             </RetroBtn>
                           </div>
@@ -2856,7 +2881,7 @@ const fetchDataFromSupabase = async () => {
   const nextData = createEmptyData();
 
   const results = await Promise.all(
-    TABLE_CONFIG.map(async ({ key, table, single }) => {
+    TABLE_CONFIG.filter(({ key }) => key !== "invoices").map(async ({ key, table, single }) => {
       const { data: rows, error } = await supabase
         .from(table)
         .select("id,payload")
@@ -2874,17 +2899,40 @@ const fetchDataFromSupabase = async () => {
       nextData[result.key] = row?.payload ?? null;
       continue;
     }
-    if (result.key === "invoices") {
-      nextData[result.key] = (result.rows || [])
-        .map((row) => {
-          if (!row?.payload || typeof row.payload !== "object") return null;
-          return { ...row.payload, _dbId: row.id };
-        })
-        .filter(Boolean);
-      continue;
-    }
     const payloads = (result.rows || []).map((row) => row.payload).filter(Boolean);
     nextData[result.key] = payloads;
+  }
+
+  const { data: invoiceRows, error: invoiceErr } = await supabase
+    .from("invoices")
+    .select("*")
+    .order("id", { ascending: true });
+  if (invoiceErr) throw invoiceErr;
+
+  nextData.invoices = (invoiceRows || [])
+    .map((row) => {
+      if (row?.id == null || row.id === "") return null;
+      let payload = row.payload;
+      if (payload == null) payload = {};
+      if (typeof payload === "string") {
+        try {
+          payload = JSON.parse(payload);
+        } catch {
+          payload = {};
+        }
+      }
+      if (typeof payload !== "object") payload = {};
+      return { ...payload, _dbId: row.id };
+    })
+    .filter(Boolean);
+
+  if (typeof window !== "undefined") {
+    const sample = nextData.invoices[0];
+    console.log("[FETCH] invoices count:", nextData.invoices.length, "sample:", sample && {
+      _dbId: sample._dbId,
+      businessId: sample.id,
+      hasUuid: INVOICE_ROW_UUID_RE.test(String(sample._dbId || "")),
+    });
   }
 
   return nextData;
