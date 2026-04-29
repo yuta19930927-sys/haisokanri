@@ -841,13 +841,18 @@ const BankPage = ({ data, setData }) => {
   const getEntityPayload = (row) => {
     if (!row || typeof row !== "object") return {};
     if (row.payload != null && typeof row.payload === "object") return { ...row.payload };
-    return { ...row };
+    const rest = { ...row };
+    delete rest._dbId;
+    return rest;
   };
+  /** Supabase invoices 行の主キー（uuid）。payload.id は請求書番号（INV-xxx） */
   const getInvoiceDbId = (inv) => {
-    if (inv && typeof inv === "object" && inv.payload != null && typeof inv.payload === "object" && inv.id != null && inv.id !== "")
+    if (!inv || typeof inv !== "object") return undefined;
+    if (inv._dbId != null && inv._dbId !== "") return inv._dbId;
+    if (inv.payload != null && typeof inv.payload === "object" && inv.id != null && inv.id !== "")
       return inv.id;
     const p = getEntityPayload(inv);
-    return p.id != null ? p.id : inv?.id;
+    return p?.id ?? inv?.id;
   };
   const invoiceIsPaid = (inv) => {
     const s = String(getEntityPayload(inv)?.status || "");
@@ -1128,9 +1133,15 @@ const BankPage = ({ data, setData }) => {
         invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((row) => {
           const dbId = getInvoiceDbId(row);
           const pid = getEntityPayload(row).id;
-          if (dbId !== invoiceId && pid !== invoiceId) return row;
-          if (row.payload != null && typeof row.payload === "object")
+          const matches =
+            dbId === invoiceId ||
+            pid === invoiceId ||
+            String(dbId) === String(invoiceId) ||
+            String(pid) === String(invoiceId);
+          if (!matches) return row;
+          if (row.payload != null && typeof row.payload === "object" && row.id)
             return { ...row, payload: invPayloadNext };
+          if (row._dbId != null) return { ...invPayloadNext, _dbId: row._dbId };
           return { ...invPayloadNext };
         }),
         events: [
@@ -2858,21 +2869,58 @@ const fetchDataFromSupabase = async () => {
     if (result.error) {
       throw result.error;
     }
+    if (result.single) {
+      const row = (result.rows || [])[0];
+      nextData[result.key] = row?.payload ?? null;
+      continue;
+    }
+    if (result.key === "invoices") {
+      nextData[result.key] = (result.rows || [])
+        .map((row) => {
+          if (!row?.payload || typeof row.payload !== "object") return null;
+          return { ...row.payload, _dbId: row.id };
+        })
+        .filter(Boolean);
+      continue;
+    }
     const payloads = (result.rows || []).map((row) => row.payload).filter(Boolean);
-    nextData[result.key] = result.single ? (payloads[0] || null) : payloads;
+    nextData[result.key] = payloads;
   }
 
   return nextData;
+};
+
+/** invoices 行を Supabase upsert 用 { id, payload } に変換（行PKは uuid、payload.id は請求番号） */
+const invoiceRowToUpsert = (row) => {
+  if (!row) return null;
+  let payload;
+  let dbId;
+  if (row.payload != null && typeof row.payload === "object") {
+    payload = { ...row.payload };
+    dbId = row._dbId ?? row.id;
+  } else {
+    const rest = { ...row };
+    dbId = rest._dbId ?? rest.id;
+    delete rest._dbId;
+    payload = { ...rest };
+    if (!dbId) dbId = payload.id;
+  }
+  if (!dbId) return null;
+  return { id: dbId, payload };
 };
 
 const saveDataToSupabase = async (nextData, prevData) => {
   const jobs = TABLE_CONFIG.map(async ({ key, table, single }) => {
     const currentRows = single
       ? (nextData[key] ? [{ id: nextData[key]?.id || "COMPANY-001", payload: nextData[key] }] : [])
-      : (Array.isArray(nextData[key]) ? nextData[key] : []).filter((row) => row && row.id).map((row) => ({ id: row.id, payload: row }));
+      : (Array.isArray(nextData[key]) ? nextData[key] : [])
+          .filter((row) => row && row.id && (key !== "invoices" || invoiceRowToUpsert(row)))
+          .map((row) => (key === "invoices" ? invoiceRowToUpsert(row) : { id: row.id, payload: row }));
     const previousRows = single
       ? (prevData[key] ? [{ id: prevData[key]?.id || "COMPANY-001", payload: prevData[key] }] : [])
-      : (Array.isArray(prevData[key]) ? prevData[key] : []).filter((row) => row && row.id).map((row) => ({ id: row.id, payload: row }));
+      : (Array.isArray(prevData[key]) ? prevData[key] : [])
+          .filter((row) => row && row.id && (key !== "invoices" || invoiceRowToUpsert(row)))
+          .map((row) => (key === "invoices" ? invoiceRowToUpsert(row) : { id: row.id, payload: row }));
 
     if (currentRows.length > 0) {
       const upsertRows = currentRows;
