@@ -1055,58 +1055,51 @@ const BankPage = ({ data, setData }) => {
   const confirmMatch = async (bankTxId, invoiceOrId) => {
     if (!bankTxId || invoiceOrId == null || invoiceOrId === "") return;
     try {
-      const invoiceIdParam = typeof invoiceOrId === "object" ? null : invoiceOrId;
-      let inv =
-        typeof invoiceOrId === "object"
-          ? invoiceOrId
-          : invoices.find((row) => {
-              const dbId = getInvoiceDbId(row);
-              const pid = getEntityPayload(row).id;
-              return dbId === invoiceIdParam || pid === invoiceIdParam;
-            });
-      if (!inv || typeof inv !== "object") return;
-
       const tx = bankTransactions.find((row) => row?.id === bankTxId);
       if (!tx) return;
 
-      let invoiceDbId = inv._dbId;
-      if (
-        !invoiceDbId ||
-        String(invoiceDbId).startsWith("INV-")
-      ) {
-        const invoicePayloadId =
-          getEntityPayload(inv).id || inv.id || inv?.payload?.id;
-        const { data: rows, error: lookupErr } = await supabase
-          .from("invoices")
-          .select("id, payload")
-          .limit(500);
-        if (lookupErr) throw lookupErr;
-        const parsePl = (raw) => {
-          if (raw == null) return {};
-          if (typeof raw === "object") return raw;
-          if (typeof raw === "string") {
-            try {
-              return JSON.parse(raw);
-            } catch {
-              return {};
-            }
-          }
-          return {};
-        };
-        const matched = (rows || []).find((row) => {
-          const p = parsePl(row.payload);
-          return p?.id === invoicePayloadId;
-        });
-        if (!matched?.id) {
-          window.alert("請求書が見つかりませんでした。リロードして再試行してください。");
-          return;
-        }
-        invoiceDbId = matched.id;
+      // Supabaseから全請求書を取得して、業務ID（INV-005など）でUUIDを探す
+      const { data: invRows, error: lookupErr } = await supabase
+        .from("invoices")
+        .select("id, payload")
+        .limit(500);
+      if (lookupErr) throw lookupErr;
+
+      // invoiceOrId が文字列（INV-005など）かオブジェクトかで業務IDを取り出す
+      let businessId;
+      if (typeof invoiceOrId === "string") {
+        businessId = invoiceOrId;
+      } else if (typeof invoiceOrId === "object" && invoiceOrId !== null) {
+        const pl = invoiceOrId.payload
+          ? (typeof invoiceOrId.payload === "string"
+              ? JSON.parse(invoiceOrId.payload)
+              : invoiceOrId.payload)
+          : invoiceOrId;
+        businessId = pl.id || invoiceOrId.id || "";
+      } else {
+        businessId = String(invoiceOrId);
       }
+
+      // 業務IDでSupabaseの行を見つけてUUIDを取得
+      const matched = invRows.find((row) => {
+        const pl = row.payload
+          ? (typeof row.payload === "string"
+              ? JSON.parse(row.payload)
+              : row.payload)
+          : {};
+        return pl.id === businessId;
+      });
+
+      if (!matched?.id) {
+        window.alert("請求書が見つかりませんでした。リロードして再試行してください。");
+        return;
+      }
+
+      const invoiceDbId = matched.id; // これが正しいUUID
 
       const nowIso = new Date().toISOString();
       const paidAmount = getBankDepositAmount(tx);
-      const invPayloadNext = { ...getEntityPayload(inv) };
+      const invPayloadNext = { ...getEntityPayload(matched) };
       invPayloadNext.status = "paid";
       invPayloadNext.paid_at = nowIso;
       invPayloadNext.paidDate = String(nowIso).slice(0, 10);
@@ -1172,39 +1165,12 @@ const BankPage = ({ data, setData }) => {
               }
             : row
         ),
-        invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((row) => {
-          const dbId = getInvoiceDbId(row);
-          const pid = getEntityPayload(row).id;
-          const matches =
-            String(dbId) === String(invoiceDbId) ||
-            String(row._dbId) === String(invoiceDbId) ||
-            pid === invBusinessId ||
-            (invoiceIdParam != null &&
-              (dbId === invoiceIdParam ||
-                pid === invoiceIdParam ||
-                String(dbId) === String(invoiceIdParam) ||
-                String(pid) === String(invoiceIdParam)));
-          if (!matches) return row;
-          if (row.payload != null && typeof row.payload === "object" && row.id)
-            return { ...row, payload: invPayloadNext };
-          if (row._dbId != null) return { ...invPayloadNext, _dbId: row._dbId };
-          return { ...invPayloadNext };
-        }),
-        events: [
-          ...(Array.isArray(d?.events) ? d.events : []),
-          {
-            id:`EV-B${Date.now()}`,
-            date: tx?.transaction_date || tx?.date || String(nowIso).slice(0, 10),
-            type:"bank_in",
-            title:`入金確認：${customerNameForEvent} ¥${paidAmount.toLocaleString()}`,
-            color:"#006600",
-          },
-        ],
       }));
-      showUploadToast(`照合完了：請求書 ${invPayloadNext.id || invoiceDbId}`);
-    } catch (error) {
-      console.warn("confirmMatch failed:", error);
-      window.alert(`照合確定に失敗しました：${error?.message || String(error)}`);
+
+      window.alert(`照合確定しました（${customerNameForEvent} / ${invBusinessId}）`);
+    } catch (err) {
+      console.error("confirmMatch error:", err);
+      window.alert("照合確定に失敗しました：" + (err?.message || String(err)));
     }
   };
 
