@@ -1098,6 +1098,7 @@ const BankPage = ({ data, setData }) => {
       }
 
       const invoiceDbId = matched.id;
+      console.log("invoiceDbId確認:", invoiceDbId, "businessId:", businessId);
 
       const invPayloadNext = { ...getEntityPayload(matched) };
       invPayloadNext.status = "paid";
