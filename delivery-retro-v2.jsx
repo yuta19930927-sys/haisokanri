@@ -1055,71 +1055,66 @@ const BankPage = ({ data, setData }) => {
   const confirmMatch = async (bankTxId, invoiceOrId) => {
     if (!bankTxId || invoiceOrId == null || invoiceOrId === "") return;
     try {
+      const invoiceIdParam = typeof invoiceOrId === "object" ? null : invoiceOrId;
+      let inv =
+        typeof invoiceOrId === "object"
+          ? invoiceOrId
+          : invoices.find((row) => {
+              const dbId = getInvoiceDbId(row);
+              const pid = getEntityPayload(row).id;
+              return dbId === invoiceIdParam || pid === invoiceIdParam;
+            });
+      if (!inv || typeof inv !== "object") return;
+
       const tx = bankTransactions.find((row) => row?.id === bankTxId);
       if (!tx) return;
 
-      let invoiceNo = null;
-      if (typeof invoiceOrId === "object") {
-        const invPayload = invoiceOrId?.payload || invoiceOrId;
-        invoiceNo = invPayload?.id;
-      } else {
-        const s = String(invoiceOrId);
-        if (s.startsWith("INV-")) {
-          invoiceNo = s;
-        } else {
-          const found = invoices.find((row) => {
-            const dbId = getInvoiceDbId(row);
-            const pid = getEntityPayload(row).id;
-            return String(dbId) === s || String(pid) === s || String(row._dbId) === s;
-          });
-          invoiceNo = found ? getEntityPayload(found).id : null;
-        }
-      }
-
-      const parsePl = (raw) => {
-        if (raw == null) return {};
-        if (typeof raw === "object") return raw;
-        if (typeof raw === "string") {
-          try {
-            return JSON.parse(raw);
-          } catch {
-            return {};
+      let invoiceDbId = inv._dbId;
+      if (
+        !invoiceDbId ||
+        String(invoiceDbId).startsWith("INV-")
+      ) {
+        const invoicePayloadId =
+          getEntityPayload(inv).id || inv.id || inv?.payload?.id;
+        const { data: rows, error: lookupErr } = await supabase
+          .from("invoices")
+          .select("id, payload")
+          .limit(500);
+        if (lookupErr) throw lookupErr;
+        const parsePl = (raw) => {
+          if (raw == null) return {};
+          if (typeof raw === "object") return raw;
+          if (typeof raw === "string") {
+            try {
+              return JSON.parse(raw);
+            } catch {
+              return {};
+            }
           }
+          return {};
+        };
+        const matched = (rows || []).find((row) => {
+          const p = parsePl(row.payload);
+          return p?.id === invoicePayloadId;
+        });
+        if (!matched?.id) {
+          window.alert("請求書が見つかりませんでした。リロードして再試行してください。");
+          return;
         }
-        return {};
-      };
-
-      const { data: rows, error: fetchError } = await supabase.from("invoices").select("id, payload");
-      if (fetchError) throw fetchError;
-
-      let invRow =
-        invoiceNo != null
-          ? (rows || []).find((row) => parsePl(row.payload)?.id === invoiceNo)
-          : null;
-      if (!invRow && typeof invoiceOrId === "string") {
-        const s = String(invoiceOrId);
-        if (!s.startsWith("INV-")) {
-          invRow = (rows || []).find((row) => String(row.id) === s);
-        }
+        invoiceDbId = matched.id;
       }
 
-      if (!invRow?.id) {
-        window.alert(
-          invoiceNo
-            ? `請求書 ${invoiceNo} がDBで見つかりませんでした`
-            : "請求書がDBで見つかりませんでした"
-        );
-        return;
-      }
-
-      const invoiceDbId = invRow.id;
-      if (!invoiceNo) {
-        invoiceNo = parsePl(invRow.payload)?.id;
-      }
-      if (!invoiceNo) {
-        window.alert("請求書IDが取得できませんでした");
-        return;
-      }
+      const nowIso = new Date().toISOString();
+      const paidAmount = getBankDepositAmount(tx);
+      const invPayloadNext = { ...getEntityPayload(inv) };
+      invPayloadNext.status = "paid";
+      invPayloadNext.paid_at = nowIso;
+      invPayloadNext.paidDate = String(nowIso).slice(0, 10);
+      invPayloadNext.paid_amount = paidAmount;
+      invPayloadNext.paidAmount = paidAmount;
+      delete invPayloadNext._dbId;
+      const customerNameForEvent = invPayloadNext.customerName || invPayloadNext.customer_name || "";
+      const invBusinessId = invPayloadNext.id;
 
       let userId = null;
       try {
@@ -1129,22 +1124,7 @@ const BankPage = ({ data, setData }) => {
         userId = null;
       }
 
-      const nowIso = new Date().toISOString();
-      const paidAmount = getBankDepositAmount(tx);
-      const currentPayload = parsePl(invRow.payload);
-      const updatedPayload = {
-        ...currentPayload,
-        status: "paid",
-        paid_at: nowIso,
-        paidDate: String(nowIso).slice(0, 10),
-        paid_amount: paidAmount,
-        paidAmount,
-      };
-      delete updatedPayload._dbId;
-      const customerNameForEvent =
-        updatedPayload.customerName || updatedPayload.customer_name || "";
-
-      const { error: txError } = await supabase
+      const { error: txErr } = await supabase
         .from("bank_transactions")
         .update({
           match_status: "matched",
@@ -1153,13 +1133,13 @@ const BankPage = ({ data, setData }) => {
           matched_by: userId,
         })
         .eq("id", bankTxId);
-      if (txError) throw txError;
+      if (txErr) throw txErr;
 
-      const { error: invError } = await supabase
+      const { error: invErr } = await supabase
         .from("invoices")
-        .update({ payload: updatedPayload })
+        .update({ payload: invPayloadNext })
         .eq("id", invoiceDbId);
-      if (invError) throw invError;
+      if (invErr) throw invErr;
 
       setBankTransactions((prev) =>
         prev.map((row) =>
@@ -1177,46 +1157,54 @@ const BankPage = ({ data, setData }) => {
         )
       );
 
-      setData((prev) => ({
-        ...prev,
-        bankTransactions: (Array.isArray(prev?.bankTransactions) ? prev.bankTransactions : []).map(
-          (row) =>
-            row?.id === bankTxId
-              ? {
-                  ...row,
-                  status: "matched",
-                  match_status: "matched",
-                  matchedInvoice: invoiceDbId,
-                  matched_invoice_id: invoiceDbId,
-                  matched_at: nowIso,
-                  matched_by: userId,
-                }
-              : row
+      setData((d) => ({
+        ...d,
+        bankTransactions: (Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).map((row) =>
+          row?.id === bankTxId
+            ? {
+                ...row,
+                status: "matched",
+                match_status: "matched",
+                matchedInvoice: invoiceDbId,
+                matched_invoice_id: invoiceDbId,
+                matched_at: nowIso,
+                matched_by: userId,
+              }
+            : row
         ),
-        invoices: (Array.isArray(prev?.invoices) ? prev.invoices : []).map((inv) => {
-          const p = inv?.payload || inv;
-          if (p?.id !== invoiceNo) return inv;
-          if (inv.payload != null && typeof inv.payload === "object" && inv.id)
-            return { ...inv, payload: updatedPayload };
-          if (inv._dbId != null) return { ...updatedPayload, _dbId: inv._dbId };
-          return { ...inv, ...updatedPayload };
+        invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((row) => {
+          const dbId = getInvoiceDbId(row);
+          const pid = getEntityPayload(row).id;
+          const matches =
+            String(dbId) === String(invoiceDbId) ||
+            String(row._dbId) === String(invoiceDbId) ||
+            pid === invBusinessId ||
+            (invoiceIdParam != null &&
+              (dbId === invoiceIdParam ||
+                pid === invoiceIdParam ||
+                String(dbId) === String(invoiceIdParam) ||
+                String(pid) === String(invoiceIdParam)));
+          if (!matches) return row;
+          if (row.payload != null && typeof row.payload === "object" && row.id)
+            return { ...row, payload: invPayloadNext };
+          if (row._dbId != null) return { ...invPayloadNext, _dbId: row._dbId };
+          return { ...invPayloadNext };
         }),
         events: [
-          ...(Array.isArray(prev?.events) ? prev.events : []),
+          ...(Array.isArray(d?.events) ? d.events : []),
           {
-            id: `EV-B${Date.now()}`,
+            id:`EV-B${Date.now()}`,
             date: tx?.transaction_date || tx?.date || String(nowIso).slice(0, 10),
-            type: "bank_in",
-            title: `入金確認：${customerNameForEvent} ¥${paidAmount.toLocaleString()}`,
-            color: "#006600",
+            type:"bank_in",
+            title:`入金確認：${customerNameForEvent} ¥${paidAmount.toLocaleString()}`,
+            color:"#006600",
           },
         ],
       }));
-
-      window.alert("照合完了しました！");
-    } catch (err) {
-      console.error("confirmMatch failed:", err);
-      window.alert(`照合確定に失敗しました：${err?.message || String(err)}`);
+      showUploadToast(`照合完了：請求書 ${invPayloadNext.id || invoiceDbId}`);
+    } catch (error) {
+      console.warn("confirmMatch failed:", error);
+      window.alert(`照合確定に失敗しました：${error?.message || String(error)}`);
     }
   };
 
