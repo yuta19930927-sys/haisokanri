@@ -1075,7 +1075,12 @@ const BankPage = ({ data, setData }) => {
               ? JSON.parse(invoiceOrId.payload)
               : invoiceOrId.payload)
           : invoiceOrId;
-        businessId = pl.id || invoiceOrId.id || "";
+        businessId = pl.id || pl?.payload?.id || invoiceOrId.id || "";
+        if (!businessId || businessId === "") {
+          // getEntityPayload 経由でも試みる
+          const gp = getEntityPayload(invoiceOrId);
+          businessId = gp?.id || "";
+        }
       } else {
         businessId = String(invoiceOrId);
       }
