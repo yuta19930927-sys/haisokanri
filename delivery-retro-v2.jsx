@@ -1053,57 +1053,42 @@ const BankPage = ({ data, setData }) => {
   };
 
   const confirmMatch = async (bankTxId, invoiceOrId) => {
-    if (!bankTxId || invoiceOrId == null || invoiceOrId === "") return;
+    if (!bankTxId) return;
     try {
       const tx = bankTransactions.find((row) => row?.id === bankTxId);
       if (!tx) return;
 
-      // Supabaseから全請求書を取得して、業務ID（INV-005など）でUUIDを探す
+      const nowIso = new Date().toISOString();
+      const paidAmount = getBankDepositAmount(tx);
+
       const { data: invRows, error: lookupErr } = await supabase
         .from("invoices")
         .select("id, payload")
         .limit(500);
       if (lookupErr) throw lookupErr;
 
-      // invoiceOrId が文字列（INV-005など）かオブジェクトかで業務IDを取り出す
-      let businessId;
-      if (typeof invoiceOrId === "string") {
-        businessId = invoiceOrId;
-      } else if (typeof invoiceOrId === "object" && invoiceOrId !== null) {
-        const pl = invoiceOrId.payload
-          ? (typeof invoiceOrId.payload === "string"
-              ? JSON.parse(invoiceOrId.payload)
-              : invoiceOrId.payload)
-          : invoiceOrId;
-        businessId = pl.id || pl?.payload?.id || invoiceOrId.id || "";
-        if (!businessId || businessId === "") {
-          // getEntityPayload 経由でも試みる
-          const gp = getEntityPayload(invoiceOrId);
-          businessId = gp?.id || "";
-        }
-      } else {
-        businessId = String(invoiceOrId);
+      const gp = getEntityPayload(invoiceOrId);
+      const businessId = gp?.id || "";
+
+      if (!businessId) {
+        window.alert("請求書IDが取得できませんでした。");
+        return;
       }
 
-      // 業務IDでSupabaseの行を見つけてUUIDを取得
-      const matched = invRows.find((row) => {
+      const matched = (invRows || []).find((row) => {
         const pl = row.payload
-          ? (typeof row.payload === "string"
-              ? JSON.parse(row.payload)
-              : row.payload)
+          ? (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload)
           : {};
         return pl.id === businessId;
       });
 
       if (!matched?.id) {
-        window.alert("請求書が見つかりませんでした。リロードして再試行してください。");
+        window.alert("請求書が見つかりませんでした。業務ID: " + businessId);
         return;
       }
 
-      const invoiceDbId = matched.id; // これが正しいUUID
+      const invoiceDbId = matched.id;
 
-      const nowIso = new Date().toISOString();
-      const paidAmount = getBankDepositAmount(tx);
       const invPayloadNext = { ...getEntityPayload(matched) };
       invPayloadNext.status = "paid";
       invPayloadNext.paid_at = nowIso;
@@ -1111,6 +1096,7 @@ const BankPage = ({ data, setData }) => {
       invPayloadNext.paid_amount = paidAmount;
       invPayloadNext.paidAmount = paidAmount;
       delete invPayloadNext._dbId;
+
       const customerNameForEvent = invPayloadNext.customerName || invPayloadNext.customer_name || "";
       const invBusinessId = invPayloadNext.id;
 
@@ -1142,15 +1128,7 @@ const BankPage = ({ data, setData }) => {
       setBankTransactions((prev) =>
         prev.map((row) =>
           row?.id === bankTxId
-            ? {
-                ...row,
-                status: "matched",
-                match_status: "matched",
-                matchedInvoice: invoiceDbId,
-                matched_invoice_id: invoiceDbId,
-                matched_at: nowIso,
-                matched_by: userId,
-              }
+            ? { ...row, status: "matched", match_status: "matched", matched_invoice_id: invoiceDbId, matched_at: nowIso, matched_by: userId }
             : row
         )
       );
@@ -1159,20 +1137,12 @@ const BankPage = ({ data, setData }) => {
         ...d,
         bankTransactions: (Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).map((row) =>
           row?.id === bankTxId
-            ? {
-                ...row,
-                status: "matched",
-                match_status: "matched",
-                matchedInvoice: invoiceDbId,
-                matched_invoice_id: invoiceDbId,
-                matched_at: nowIso,
-                matched_by: userId,
-              }
+            ? { ...row, status: "matched", match_status: "matched", matched_invoice_id: invoiceDbId, matched_at: nowIso, matched_by: userId }
             : row
         ),
       }));
 
-      window.alert(`照合確定しました（${customerNameForEvent} / ${invBusinessId}）`);
+      window.alert("照合確定しました（" + customerNameForEvent + " / " + invBusinessId + "）");
     } catch (err) {
       console.error("confirmMatch error:", err);
       window.alert("照合確定に失敗しました：" + (err?.message || String(err)));
