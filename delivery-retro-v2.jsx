@@ -1067,11 +1067,21 @@ const BankPage = ({ data, setData }) => {
         .limit(500);
       if (lookupErr) throw lookupErr;
 
-      const gp = getEntityPayload(invoiceOrId);
-      const businessId = gp?.id || "";
+      // invoiceOrId から業務ID（INV-005など）を取り出す（複数パターン対応）
+      let businessId = "";
+      if (typeof invoiceOrId === "string") {
+        businessId = invoiceOrId;
+      } else if (invoiceOrId && typeof invoiceOrId === "object") {
+        const gp = getEntityPayload(invoiceOrId);
+        businessId = gp?.id
+          || invoiceOrId?.id
+          || invoiceOrId?.payload?.id
+          || (typeof invoiceOrId?.payload === "string" ? JSON.parse(invoiceOrId.payload)?.id : "")
+          || "";
+      }
 
       if (!businessId) {
-        window.alert("請求書IDが取得できませんでした。");
+        window.alert("請求書IDが取得できませんでした。console.logで確認: " + JSON.stringify(invoiceOrId));
         return;
       }
 
