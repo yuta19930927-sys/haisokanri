@@ -1072,12 +1072,8 @@ const BankPage = ({ data, setData }) => {
       if (typeof invoiceOrId === "string") {
         businessId = invoiceOrId;
       } else if (invoiceOrId && typeof invoiceOrId === "object") {
-        const gp = getEntityPayload(invoiceOrId);
-        businessId = gp?.id
-          || invoiceOrId?.id
-          || invoiceOrId?.payload?.id
-          || (typeof invoiceOrId?.payload === "string" ? JSON.parse(invoiceOrId.payload)?.id : "")
-          || "";
+        // fetchDataFromSupabase で payload がフラット展開されているので invoice.id が直接業務ID
+        businessId = invoiceOrId?.id || invoiceOrId?.payload?.id || "";
       }
 
       if (!businessId) {
