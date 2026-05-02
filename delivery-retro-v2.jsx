@@ -3083,9 +3083,9 @@ const InvoicesPage = ({ data, setData }) => {
   );
 };
 
-const DriversAccidentFormTab = ({ f, setF }) => {
-  const accidentLogs = f.accidentLogs || [];
-  const internalLogs = f.internalLogs || [];
+const DriversAccidentFormTab = ({ form, setForm }) => {
+  const accidentLogs = form.accidentLogs || [];
+  const internalLogs = form.internalLogs || [];
   const [newAcc, setNewAcc] = useState({ type:"重大事故", date:"", detail:"", result:"" });
   const [newInt, setNewInt] = useState({ date:"", detail:"", result:"" });
   return (
@@ -3103,7 +3103,12 @@ const DriversAccidentFormTab = ({ f, setF }) => {
         </div>
         <Fl label="内容"><RetroTextarea value={newAcc.detail} onChange={e=>setNewAcc(v=>({...v,detail:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
         <Fl label="処理結果"><RetroInput value={newAcc.result} onChange={e=>setNewAcc(v=>({...v,result:e.target.value}))}/></Fl>
-        <RetroBtn onClick={()=>{ if(!newAcc.date) return; setF(p=>({...p, accidentLogs:[...(p.accidentLogs||[]),{...newAcc,id:Date.now()}]})); setNewAcc({type:"重大事故",date:"",detail:"",result:""}); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+        <RetroBtn onClick={() => {
+          if (!newAcc.date) return;
+          const updated = [...(form.accidentLogs || []), { ...newAcc, id: Date.now() }];
+          setForm(prev => ({ ...prev, accidentLogs: updated }));
+          setNewAcc({ type:"重大事故", date:"", detail:"", result:"" });
+        }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
           <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
         </RetroBtn>
       </div>
@@ -3113,7 +3118,7 @@ const DriversAccidentFormTab = ({ f, setF }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#e63946" }}>{rec.date} 【{rec.type}】</span>
-              <RetroBtn small onClick={()=>setF(p=>({...p,accidentLogs:(p.accidentLogs||[]).filter(x=>x.id!==rec.id)}))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, accidentLogs: (prev.accidentLogs || []).filter(x => x.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -3130,7 +3135,12 @@ const DriversAccidentFormTab = ({ f, setF }) => {
           <Fl label="処理結果"><RetroInput value={newInt.result} onChange={e=>setNewInt(v=>({...v,result:e.target.value}))}/></Fl>
         </div>
         <Fl label="事故内容"><RetroTextarea value={newInt.detail} onChange={e=>setNewInt(v=>({...v,detail:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
-        <RetroBtn onClick={()=>{ if(!newInt.date) return; setF(p=>({...p, internalLogs:[...(p.internalLogs||[]),{...newInt,id:Date.now()}]})); setNewInt({date:"",detail:"",result:""}); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+        <RetroBtn onClick={() => {
+          if (!newInt.date) return;
+          const updated = [...(form.internalLogs || []), { ...newInt, id: Date.now() }];
+          setForm(prev => ({ ...prev, internalLogs: updated }));
+          setNewInt({ date:"", detail:"", result:"" });
+        }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
           <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
         </RetroBtn>
       </div>
@@ -3140,7 +3150,7 @@ const DriversAccidentFormTab = ({ f, setF }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#e65100" }}>{rec.date}</span>
-              <RetroBtn small onClick={()=>setF(p=>({...p,internalLogs:(p.internalLogs||[]).filter(x=>x.id!==rec.id)}))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, internalLogs: (prev.internalLogs || []).filter(x => x.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -3153,9 +3163,9 @@ const DriversAccidentFormTab = ({ f, setF }) => {
   );
 };
 
-const DriversHealthFormTab = ({ f, setF }) => {
-  const healthLogs = f.healthLogs || [];
-  const trainingLogs = f.trainingLogs || [];
+const DriversHealthFormTab = ({ form, setForm }) => {
+  const healthLogs = form.healthLogs || [];
+  const trainingLogs = form.trainingLogs || [];
   const [newHealth, setNewHealth] = useState({ date:"", org:"", note:"" });
   const [newTraining, setNewTraining] = useState({ date:"", content:"", sign:"" });
   return (
@@ -3167,7 +3177,12 @@ const DriversHealthFormTab = ({ f, setF }) => {
           <Fl label="実施医療機関"><RetroInput value={newHealth.org} onChange={e=>setNewHealth(v=>({...v,org:e.target.value}))}/></Fl>
         </div>
         <Fl label="特記事項"><RetroTextarea value={newHealth.note} onChange={e=>setNewHealth(v=>({...v,note:e.target.value}))} placeholder="高血圧・糖尿病など" style={{ minHeight:"60px" }}/></Fl>
-        <RetroBtn onClick={()=>{ if(!newHealth.date) return; setF(p=>({...p, healthLogs:[...(p.healthLogs||[]),{...newHealth,id:Date.now()}]})); setNewHealth({date:"",org:"",note:""}); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+        <RetroBtn onClick={() => {
+          if (!newHealth.date) return;
+          const updated = [...(form.healthLogs || []), { ...newHealth, id: Date.now() }];
+          setForm(prev => ({ ...prev, healthLogs: updated }));
+          setNewHealth({ date:"", org:"", note:"" });
+        }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
           <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
         </RetroBtn>
       </div>
@@ -3177,7 +3192,7 @@ const DriversHealthFormTab = ({ f, setF }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#007a74" }}>{rec.date} — {rec.org||"—"}</span>
-              <RetroBtn small onClick={()=>setF(p=>({...p,healthLogs:(p.healthLogs||[]).filter(x=>x.id!==rec.id)}))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, healthLogs: (prev.healthLogs || []).filter(x => x.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -3193,7 +3208,12 @@ const DriversHealthFormTab = ({ f, setF }) => {
           <Fl label="安全管理者署名"><RetroInput value={newTraining.sign} onChange={e=>setNewTraining(v=>({...v,sign:e.target.value}))}/></Fl>
         </div>
         <Fl label="指導内容"><RetroTextarea value={newTraining.content} onChange={e=>setNewTraining(v=>({...v,content:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
-        <RetroBtn onClick={()=>{ if(!newTraining.date) return; setF(p=>({...p, trainingLogs:[...(p.trainingLogs||[]),{...newTraining,id:Date.now()}]})); setNewTraining({date:"",content:"",sign:""}); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+        <RetroBtn onClick={() => {
+          if (!newTraining.date) return;
+          const updated = [...(form.trainingLogs || []), { ...newTraining, id: Date.now() }];
+          setForm(prev => ({ ...prev, trainingLogs: updated }));
+          setNewTraining({ date:"", content:"", sign:"" });
+        }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
           <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
         </RetroBtn>
       </div>
@@ -3203,7 +3223,7 @@ const DriversHealthFormTab = ({ f, setF }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#007a74" }}>{rec.date}</span>
-              <RetroBtn small onClick={()=>setF(p=>({...p,trainingLogs:(p.trainingLogs||[]).filter(x=>x.id!==rec.id)}))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, trainingLogs: (prev.trainingLogs || []).filter(x => x.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -3347,109 +3367,109 @@ const DriversPage = ({ data, setData }) => {
     </label>
   );
 
-  const renderFormTab = (tab, f, setF) => {
+  const renderFormTab = (tab, form, setForm) => {
     if (tab === "basic") return (
       <>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="氏名"><RetroInput value={f.name||""} onChange={e=>setF(v=>({...v,name:e.target.value}))}/></Fl>
-          <Fl label="フリガナ"><RetroInput value={f.furigana||""} onChange={e=>setF(v=>({...v,furigana:e.target.value}))}/></Fl>
-          <Fl label="生年月日"><RetroInput type="date" value={f.birthdate||""} onChange={e=>setF(v=>({...v,birthdate:e.target.value}))}/></Fl>
-          <Fl label="電話番号"><RetroInput value={f.phone||""} onChange={e=>setF(v=>({...v,phone:e.target.value}))}/></Fl>
+          <Fl label="氏名"><RetroInput value={form.name||""} onChange={e=>setForm(v=>({...v,name:e.target.value}))}/></Fl>
+          <Fl label="フリガナ"><RetroInput value={form.furigana||""} onChange={e=>setForm(v=>({...v,furigana:e.target.value}))}/></Fl>
+          <Fl label="生年月日"><RetroInput type="date" value={form.birthdate||""} onChange={e=>setForm(v=>({...v,birthdate:e.target.value}))}/></Fl>
+          <Fl label="電話番号"><RetroInput value={form.phone||""} onChange={e=>setForm(v=>({...v,phone:e.target.value}))}/></Fl>
         </div>
-        <Fl label="住所"><RetroInput value={f.address||""} onChange={e=>setF(v=>({...v,address:e.target.value}))}/></Fl>
-        <Fl label="メールアドレス"><RetroInput value={f.email||""} onChange={e=>setF(v=>({...v,email:e.target.value}))}/></Fl>
+        <Fl label="住所"><RetroInput value={form.address||""} onChange={e=>setForm(v=>({...v,address:e.target.value}))}/></Fl>
+        <Fl label="メールアドレス"><RetroInput value={form.email||""} onChange={e=>setForm(v=>({...v,email:e.target.value}))}/></Fl>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px 12px" }}>
           <Fl label="契約形態">
-            <RetroSelect value={f.contractType||"業務委託"} onChange={e=>setF(v=>({...v,contractType:e.target.value}))}>
+            <RetroSelect value={form.contractType||"業務委託"} onChange={e=>setForm(v=>({...v,contractType:e.target.value}))}>
               <option value="業務委託">業務委託</option>
               <option value="正社員">正社員</option>
               <option value="パート">パート</option>
             </RetroSelect>
           </Fl>
-          <Fl label="契約開始日"><RetroInput type="date" value={f.contractStart||""} onChange={e=>setF(v=>({...v,contractStart:e.target.value}))}/></Fl>
-          <Fl label="契約終了日"><RetroInput type="date" value={f.contractEnd||""} onChange={e=>setF(v=>({...v,contractEnd:e.target.value}))}/></Fl>
+          <Fl label="契約開始日"><RetroInput type="date" value={form.contractStart||""} onChange={e=>setForm(v=>({...v,contractStart:e.target.value}))}/></Fl>
+          <Fl label="契約終了日"><RetroInput type="date" value={form.contractEnd||""} onChange={e=>setForm(v=>({...v,contractEnd:e.target.value}))}/></Fl>
         </div>
         <Fl label="状態">
-          <RetroSelect value={f.status||"available"} onChange={e=>setF(v=>({...v,status:e.target.value}))}>
+          <RetroSelect value={form.status||"available"} onChange={e=>setForm(v=>({...v,status:e.target.value}))}>
             <option value="available">待機中</option>
             <option value="on_duty">稼働中</option>
             <option value="off">休暇</option>
           </RetroSelect>
         </Fl>
-        <Fl label="メモ"><RetroTextarea value={f.notes||""} onChange={e=>setF(v=>({...v,notes:e.target.value}))}/></Fl>
+        <Fl label="メモ"><RetroTextarea value={form.notes||""} onChange={e=>setForm(v=>({...v,notes:e.target.value}))}/></Fl>
       </>
     );
     if (tab === "license") return (
       <>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="運転免許証番号"><RetroInput value={f.licenseNumber||""} onChange={e=>setF(v=>({...v,licenseNumber:e.target.value}))}/></Fl>
+          <Fl label="運転免許証番号"><RetroInput value={form.licenseNumber||""} onChange={e=>setForm(v=>({...v,licenseNumber:e.target.value}))}/></Fl>
           <Fl label="免許種類（大型・中型等）">
-            <RetroSelect value={f.license||"大型"} onChange={e=>setF(v=>({...v,license:e.target.value}))}>
+            <RetroSelect value={form.license||"大型"} onChange={e=>setForm(v=>({...v,license:e.target.value}))}>
               <option value="大型">大型</option>
               <option value="中型">中型</option>
               <option value="普通">普通</option>
             </RetroSelect>
           </Fl>
-          <Fl label="免許種類（正式名称）"><RetroInput value={f.licenseType||""} placeholder="例：普通第一種運転免許" onChange={e=>setF(v=>({...v,licenseType:e.target.value}))}/></Fl>
-          <Fl label="免許取得日"><RetroInput type="date" value={f.licenseAcquired||""} onChange={e=>setF(v=>({...v,licenseAcquired:e.target.value}))}/></Fl>
-          <Fl label="有効期限（免許更新日）"><RetroInput type="date" value={f.license_expiry||""} onChange={e=>setF(v=>({...v,license_expiry:e.target.value}))}/></Fl>
-          <Fl label="免許条件"><RetroInput value={f.licenseCondition||""} placeholder="例：AT限定・眼鏡等" onChange={e=>setF(v=>({...v,licenseCondition:e.target.value}))}/></Fl>
+          <Fl label="免許種類（正式名称）"><RetroInput value={form.licenseType||""} placeholder="例：普通第一種運転免許" onChange={e=>setForm(v=>({...v,licenseType:e.target.value}))}/></Fl>
+          <Fl label="免許取得日"><RetroInput type="date" value={form.licenseAcquired||""} onChange={e=>setForm(v=>({...v,licenseAcquired:e.target.value}))}/></Fl>
+          <Fl label="有効期限（免許更新日）"><RetroInput type="date" value={form.license_expiry||""} onChange={e=>setForm(v=>({...v,license_expiry:e.target.value}))}/></Fl>
+          <Fl label="免許条件"><RetroInput value={form.licenseCondition||""} placeholder="例：AT限定・眼鏡等" onChange={e=>setForm(v=>({...v,licenseCondition:e.target.value}))}/></Fl>
         </div>
         <Fl label="免許証コピー保管">
-          <CheckRow label="表面保管済" checked={f.licenseFrontCopy} onChange={v=>setF(p=>({...p,licenseFrontCopy:v}))}/>
-          <CheckRow label="裏面保管済" checked={f.licenseBackCopy} onChange={v=>setF(p=>({...p,licenseBackCopy:v}))}/>
+          <CheckRow label="表面保管済" checked={form.licenseFrontCopy} onChange={v=>setForm(p=>({...p,licenseFrontCopy:v}))}/>
+          <CheckRow label="裏面保管済" checked={form.licenseBackCopy} onChange={v=>setForm(p=>({...p,licenseBackCopy:v}))}/>
         </Fl>
-        <Fl label="最終確認日"><RetroInput type="date" value={f.licenseCheckDate||""} onChange={e=>setF(v=>({...v,licenseCheckDate:e.target.value}))}/></Fl>
+        <Fl label="最終確認日"><RetroInput type="date" value={form.licenseCheckDate||""} onChange={e=>setForm(v=>({...v,licenseCheckDate:e.target.value}))}/></Fl>
       </>
     );
     if (tab === "diagnosis") return (
       <>
         <Fl label="診断種別">
           {["初任診断","一般診断","適齢診断","事故惹起者診断"].map(t => (
-            <CheckRow key={t} label={t} checked={(f.diagnosisType||[]).includes(t)}
-              onChange={v => setF(p => ({ ...p, diagnosisType: v ? [...(p.diagnosisType||[]),t] : (p.diagnosisType||[]).filter(x=>x!==t) }))}/>
+            <CheckRow key={t} label={t} checked={(form.diagnosisType||[]).includes(t)}
+              onChange={v => setForm(p => ({ ...p, diagnosisType: v ? [...(p.diagnosisType||[]),t] : (p.diagnosisType||[]).filter(x=>x!==t) }))}/>
           ))}
         </Fl>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="受診日"><RetroInput type="date" value={f.diagnosisDate||""} onChange={e=>setF(v=>({...v,diagnosisDate:e.target.value}))}/></Fl>
-          <Fl label="実施機関名"><RetroInput value={f.diagnosisOrg||""} onChange={e=>setF(v=>({...v,diagnosisOrg:e.target.value}))}/></Fl>
+          <Fl label="受診日"><RetroInput type="date" value={form.diagnosisDate||""} onChange={e=>setForm(v=>({...v,diagnosisDate:e.target.value}))}/></Fl>
+          <Fl label="実施機関名"><RetroInput value={form.diagnosisOrg||""} onChange={e=>setForm(v=>({...v,diagnosisOrg:e.target.value}))}/></Fl>
         </div>
-        <Fl label="診断結果・所見"><RetroTextarea value={f.diagnosisNote||""} placeholder="例：注意力低下傾向あり 等" onChange={e=>setF(v=>({...v,diagnosisNote:e.target.value}))}/></Fl>
+        <Fl label="診断結果・所見"><RetroTextarea value={form.diagnosisNote||""} placeholder="例：注意力低下傾向あり 等" onChange={e=>setForm(v=>({...v,diagnosisNote:e.target.value}))}/></Fl>
         <Fl label="結果票保管">
-          <CheckRow label="原本保管済" checked={f.diagnosisOriginal} onChange={v=>setF(p=>({...p,diagnosisOriginal:v}))}/>
-          <CheckRow label="データ保存済" checked={f.diagnosisData} onChange={v=>setF(p=>({...p,diagnosisData:v}))}/>
+          <CheckRow label="原本保管済" checked={form.diagnosisOriginal} onChange={v=>setForm(p=>({...p,diagnosisOriginal:v}))}/>
+          <CheckRow label="データ保存済" checked={form.diagnosisData} onChange={v=>setForm(p=>({...p,diagnosisData:v}))}/>
         </Fl>
       </>
     );
-    if (tab === "accident") return <DriversAccidentFormTab f={f} setF={setF} />;
-    if (tab === "health") return <DriversHealthFormTab f={f} setF={setF} />;
+    if (tab === "accident") return <DriversAccidentFormTab form={form} setForm={setForm} />;
+    if (tab === "health") return <DriversHealthFormTab form={form} setForm={setForm} />;
     if (tab === "vehicle") return (
       <>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="使用車両登録番号"><RetroInput value={f.vehicleNumber||""} onChange={e=>setF(v=>({...v,vehicleNumber:e.target.value}))}/></Fl>
-          <Fl label="車台番号"><RetroInput value={f.chassisNumber||""} onChange={e=>setF(v=>({...v,chassisNumber:e.target.value}))}/></Fl>
+          <Fl label="使用車両登録番号"><RetroInput value={form.vehicleNumber||""} onChange={e=>setForm(v=>({...v,vehicleNumber:e.target.value}))}/></Fl>
+          <Fl label="車台番号"><RetroInput value={form.chassisNumber||""} onChange={e=>setForm(v=>({...v,chassisNumber:e.target.value}))}/></Fl>
         </div>
         <Fl label="車両所有区分">
           {["本人所有","リース","会社所有"].map(t => (
-            <CheckRow key={t} label={t} checked={f.vehicleOwnership===t} onChange={v=>{ if(v) setF(p=>({...p,vehicleOwnership:t})); }}/>
+            <CheckRow key={t} label={t} checked={form.vehicleOwnership===t} onChange={v=>{ if(v) setForm(p=>({...p,vehicleOwnership:t})); }}/>
           ))}
         </Fl>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="車検有効期限"><RetroInput type="date" value={f.vehicleInspectionExpiry||""} onChange={e=>setF(v=>({...v,vehicleInspectionExpiry:e.target.value}))}/></Fl>
-          <Fl label="自賠責保険期限"><RetroInput type="date" value={f.liabilityInsuranceExpiry||""} onChange={e=>setF(v=>({...v,liabilityInsuranceExpiry:e.target.value}))}/></Fl>
-          <Fl label="任意保険会社"><RetroInput value={f.insuranceCompany||""} onChange={e=>setF(v=>({...v,insuranceCompany:e.target.value}))}/></Fl>
-          <Fl label="任意保険証券番号"><RetroInput value={f.insurancePolicyNumber||""} onChange={e=>setF(v=>({...v,insurancePolicyNumber:e.target.value}))}/></Fl>
+          <Fl label="車検有効期限"><RetroInput type="date" value={form.vehicleInspectionExpiry||""} onChange={e=>setForm(v=>({...v,vehicleInspectionExpiry:e.target.value}))}/></Fl>
+          <Fl label="自賠責保険期限"><RetroInput type="date" value={form.liabilityInsuranceExpiry||""} onChange={e=>setForm(v=>({...v,liabilityInsuranceExpiry:e.target.value}))}/></Fl>
+          <Fl label="任意保険会社"><RetroInput value={form.insuranceCompany||""} onChange={e=>setForm(v=>({...v,insuranceCompany:e.target.value}))}/></Fl>
+          <Fl label="任意保険証券番号"><RetroInput value={form.insurancePolicyNumber||""} onChange={e=>setForm(v=>({...v,insurancePolicyNumber:e.target.value}))}/></Fl>
         </div>
-        <Fl label="対人・対物補償額"><RetroInput value={f.insuranceCoverage||""} onChange={e=>setF(v=>({...v,insuranceCoverage:e.target.value}))}/></Fl>
+        <Fl label="対人・対物補償額"><RetroInput value={form.insuranceCoverage||""} onChange={e=>setForm(v=>({...v,insuranceCoverage:e.target.value}))}/></Fl>
         <Fl label="保険証コピー">
-          <CheckRow label="保管済" checked={f.insuranceCopySaved} onChange={v=>setF(p=>({...p,insuranceCopySaved:v}))}/>
+          <CheckRow label="保管済" checked={form.insuranceCopySaved} onChange={v=>setForm(p=>({...p,insuranceCopySaved:v}))}/>
         </Fl>
       </>
     );
     if (tab === "routes") {
       const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
       const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
-      const routes = f.routes || [];
+      const routes = form.routes || [];
       return (
         <>
           <div style={{ fontSize:"12px", color:"#666", marginBottom:"10px" }}>このドライバーがよく担当する顧客・仕事種別・単価を登録しておくと、日次入力時に自動入力されます。</div>
@@ -3457,34 +3477,34 @@ const DriversPage = ({ data, setData }) => {
             <div key={idx} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", marginBottom:"8px", background:"#fafbfc" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"6px" }}>
                 <span style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>ルート {idx+1}</span>
-                <RetroBtn small onClick={()=>setF(v=>({ ...v, routes: (v.routes||[]).filter((_,i)=>i!==idx) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+                <RetroBtn small onClick={()=>setForm(v=>({ ...v, routes: (v.routes||[]).filter((_,i)=>i!==idx) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
                 <Fl label="顧客">
-                  <RetroSelect value={route.customerId||""} onChange={e=>setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,customerId:e.target.value}:r) }))}>
+                  <RetroSelect value={route.customerId||""} onChange={e=>setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,customerId:e.target.value}:r) }))}>
                     <option value="">選択</option>
                     {customers.map(c=><option key={c?.id} value={c?.id}>{c?.name}</option>)}
                   </RetroSelect>
                 </Fl>
                 <Fl label="仕事種別">
-                  <RetroSelect value={route.jobTypeId||""} onChange={e=>{ const jt=jobTypes.find(j=>j?.id===e.target.value); setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,jobTypeId:e.target.value,unitPrice:String(jt?.unitPrice||""),driverUnitPrice:String(jt?.driverUnitPrice||"")}:r) })); }}>
+                  <RetroSelect value={route.jobTypeId||""} onChange={e=>{ const jt=jobTypes.find(j=>j?.id===e.target.value); setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,jobTypeId:e.target.value,unitPrice:String(jt?.unitPrice||""),driverUnitPrice:String(jt?.driverUnitPrice||"")}:r) })); }}>
                     <option value="">選択</option>
                     {jobTypes.map(j=><option key={j?.id} value={j?.id}>{j?.name}</option>)}
                   </RetroSelect>
                 </Fl>
                 <Fl label="売上単価（円）">
-                  <RetroInput type="number" value={route.unitPrice||""} onChange={e=>setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,unitPrice:e.target.value}:r) }))}/>
+                  <RetroInput type="number" value={route.unitPrice||""} onChange={e=>setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,unitPrice:e.target.value}:r) }))}/>
                 </Fl>
                 <Fl label="支払単価（円）">
-                  <RetroInput type="number" value={route.driverUnitPrice||""} onChange={e=>setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,driverUnitPrice:e.target.value}:r) }))}/>
+                  <RetroInput type="number" value={route.driverUnitPrice||""} onChange={e=>setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,driverUnitPrice:e.target.value}:r) }))}/>
                 </Fl>
               </div>
               <Fl label="メモ">
-                <RetroInput value={route.note||""} placeholder="例：午前便、週3回など" onChange={e=>setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,note:e.target.value}:r) }))}/>
+                <RetroInput value={route.note||""} placeholder="例：午前便、週3回など" onChange={e=>setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,note:e.target.value}:r) }))}/>
               </Fl>
             </div>
           ))}
-          <RetroBtn onClick={()=>setF(v=>({ ...v, routes: [...(v.routes||[]), { customerId:"", jobTypeId:"", unitPrice:"", driverUnitPrice:"", note:"" }] }))} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+          <RetroBtn onClick={()=>setForm(v=>({ ...v, routes: [...(v.routes||[]), { customerId:"", jobTypeId:"", unitPrice:"", driverUnitPrice:"", note:"" }] }))} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
             <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>ルートを追加
           </RetroBtn>
         </>
