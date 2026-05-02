@@ -2314,6 +2314,7 @@ const QualityMgmtPage = ({ data, setData }) => {
                         <td key={`${driver.id}-${dateStr}-${f}`} style={{ padding:"4px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", minWidth:"50px" }}
                           onClick={(e) => {
                             e.stopPropagation();
+                            console.log("cell clicked", cellKey, f);
                             setEditingCell(cellKey);
                             setCellForm({
                               持出個数: rec?.持出個数 ?? "",
