@@ -2429,6 +2429,87 @@ const SalesMgmtPage = ({ data, setData }) => {
               ])}
             />
           </Panel>
+          <Panel title="月次請求書生成" icon={salesIcon}>
+            <div style={{ fontSize:"12px", color:"#666", marginBottom:"10px" }}>
+              月次集計データから顧客別の請求書を生成します。生成した請求書は「請求管理」ページに追加されます。
+            </div>
+            {customerSummary.length === 0 ? (
+              <div style={{ fontSize:"12px", color:"#999", padding:"12px", textAlign:"center" }}>この月の配送実績がありません</div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
+                {customerSummary.map(s => {
+                  const alreadyExists = (Array.isArray(data?.invoices) ? data.invoices : []).some(inv => {
+                    const p = inv?.payload ? (typeof inv.payload === "string" ? JSON.parse(inv.payload) : inv.payload) : inv;
+                    return p?.salesMgmtMonth === selectedMonth && (p?.customerId === s.customer?.id || inv?.customerId === s.customer?.id);
+                  });
+                  return (
+                    <div key={s.customer?.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff" }}>
+                      <div>
+                        <div style={{ fontSize:"12px", fontWeight:700, color:"#333" }}>{s.customer?.name}</div>
+                        <div style={{ fontSize:"11px", color:"#888", marginTop:"2px" }}>
+                          {s.count}件 / 小計¥{s.subtotal.toLocaleString()} / 税¥{s.tax.toLocaleString()} / 合計¥{s.total.toLocaleString()}
+                        </div>
+                      </div>
+                      {alreadyExists ? (
+                        <span style={{ fontSize:"11px", color:"#2e7d32", fontWeight:700, background:"#e8f5e9", border:"1px solid #4caf50", borderRadius:"999px", padding:"2px 10px" }}>生成済</span>
+                      ) : (
+                        <RetroBtn small onClick={() => {
+                          const recs = monthRecords.filter(r => r?.customerId === s.customer?.id);
+                          const lineItems = recs.map(r => {
+                            const jt = jobTypes.find(j => j?.id === r?.jobTypeId);
+                            const driver = drivers.find(d => d?.id === r?.driverId);
+                            return {
+                              id: `LI-${Date.now()}-${Math.random()}`,
+                              name: `${r.date} ${driver?.name||""} ${jt?.name||""} ${r.count ? r.count+"個" : r.distance ? r.distance+"km" : r.hours ? r.hours+"h" : ""}`,
+                              qty: 1,
+                              unitPrice: Number(r.salesAmount)||0,
+                              subtotal: Number(r.salesAmount)||0,
+                            };
+                          });
+                          const customer = s.customer;
+                          const issueDate = `${selectedMonth}-${new Date(selectedMonth+"-01").toISOString().slice(0,7) === selectedMonth ? String(new Date(new Date(selectedMonth+"-01").getFullYear(), new Date(selectedMonth+"-01").getMonth()+1, 0).getDate()).padStart(2,"0") : "30"}`;
+                          const dueDate = calcDueDateByTerms(issueDate, customer?.closingDay ?? 31, customer?.paymentSite || "翌月末払い");
+                          const currentInvoices = Array.isArray(data?.invoices) ? data.invoices : [];
+                          const newInv = {
+                            id: `INV-${String(currentInvoices.length+1).padStart(3,"0")}`,
+                            customerId: customer?.id,
+                            customerName: customer?.name || "",
+                            issueDate,
+                            dueDate,
+                            amount: s.subtotal,
+                            tax: s.tax,
+                            total: s.total,
+                            status: "unpaid",
+                            bankRef: "",
+                            paidDate: null,
+                            note: `${selectedMonth} 月次請求`,
+                            lineItems,
+                            sentAt: null,
+                            sentTo: "",
+                            salesMgmtMonth: selectedMonth,
+                          };
+                          setData(d => ({
+                            ...d,
+                            invoices: [...(Array.isArray(d?.invoices) ? d.invoices : []), newInv],
+                            events: [...(Array.isArray(d?.events) ? d.events : []), {
+                              id: `EV-INV${Date.now()}`,
+                              date: dueDate,
+                              type: "payment_due",
+                              title: `入金期日：${customer?.name||""}`,
+                              color: "#660099",
+                            }],
+                          }));
+                          window.alert(`${customer?.name} の請求書を生成しました！\n請求管理ページで確認できます。`);
+                        }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+                          請求書を生成
+                        </RetroBtn>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
         </div>
       )}
 
