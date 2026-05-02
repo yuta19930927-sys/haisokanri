@@ -3604,7 +3604,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         </div>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
           <button onClick={()=>setShowSettings(v=>!v)} style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
-            <Icon size={18}><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 5 0c0 1.7-2.5 2-2.5 3.5"/><line x1="12" y1="17.5" x2="12" y2="17.5"/></Icon>
+            <Icon size={18}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></Icon>
           </button>
           <button onClick={()=>setShowNotifications(v=>!v)} style={{ position:"relative", border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
             <Icon size={18}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 6-3 8h18c0-2-3-1-3-8"/><path d="M10 19a2 2 0 0 0 4 0"/></Icon>
@@ -3677,7 +3677,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
       </div>
 
       {showSettings && (
-        <Modal title="設定・管理" icon={<Icon size={14}><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 5 0c0 1.7-2.5 2-2.5 3.5"/><line x1="12" y1="17.5" x2="12" y2="17.5"/></Icon>} onClose={()=>setShowSettings(false)} width={640}>
+        <Modal title="設定・管理" icon={<Icon size={14}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></Icon>} onClose={()=>setShowSettings(false)} width={640}>
           <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px" }}>削除済みデータの復元</div>
           {["customers","drivers","vehicles","orders","invoices"].map(key => {
             const labelMap = { customers:"顧客", drivers:"ドライバー", vehicles:"車両", orders:"受注", invoices:"請求書" };
@@ -3701,6 +3701,42 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           {["customers","drivers","vehicles","orders","invoices"].every(key => (Array.isArray(data?.[key]) ? data[key] : []).filter(item => item?.deleted).length === 0) && (
             <div style={{ fontSize:"12px", color:"#999", textAlign:"center", padding:"20px" }}>削除済みデータはありません</div>
           )}
+          <div style={{ borderTop:"2px solid #e8e8e8", marginTop:"16px", paddingTop:"16px" }}>
+            <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px" }}>CSVダウンロード</div>
+            {[
+              { key:"customers", label:"顧客一覧", headers:["ID","会社名","担当者","電話","メール","住所","単価","締め日","支払サイト","振込名義カナ","メモ"], getRow: c => [c.id,c.name,c.contact,c.phone,c.email,c.address,c.unitPrice,c.closingDay,c.paymentSite,c.payer_kana,c.notes] },
+              { key:"orders", label:"受注一覧", headers:["ID","顧客","配送種別","配達日","出発地","配送先","荷物","重量","金額","状態"], getRow: o => [o.id,o.customerName,o.deliveryType,o.deliveryDate,o.from,o.to,o.cargo,o.weight,o.amount,o.status] },
+              { key:"invoices", label:"請求書一覧", headers:["ID","顧客","発行日","期日","金額","消費税","合計","状態"], getRow: i => { const p = i.payload ? (typeof i.payload === "string" ? JSON.parse(i.payload) : i.payload) : i; return [p.id||i.id, p.customerName, p.issueDate, p.dueDate, p.amount, p.tax, p.total, p.status]; } },
+              { key:"drivers", label:"ドライバー一覧", headers:["ID","氏名","フリガナ","生年月日","電話","免許種別","有効期限","契約形態","状態"], getRow: d => [d.id,d.name,d.furigana,d.birthdate,d.phone,d.license,d.license_expiry,d.contractType,d.status] },
+              { key:"vehicles", label:"車両一覧", headers:["ID","ナンバー","車種","メーカー","年式","最大積載量","車検期限","任意保険期限","状態"], getRow: v => [v.id,v.plate,v.type,v.maker,v.year,v.maxLoad,v.nextInspection,v.insuranceExpiry,v.status] },
+            ].map(({ key, label, headers, getRow }) => {
+              const rows = (Array.isArray(data?.[key]) ? data[key] : []).filter(item => !item?.deleted);
+              const downloadCsv = () => {
+                const escape = val => {
+                  const s = String(val ?? "").replace(/"/g, '""');
+                  return s.includes(",") || s.includes("\n") || s.includes('"') ? `"${s}"` : s;
+                };
+                const csv = [headers, ...rows.map(getRow)].map(row => row.map(escape).join(",")).join("\n");
+                const bom = "\uFEFF";
+                const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8;" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${label}_${new Date().toISOString().slice(0,10)}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+              };
+              return (
+                <div key={key} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 10px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff", marginBottom:"6px" }}>
+                  <div>
+                    <span style={{ fontSize:"12px", fontWeight:700, color:"#333" }}>{label}</span>
+                    <span style={{ fontSize:"11px", color:"#999", marginLeft:"8px" }}>{rows.length}件</span>
+                  </div>
+                  <RetroBtn small onClick={downloadCsv} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>CSVダウンロード</RetroBtn>
+                </div>
+              );
+            })}
+          </div>
         </Modal>
       )}
 
