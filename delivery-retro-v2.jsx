@@ -2603,25 +2603,79 @@ const DriversPage = ({ data, setData }) => {
   const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [form, setForm] = useState({ name:"", license:"大型", license_expiry:"", phone:"", status:"available", notes:"" });
+  const [selectedDriverId, setSelectedDriverId] = useState(null);
+  const [activeTab, setActiveTab] = useState("basic");
+  const [form, setForm] = useState({
+    name:"", furigana:"", birthdate:"", address:"", phone:"", email:"",
+    contractType:"業務委託", contractStart:"", contractEnd:"",
+    license:"大型", licenseNumber:"", licenseType:"", licenseAcquired:"",
+    license_expiry:"", licenseCondition:"",
+    licenseFrontCopy:false, licenseBackCopy:false, licenseCheckDate:"",
+    diagnosisType:[], diagnosisDate:"", diagnosisOrg:"", diagnosisNote:"",
+    diagnosisOriginal:false, diagnosisData:false,
+    accidentHistory:false, accidentDetail:"",
+    violationHistory:false, violationDetail:"",
+    internalAccidentDate:"", internalAccidentDetail:"", internalAccidentResult:"",
+    healthCheckDate:"", healthCheckOrg:"", healthNote:"",
+    initialTrainingDate:"", initialTrainingContent:"", safetyManagerSign:"", safetyEducationHistory:"",
+    vehicleNumber:"", chassisNumber:"",
+    vehicleOwnership:"会社所有", vehicleInspectionExpiry:"", liabilityInsuranceExpiry:"",
+    insuranceCompany:"", insurancePolicyNumber:"", insuranceCoverage:"",
+    insuranceCopySaved:false,
+    status:"available", notes:"",
+  });
+
+  const selectedDriver = drivers.find(d => d?.id === selectedDriverId) || null;
 
   const openAdd = () => {
     setEditingId(null);
-    setForm({ name:"", license:"大型", license_expiry:"", phone:"", status:"available", notes:"" });
+    setForm({
+      name:"", furigana:"", birthdate:"", address:"", phone:"", email:"",
+      contractType:"業務委託", contractStart:"", contractEnd:"",
+      license:"大型", licenseNumber:"", licenseType:"", licenseAcquired:"",
+      license_expiry:"", licenseCondition:"",
+      licenseFrontCopy:false, licenseBackCopy:false, licenseCheckDate:"",
+      diagnosisType:[], diagnosisDate:"", diagnosisOrg:"", diagnosisNote:"",
+      diagnosisOriginal:false, diagnosisData:false,
+      accidentHistory:false, accidentDetail:"",
+      violationHistory:false, violationDetail:"",
+      internalAccidentDate:"", internalAccidentDetail:"", internalAccidentResult:"",
+      healthCheckDate:"", healthCheckOrg:"", healthNote:"",
+      initialTrainingDate:"", initialTrainingContent:"", safetyManagerSign:"", safetyEducationHistory:"",
+      vehicleNumber:"", chassisNumber:"",
+      vehicleOwnership:"会社所有", vehicleInspectionExpiry:"", liabilityInsuranceExpiry:"",
+      insuranceCompany:"", insurancePolicyNumber:"", insuranceCoverage:"",
+      insuranceCopySaved:false,
+      status:"available", notes:"",
+    });
+    setActiveTab("basic");
     setShowModal(true);
   };
 
   const openEdit = (driver) => {
     setEditingId(driver?.id || null);
-    setForm({
-      name: driver?.name || "",
-      license: driver?.license || "大型",
-      license_expiry: driver?.license_expiry || "",
-      phone: driver?.phone || "",
-      status: driver?.status || "available",
-      notes: driver?.notes || "",
-    });
+    setForm({ ...{
+      name:"", furigana:"", birthdate:"", address:"", phone:"", email:"",
+      contractType:"業務委託", contractStart:"", contractEnd:"",
+      license:"大型", licenseNumber:"", licenseType:"", licenseAcquired:"",
+      license_expiry:"", licenseCondition:"",
+      licenseFrontCopy:false, licenseBackCopy:false, licenseCheckDate:"",
+      diagnosisType:[], diagnosisDate:"", diagnosisOrg:"", diagnosisNote:"",
+      diagnosisOriginal:false, diagnosisData:false,
+      accidentHistory:false, accidentDetail:"",
+      violationHistory:false, violationDetail:"",
+      internalAccidentDate:"", internalAccidentDetail:"", internalAccidentResult:"",
+      healthCheckDate:"", healthCheckOrg:"", healthNote:"",
+      initialTrainingDate:"", initialTrainingContent:"", safetyManagerSign:"", safetyEducationHistory:"",
+      vehicleNumber:"", chassisNumber:"",
+      vehicleOwnership:"会社所有", vehicleInspectionExpiry:"", liabilityInsuranceExpiry:"",
+      insuranceCompany:"", insurancePolicyNumber:"", insuranceCoverage:"",
+      insuranceCopySaved:false,
+      status:"available", notes:"",
+    }, ...driver });
+    setActiveTab("basic");
     setShowModal(true);
+    setSelectedDriverId(null);
   };
 
   const saveDriver = () => {
@@ -2629,81 +2683,324 @@ const DriversPage = ({ data, setData }) => {
     setData((d) => {
       const currentDrivers = Array.isArray(d?.drivers) ? d.drivers : [];
       if (editingId) {
-        return {
-          ...d,
-          drivers: currentDrivers.map((driver) =>
-            driver?.id === editingId ? { ...driver, ...form } : driver
-          ),
-        };
+        return { ...d, drivers: currentDrivers.map(driver => driver?.id === editingId ? { ...driver, ...form } : driver) };
       }
       const nextId = `D${String(currentDrivers.length + 1).padStart(3, "0")}`;
-      return {
-        ...d,
-        drivers: [...currentDrivers, { id: nextId, ...form }],
-      };
+      return { ...d, drivers: [...currentDrivers, { id: nextId, ...form }] };
     });
     setShowModal(false);
     setEditingId(null);
   };
 
   const deleteDriver = (id) => {
-    setData((d) => ({
-      ...d,
-      drivers: (Array.isArray(d?.drivers) ? d.drivers : []).filter((driver) => driver?.id !== id),
-    }));
+    if (!window.confirm("このドライバーを削除しますか？")) return;
+    setData((d) => ({ ...d, drivers: (Array.isArray(d?.drivers) ? d.drivers : []).filter(driver => driver?.id !== id) }));
+    setSelectedDriverId(null);
   };
+
   const driverIcon = <Icon size={14}><circle cx="12" cy="8" r="3.5"/><path d="M5 20c1.4-3.2 4.2-4.8 7-4.8s5.6 1.6 7 4.8"/></Icon>;
   const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
 
-  return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-      <div>
-        <RetroBtn onClick={openAdd} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}ドライバー追加</RetroBtn>
-      </div>
-      <RetroTable
-        headers={["ID","氏名","免許種別","免許更新日","電話","状態","メモ","操作"]}
-        rows={drivers.map((driver)=>[
-          <span style={{ color:"#007a74", fontWeight:700 }}>{driver?.id || "—"}</span>,
-          <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-            <div style={{ width:"24px", height:"24px", borderRadius:"50%", background:"#e8f5f4", color:"#00a09a", display:"grid", placeItems:"center", fontWeight:700, fontSize:"11px" }}>{(driver?.name || "?").slice(0,1)}</div>
-            <span>{driver?.name || ""}</span>
-          </div>,
-          driver?.license || "",
-          <span style={{ color:"#555", fontWeight:600 }}>{driver?.license_expiry || "未設定"}</span>,
-          driver?.phone || "",
-          <StatusPill s={driver?.status}/>,
-          <span style={{ fontSize:"11px", color:"#888" }}>{driver?.notes || "—"}</span>,
-          <div style={{ display:"flex", gap:"4px" }}>
-            <RetroBtn small onClick={()=>openEdit(driver)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
-            <RetroBtn small onClick={()=>deleteDriver(driver?.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
-          </div>
-        ])}
-      />
-      {showModal && (
-        <Modal title={editingId ? "ドライバー編集" : "ドライバー追加"} icon={driverIcon} onClose={()=>setShowModal(false)} width={460}>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-            <Fl label="氏名"><RetroInput value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></Fl>
-            <Fl label="免許種別">
-              <RetroSelect value={form.license} onChange={e=>setForm(f=>({...f,license:e.target.value}))}>
-                <option value="大型">大型</option>
-                <option value="中型">中型</option>
-                <option value="普通">普通</option>
-              </RetroSelect>
-            </Fl>
-          </div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-            <Fl label="免許更新日（有効期限）"><RetroInput type="date" value={form.license_expiry} onChange={e=>setForm(f=>({...f,license_expiry:e.target.value}))}/></Fl>
-            <Fl label="電話"><RetroInput value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></Fl>
-          </div>
-          <Fl label="状態">
-            <RetroSelect value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>
-              <option value="available">待機中</option>
-              <option value="on_duty">稼働中</option>
-              <option value="off">休暇</option>
+  const tabs = [
+    { id:"basic", label:"①基本情報" },
+    { id:"license", label:"②免許情報" },
+    { id:"diagnosis", label:"③適性診断" },
+    { id:"accident", label:"④事故歴" },
+    { id:"health", label:"⑤健康・教育" },
+    { id:"vehicle", label:"⑥車両情報" },
+  ];
+
+  const TabBar = ({ value, onChange }) => (
+    <div style={{ display:"flex", gap:"4px", flexWrap:"wrap", marginBottom:"12px", borderBottom:"2px solid #e8e8e8", paddingBottom:"8px" }}>
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => onChange(t.id)} style={{
+          border:"none", borderRadius:"4px 4px 0 0", padding:"6px 10px", fontSize:"11px", fontWeight:700,
+          cursor:"pointer", background: value===t.id ? "#00a09a" : "#f0f2f5",
+          color: value===t.id ? "#fff" : "#555",
+        }}>{t.label}</button>
+      ))}
+    </div>
+  );
+
+  const CheckRow = ({ label, checked, onChange }) => (
+    <label style={{ display:"inline-flex", alignItems:"center", gap:"6px", fontSize:"12px", cursor:"pointer", marginRight:"12px" }}>
+      <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} />
+      {label}
+    </label>
+  );
+
+  const renderFormTab = (tab, f, setF) => {
+    if (tab === "basic") return (
+      <>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="氏名"><RetroInput value={f.name||""} onChange={e=>setF(v=>({...v,name:e.target.value}))}/></Fl>
+          <Fl label="フリガナ"><RetroInput value={f.furigana||""} onChange={e=>setF(v=>({...v,furigana:e.target.value}))}/></Fl>
+          <Fl label="生年月日"><RetroInput type="date" value={f.birthdate||""} onChange={e=>setF(v=>({...v,birthdate:e.target.value}))}/></Fl>
+          <Fl label="電話番号"><RetroInput value={f.phone||""} onChange={e=>setF(v=>({...v,phone:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="住所"><RetroInput value={f.address||""} onChange={e=>setF(v=>({...v,address:e.target.value}))}/></Fl>
+        <Fl label="メールアドレス"><RetroInput value={f.email||""} onChange={e=>setF(v=>({...v,email:e.target.value}))}/></Fl>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="契約形態">
+            <RetroSelect value={f.contractType||"業務委託"} onChange={e=>setF(v=>({...v,contractType:e.target.value}))}>
+              <option value="業務委託">業務委託</option>
+              <option value="正社員">正社員</option>
+              <option value="パート">パート</option>
             </RetroSelect>
           </Fl>
-          <Fl label="メモ"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
-          <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
+          <Fl label="契約開始日"><RetroInput type="date" value={f.contractStart||""} onChange={e=>setF(v=>({...v,contractStart:e.target.value}))}/></Fl>
+          <Fl label="契約終了日"><RetroInput type="date" value={f.contractEnd||""} onChange={e=>setF(v=>({...v,contractEnd:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="状態">
+          <RetroSelect value={f.status||"available"} onChange={e=>setF(v=>({...v,status:e.target.value}))}>
+            <option value="available">待機中</option>
+            <option value="on_duty">稼働中</option>
+            <option value="off">休暇</option>
+          </RetroSelect>
+        </Fl>
+        <Fl label="メモ"><RetroTextarea value={f.notes||""} onChange={e=>setF(v=>({...v,notes:e.target.value}))}/></Fl>
+      </>
+    );
+    if (tab === "license") return (
+      <>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="運転免許証番号"><RetroInput value={f.licenseNumber||""} onChange={e=>setF(v=>({...v,licenseNumber:e.target.value}))}/></Fl>
+          <Fl label="免許種類（大型・中型等）">
+            <RetroSelect value={f.license||"大型"} onChange={e=>setF(v=>({...v,license:e.target.value}))}>
+              <option value="大型">大型</option>
+              <option value="中型">中型</option>
+              <option value="普通">普通</option>
+            </RetroSelect>
+          </Fl>
+          <Fl label="免許種類（正式名称）"><RetroInput value={f.licenseType||""} placeholder="例：普通第一種運転免許" onChange={e=>setF(v=>({...v,licenseType:e.target.value}))}/></Fl>
+          <Fl label="免許取得日"><RetroInput type="date" value={f.licenseAcquired||""} onChange={e=>setF(v=>({...v,licenseAcquired:e.target.value}))}/></Fl>
+          <Fl label="有効期限（免許更新日）"><RetroInput type="date" value={f.license_expiry||""} onChange={e=>setF(v=>({...v,license_expiry:e.target.value}))}/></Fl>
+          <Fl label="免許条件"><RetroInput value={f.licenseCondition||""} placeholder="例：AT限定・眼鏡等" onChange={e=>setF(v=>({...v,licenseCondition:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="免許証コピー保管">
+          <CheckRow label="表面保管済" checked={f.licenseFrontCopy} onChange={v=>setF(p=>({...p,licenseFrontCopy:v}))}/>
+          <CheckRow label="裏面保管済" checked={f.licenseBackCopy} onChange={v=>setF(p=>({...p,licenseBackCopy:v}))}/>
+        </Fl>
+        <Fl label="最終確認日"><RetroInput type="date" value={f.licenseCheckDate||""} onChange={e=>setF(v=>({...v,licenseCheckDate:e.target.value}))}/></Fl>
+      </>
+    );
+    if (tab === "diagnosis") return (
+      <>
+        <Fl label="診断種別">
+          {["初任診断","一般診断","適齢診断","事故惹起者診断"].map(t => (
+            <CheckRow key={t} label={t} checked={(f.diagnosisType||[]).includes(t)}
+              onChange={v => setF(p => ({ ...p, diagnosisType: v ? [...(p.diagnosisType||[]),t] : (p.diagnosisType||[]).filter(x=>x!==t) }))}/>
+          ))}
+        </Fl>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="受診日"><RetroInput type="date" value={f.diagnosisDate||""} onChange={e=>setF(v=>({...v,diagnosisDate:e.target.value}))}/></Fl>
+          <Fl label="実施機関名"><RetroInput value={f.diagnosisOrg||""} onChange={e=>setF(v=>({...v,diagnosisOrg:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="診断結果・所見"><RetroTextarea value={f.diagnosisNote||""} placeholder="例：注意力低下傾向あり 等" onChange={e=>setF(v=>({...v,diagnosisNote:e.target.value}))}/></Fl>
+        <Fl label="結果票保管">
+          <CheckRow label="原本保管済" checked={f.diagnosisOriginal} onChange={v=>setF(p=>({...p,diagnosisOriginal:v}))}/>
+          <CheckRow label="データ保存済" checked={f.diagnosisData} onChange={v=>setF(p=>({...p,diagnosisData:v}))}/>
+        </Fl>
+      </>
+    );
+    if (tab === "accident") return (
+      <>
+        <Fl label="過去重大事故歴">
+          <CheckRow label="なし" checked={!f.accidentHistory} onChange={v=>setF(p=>({...p,accidentHistory:!v}))}/>
+          <CheckRow label="あり" checked={!!f.accidentHistory} onChange={v=>setF(p=>({...p,accidentHistory:v}))}/>
+        </Fl>
+        {f.accidentHistory && <Fl label="事故内容"><RetroTextarea value={f.accidentDetail||""} onChange={e=>setF(v=>({...v,accidentDetail:e.target.value}))}/></Fl>}
+        <Fl label="行政処分歴">
+          <CheckRow label="なし" checked={!f.violationHistory} onChange={v=>setF(p=>({...p,violationHistory:!v}))}/>
+          <CheckRow label="あり" checked={!!f.violationHistory} onChange={v=>setF(p=>({...p,violationHistory:v}))}/>
+        </Fl>
+        {f.violationHistory && <Fl label="処分内容・年月日"><RetroTextarea value={f.violationDetail||""} onChange={e=>setF(v=>({...v,violationDetail:e.target.value}))}/></Fl>}
+        <div style={{ marginTop:"8px", fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"4px" }}>自社内事故歴</div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="事故発生日"><RetroInput type="date" value={f.internalAccidentDate||""} onChange={e=>setF(v=>({...v,internalAccidentDate:e.target.value}))}/></Fl>
+          <Fl label="処理結果"><RetroInput value={f.internalAccidentResult||""} onChange={e=>setF(v=>({...v,internalAccidentResult:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="事故内容"><RetroTextarea value={f.internalAccidentDetail||""} onChange={e=>setF(v=>({...v,internalAccidentDetail:e.target.value}))}/></Fl>
+      </>
+    );
+    if (tab === "health") return (
+      <>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="健康診断実施日"><RetroInput type="date" value={f.healthCheckDate||""} onChange={e=>setF(v=>({...v,healthCheckDate:e.target.value}))}/></Fl>
+          <Fl label="実施医療機関"><RetroInput value={f.healthCheckOrg||""} onChange={e=>setF(v=>({...v,healthCheckOrg:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="特記事項"><RetroTextarea value={f.healthNote||""} placeholder="高血圧・糖尿病など" onChange={e=>setF(v=>({...v,healthNote:e.target.value}))}/></Fl>
+        <div style={{ marginTop:"8px", fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"4px" }}>初任運転者特別指導</div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="実施日"><RetroInput type="date" value={f.initialTrainingDate||""} onChange={e=>setF(v=>({...v,initialTrainingDate:e.target.value}))}/></Fl>
+          <Fl label="安全管理者署名"><RetroInput value={f.safetyManagerSign||""} onChange={e=>setF(v=>({...v,safetyManagerSign:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="指導内容"><RetroTextarea value={f.initialTrainingContent||""} onChange={e=>setF(v=>({...v,initialTrainingContent:e.target.value}))}/></Fl>
+        <Fl label="安全教育実施履歴"><RetroTextarea value={f.safetyEducationHistory||""} onChange={e=>setF(v=>({...v,safetyEducationHistory:e.target.value}))}/></Fl>
+      </>
+    );
+    if (tab === "vehicle") return (
+      <>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="使用車両登録番号"><RetroInput value={f.vehicleNumber||""} onChange={e=>setF(v=>({...v,vehicleNumber:e.target.value}))}/></Fl>
+          <Fl label="車台番号"><RetroInput value={f.chassisNumber||""} onChange={e=>setF(v=>({...v,chassisNumber:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="車両所有区分">
+          {["本人所有","リース","会社所有"].map(t => (
+            <CheckRow key={t} label={t} checked={f.vehicleOwnership===t} onChange={v=>{ if(v) setF(p=>({...p,vehicleOwnership:t})); }}/>
+          ))}
+        </Fl>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="車検有効期限"><RetroInput type="date" value={f.vehicleInspectionExpiry||""} onChange={e=>setF(v=>({...v,vehicleInspectionExpiry:e.target.value}))}/></Fl>
+          <Fl label="自賠責保険期限"><RetroInput type="date" value={f.liabilityInsuranceExpiry||""} onChange={e=>setF(v=>({...v,liabilityInsuranceExpiry:e.target.value}))}/></Fl>
+          <Fl label="任意保険会社"><RetroInput value={f.insuranceCompany||""} onChange={e=>setF(v=>({...v,insuranceCompany:e.target.value}))}/></Fl>
+          <Fl label="任意保険証券番号"><RetroInput value={f.insurancePolicyNumber||""} onChange={e=>setF(v=>({...v,insurancePolicyNumber:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="対人・対物補償額"><RetroInput value={f.insuranceCoverage||""} onChange={e=>setF(v=>({...v,insuranceCoverage:e.target.value}))}/></Fl>
+        <Fl label="保険証コピー">
+          <CheckRow label="保管済" checked={f.insuranceCopySaved} onChange={v=>setF(p=>({...p,insuranceCopySaved:v}))}/>
+        </Fl>
+      </>
+    );
+    return null;
+  };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ fontSize:"14px", fontWeight:700, color:"#222" }}>運転者台帳</div>
+        <RetroBtn onClick={openAdd} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}ドライバー追加</RetroBtn>
+      </div>
+      <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", overflow:"auto", maxHeight:"400px" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"12px" }}>
+          <thead>
+            <tr style={{ background:"#fafbfc", position:"sticky", top:0 }}>
+              {["ID","氏名","免許種別","有効期限","電話","状態","操作"].map(h => (
+                <th key={h} style={{ color:"#666", fontSize:"11px", padding:"8px 10px", textAlign:"left", fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {drivers.map((driver) => (
+              <tr key={driver?.id} style={{ background:"#fff", borderBottom:"1px solid #f0f0f0" }}
+                onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"}
+                onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+                <td style={{ padding:"8px 10px" }}>
+                  <span style={{ color:"#007a74", fontWeight:700, cursor:"pointer", textDecoration:"underline" }}
+                    onClick={()=>setSelectedDriverId(driver?.id)}>{driver?.id||"—"}</span>
+                </td>
+                <td style={{ padding:"8px 10px" }}>
+                  <span style={{ color:"#007a74", fontWeight:700, cursor:"pointer", textDecoration:"underline" }}
+                    onClick={()=>setSelectedDriverId(driver?.id)}>{driver?.name||""}</span>
+                </td>
+                <td style={{ padding:"8px 10px" }}>{driver?.license||""}</td>
+                <td style={{ padding:"8px 10px" }}>{driver?.license_expiry||"未設定"}</td>
+                <td style={{ padding:"8px 10px" }}>{driver?.phone||""}</td>
+                <td style={{ padding:"8px 10px" }}><StatusPill s={driver?.status}/></td>
+                <td style={{ padding:"8px 10px" }}>
+                  <div style={{ display:"flex", gap:"4px" }}>
+                    <RetroBtn small onClick={()=>openEdit(driver)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
+                    <RetroBtn small onClick={()=>deleteDriver(driver?.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {drivers.length===0&&<tr><td colSpan={7} style={{ padding:"16px", textAlign:"center", color:"#999" }}>データなし</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {selectedDriver && (
+        <Modal title={`運転者台帳 ${selectedDriver?.id||""} ${selectedDriver?.name||""}`} icon={driverIcon} onClose={()=>setSelectedDriverId(null)} width={680}>
+          <TabBar value={activeTab} onChange={setActiveTab}/>
+          <div style={{ minHeight:"300px" }}>
+            {activeTab==="basic" && (
+              <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
+                <div style={{ color:"#888" }}>氏名</div><div>{selectedDriver?.name||"—"}</div>
+                <div style={{ color:"#888" }}>フリガナ</div><div>{selectedDriver?.furigana||"—"}</div>
+                <div style={{ color:"#888" }}>生年月日</div><div>{selectedDriver?.birthdate||"—"}</div>
+                <div style={{ color:"#888" }}>住所</div><div>{selectedDriver?.address||"—"}</div>
+                <div style={{ color:"#888" }}>電話番号</div><div>{selectedDriver?.phone||"—"}</div>
+                <div style={{ color:"#888" }}>メール</div><div>{selectedDriver?.email||"—"}</div>
+                <div style={{ color:"#888" }}>契約形態</div><div>{selectedDriver?.contractType||"—"}</div>
+                <div style={{ color:"#888" }}>契約開始日</div><div>{selectedDriver?.contractStart||"—"}</div>
+                <div style={{ color:"#888" }}>契約終了日</div><div>{selectedDriver?.contractEnd||"—"}</div>
+                <div style={{ color:"#888" }}>状態</div><div><StatusPill s={selectedDriver?.status}/></div>
+                <div style={{ color:"#888" }}>メモ</div><div>{selectedDriver?.notes||"—"}</div>
+              </div>
+            )}
+            {activeTab==="license" && (
+              <div style={{ display:"grid", gridTemplateColumns:"140px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
+                <div style={{ color:"#888" }}>免許証番号</div><div>{selectedDriver?.licenseNumber||"—"}</div>
+                <div style={{ color:"#888" }}>免許種類</div><div>{selectedDriver?.license||"—"}</div>
+                <div style={{ color:"#888" }}>正式名称</div><div>{selectedDriver?.licenseType||"—"}</div>
+                <div style={{ color:"#888" }}>取得日</div><div>{selectedDriver?.licenseAcquired||"—"}</div>
+                <div style={{ color:"#888" }}>有効期限</div><div>{selectedDriver?.license_expiry||"—"}</div>
+                <div style={{ color:"#888" }}>免許条件</div><div>{selectedDriver?.licenseCondition||"—"}</div>
+                <div style={{ color:"#888" }}>コピー保管</div><div>{[selectedDriver?.licenseFrontCopy&&"表面",selectedDriver?.licenseBackCopy&&"裏面"].filter(Boolean).join("・")||"—"}</div>
+                <div style={{ color:"#888" }}>最終確認日</div><div>{selectedDriver?.licenseCheckDate||"—"}</div>
+              </div>
+            )}
+            {activeTab==="diagnosis" && (
+              <div style={{ display:"grid", gridTemplateColumns:"140px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
+                <div style={{ color:"#888" }}>診断種別</div><div>{(selectedDriver?.diagnosisType||[]).join("・")||"—"}</div>
+                <div style={{ color:"#888" }}>受診日</div><div>{selectedDriver?.diagnosisDate||"—"}</div>
+                <div style={{ color:"#888" }}>実施機関</div><div>{selectedDriver?.diagnosisOrg||"—"}</div>
+                <div style={{ color:"#888" }}>診断結果</div><div>{selectedDriver?.diagnosisNote||"—"}</div>
+                <div style={{ color:"#888" }}>結果票保管</div><div>{[selectedDriver?.diagnosisOriginal&&"原本",selectedDriver?.diagnosisData&&"データ"].filter(Boolean).join("・")||"—"}</div>
+              </div>
+            )}
+            {activeTab==="accident" && (
+              <div style={{ display:"grid", gridTemplateColumns:"140px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
+                <div style={{ color:"#888" }}>重大事故歴</div><div>{selectedDriver?.accidentHistory?"あり":"なし"}{selectedDriver?.accidentHistory&&selectedDriver?.accidentDetail?" / "+selectedDriver.accidentDetail:""}</div>
+                <div style={{ color:"#888" }}>行政処分歴</div><div>{selectedDriver?.violationHistory?"あり":"なし"}{selectedDriver?.violationHistory&&selectedDriver?.violationDetail?" / "+selectedDriver.violationDetail:""}</div>
+                <div style={{ color:"#888" }}>自社事故日</div><div>{selectedDriver?.internalAccidentDate||"—"}</div>
+                <div style={{ color:"#888" }}>事故内容</div><div>{selectedDriver?.internalAccidentDetail||"—"}</div>
+                <div style={{ color:"#888" }}>処理結果</div><div>{selectedDriver?.internalAccidentResult||"—"}</div>
+              </div>
+            )}
+            {activeTab==="health" && (
+              <div style={{ display:"grid", gridTemplateColumns:"140px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
+                <div style={{ color:"#888" }}>健康診断実施日</div><div>{selectedDriver?.healthCheckDate||"—"}</div>
+                <div style={{ color:"#888" }}>実施医療機関</div><div>{selectedDriver?.healthCheckOrg||"—"}</div>
+                <div style={{ color:"#888" }}>特記事項</div><div>{selectedDriver?.healthNote||"—"}</div>
+                <div style={{ color:"#888" }}>初任指導実施日</div><div>{selectedDriver?.initialTrainingDate||"—"}</div>
+                <div style={{ color:"#888" }}>指導内容</div><div>{selectedDriver?.initialTrainingContent||"—"}</div>
+                <div style={{ color:"#888" }}>安全管理者署名</div><div>{selectedDriver?.safetyManagerSign||"—"}</div>
+                <div style={{ color:"#888" }}>教育履歴</div><div>{selectedDriver?.safetyEducationHistory||"—"}</div>
+              </div>
+            )}
+            {activeTab==="vehicle" && (
+              <div style={{ display:"grid", gridTemplateColumns:"140px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
+                <div style={{ color:"#888" }}>車両登録番号</div><div>{selectedDriver?.vehicleNumber||"—"}</div>
+                <div style={{ color:"#888" }}>車台番号</div><div>{selectedDriver?.chassisNumber||"—"}</div>
+                <div style={{ color:"#888" }}>所有区分</div><div>{selectedDriver?.vehicleOwnership||"—"}</div>
+                <div style={{ color:"#888" }}>車検有効期限</div><div>{selectedDriver?.vehicleInspectionExpiry||"—"}</div>
+                <div style={{ color:"#888" }}>自賠責期限</div><div>{selectedDriver?.liabilityInsuranceExpiry||"—"}</div>
+                <div style={{ color:"#888" }}>任意保険会社</div><div>{selectedDriver?.insuranceCompany||"—"}</div>
+                <div style={{ color:"#888" }}>証券番号</div><div>{selectedDriver?.insurancePolicyNumber||"—"}</div>
+                <div style={{ color:"#888" }}>補償額</div><div>{selectedDriver?.insuranceCoverage||"—"}</div>
+                <div style={{ color:"#888" }}>保険証コピー</div><div>{selectedDriver?.insuranceCopySaved?"保管済":"—"}</div>
+              </div>
+            )}
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:"12px" }}>
+            <RetroBtn onClick={()=>deleteDriver(selectedDriver?.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+            <div style={{ display:"flex", gap:"6px" }}>
+              <RetroBtn onClick={()=>setSelectedDriverId(null)}>閉じる</RetroBtn>
+              <RetroBtn onClick={()=>openEdit(selectedDriver)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>編集</RetroBtn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {showModal && (
+        <Modal title={editingId ? "ドライバー編集" : "ドライバー追加"} icon={driverIcon} onClose={()=>setShowModal(false)} width={680}>
+          <TabBar value={activeTab} onChange={setActiveTab}/>
+          <div style={{ minHeight:"300px" }}>
+            {renderFormTab(activeTab, form, setForm)}
+          </div>
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"12px" }}>
             <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
             <RetroBtn onClick={saveDriver} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存する</RetroBtn>
           </div>
