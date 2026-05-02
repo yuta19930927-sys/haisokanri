@@ -2310,6 +2310,7 @@ const QualityMgmtPage = ({ data, setData }) => {
                       const rec = getRecord(driver.id, dateStr);
                       const cellKey = `${driver.id}-${dateStr}`;
                       const isEditing = editingCell === cellKey;
+                      if (isEditing) console.log("isEditing true", cellKey);
                       return fields.map(f => (
                         <td key={`${driver.id}-${dateStr}-${f}`} style={{ padding:"4px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", minWidth:"50px" }}
                           onClick={(e) => {
