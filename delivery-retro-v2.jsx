@@ -2308,21 +2308,21 @@ const QualityMgmtPage = ({ data, setData }) => {
                     </td>
                     {drivers.flatMap(driver => {
                       const rec = getRecord(driver.id, dateStr);
-                      const isEditing = editingCell === `${driver.id}-${dateStr}`;
+                      const cellKey = `${driver.id}-${dateStr}`;
+                      const isEditing = editingCell === cellKey;
                       return fields.map(f => (
                         <td key={`${driver.id}-${dateStr}-${f}`} style={{ padding:"4px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", minWidth:"50px" }}
-                          onClick={() => {
-                            if (!isEditing) {
-                              setEditingCell(`${driver.id}-${dateStr}`);
-                              setCellForm({
-                                持出個数: rec?.持出個数||"",
-                                配完個数: rec?.配完個数||"",
-                                誤配: rec?.誤配||"",
-                                クレーム: rec?.クレーム||"",
-                                時間帯不履行: rec?.時間帯不履行||"",
-                                備考: rec?.備考||"",
-                              });
-                            }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingCell(cellKey);
+                            setCellForm({
+                              持出個数: rec?.持出個数 ?? "",
+                              配完個数: rec?.配完個数 ?? "",
+                              誤配: rec?.誤配 ?? "",
+                              クレーム: rec?.クレーム ?? "",
+                              時間帯不履行: rec?.時間帯不履行 ?? "",
+                              備考: rec?.備考 ?? "",
+                            });
                           }}>
                           {isEditing ? (
                               <input
