@@ -1653,7 +1653,7 @@ const OrdersPage = ({ data, setData }) => {
       </div>
     );
   }
-  const orders = Array.isArray(data.orders) ? data.orders : [];
+  const orders = (Array.isArray(data.orders) ? data.orders : []).filter(o => !o?.deleted);
   const customers = Array.isArray(data.customers) ? data.customers : [];
   const filtered = orders.filter((o) => {
     const customerName = o?.customerName || "";
@@ -1908,6 +1908,7 @@ const OrdersPage = ({ data, setData }) => {
                 </div>
               </Panel>
               <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
+                <RetroBtn onClick={()=>{ if(!window.confirm("この受注を削除しますか？（後から復元できます）")) return; setData(d=>({...d, orders:(Array.isArray(d?.orders)?d.orders:[]).map(o=>o?.id===selectedOrder?.id?{...o,deleted:true}:o)})); closeOrderDetail(); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
                 <RetroBtn onClick={closeOrderDetail}>閉じる</RetroBtn>
                 <RetroBtn onClick={()=>{ setOrderDraft(selectedOrder ? { ...selectedOrder } : null); setOrderEditMode(true); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
               </div>
@@ -1972,7 +1973,7 @@ const DispatchPage = ({ data, setData }) => {
 };
 
 const CustomersPage = ({ data, setData }) => {
-  const customers = Array.isArray(data?.customers) ? data.customers : [];
+  const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ name:"", contact:"", phone:"", email:"", payer_kana:"", address:"", notes:"", unitPrice:"", closingDay:31, paymentSite:"翌月末払い" });
@@ -2021,10 +2022,12 @@ const CustomersPage = ({ data, setData }) => {
 
   const deleteCustomer = (customerId) => {
     if (!customerId) return;
-    if (!window.confirm("この顧客を削除しますか？")) return;
+    if (!window.confirm("この顧客を削除しますか？（後から復元できます）")) return;
     setData((d) => ({
       ...d,
-      customers: (Array.isArray(d?.customers) ? d.customers : []).filter((customer) => customer?.id !== customerId),
+      customers: (Array.isArray(d?.customers) ? d.customers : []).map((customer) =>
+        customer?.id === customerId ? { ...customer, deleted: true } : customer
+      ),
     }));
     closeCustomerDetail();
   };
@@ -2187,7 +2190,7 @@ const CustomersPage = ({ data, setData }) => {
 
 const InvoicesPage = ({ data, setData }) => {
   const orders = Array.isArray(data?.orders) ? data.orders : [];
-  const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+  const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
   const events = Array.isArray(data?.events) ? data.events : [];
   const customers = Array.isArray(data?.customers) ? data.customers : [];
   const companyInfo = data?.companyInfo || {};
@@ -2586,6 +2589,7 @@ const InvoicesPage = ({ data, setData }) => {
             </div>
             <div style={{ display:"flex", gap:"6px" }}>
               <RetroBtn onClick={()=>setShowInvoiceModal(false)}>キャンセル</RetroBtn>
+              <RetroBtn onClick={()=>{ if(!window.confirm("この請求書を削除しますか？（後から復元できます）")) return; setData(d=>({...d, invoices:(Array.isArray(d?.invoices)?d.invoices:[]).map(i=>i?.id===invoiceDraft?.id?{...i,deleted:true}:i)})); setShowInvoiceModal(false); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
               <RetroBtn onClick={saveInvoice} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存</RetroBtn>
             </div>
           </div>
@@ -2628,7 +2632,7 @@ const InvoicesPage = ({ data, setData }) => {
 };
 
 const DriversPage = ({ data, setData }) => {
-  const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
+  const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [selectedDriverId, setSelectedDriverId] = useState(null);
@@ -2721,8 +2725,8 @@ const DriversPage = ({ data, setData }) => {
   };
 
   const deleteDriver = (id) => {
-    if (!window.confirm("このドライバーを削除しますか？")) return;
-    setData((d) => ({ ...d, drivers: (Array.isArray(d?.drivers) ? d.drivers : []).filter(driver => driver?.id !== id) }));
+    if (!window.confirm("このドライバーを削除しますか？（後から復元できます）")) return;
+    setData((d) => ({ ...d, drivers: (Array.isArray(d?.drivers) ? d.drivers : []).map(driver => driver?.id === id ? { ...driver, deleted: true } : driver) }));
     setSelectedDriverId(null);
   };
 
@@ -3039,7 +3043,7 @@ const DriversPage = ({ data, setData }) => {
 };
 
 const VehiclesPage = ({ data, setData }) => {
-  const vehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
+  const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => !v?.deleted);
   const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -3070,8 +3074,8 @@ const VehiclesPage = ({ data, setData }) => {
     setShowModal(false); setEditingId(null);
   };
   const deleteVehicle = (id) => {
-    if (!window.confirm("この車両を削除しますか？")) return;
-    setData((d) => ({ ...d, vehicles: (Array.isArray(d?.vehicles) ? d.vehicles : []).filter(v => v?.id !== id) }));
+    if (!window.confirm("この車両を削除しますか？（後から復元できます）")) return;
+    setData((d) => ({ ...d, vehicles: (Array.isArray(d?.vehicles) ? d.vehicles : []).map(v => v?.id === id ? { ...v, deleted: true } : v) }));
     setSelectedVehicleId(null);
   };
   const addInspection = () => { if (!newInspection.date) return; setForm(f => ({ ...f, inspectionHistory: [...(f.inspectionHistory||[]), { ...newInspection, id: Date.now() }] })); setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" }); };
