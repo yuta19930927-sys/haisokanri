@@ -3083,6 +3083,139 @@ const InvoicesPage = ({ data, setData }) => {
   );
 };
 
+const DriversAccidentFormTab = ({ f, setF }) => {
+  const accidentLogs = f.accidentLogs || [];
+  const internalLogs = f.internalLogs || [];
+  const [newAcc, setNewAcc] = useState({ type:"重大事故", date:"", detail:"", result:"" });
+  const [newInt, setNewInt] = useState({ date:"", detail:"", result:"" });
+  return (
+    <>
+      <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"6px" }}>過去重大事故・行政処分歴</div>
+      <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#fafbfc", marginBottom:"8px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="種別">
+            <RetroSelect value={newAcc.type} onChange={e=>setNewAcc(v=>({...v,type:e.target.value}))}>
+              <option value="重大事故">重大事故</option>
+              <option value="行政処分">行政処分</option>
+            </RetroSelect>
+          </Fl>
+          <Fl label="発生日"><RetroInput type="date" value={newAcc.date} onChange={e=>setNewAcc(v=>({...v,date:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="内容"><RetroTextarea value={newAcc.detail} onChange={e=>setNewAcc(v=>({...v,detail:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
+        <Fl label="処理結果"><RetroInput value={newAcc.result} onChange={e=>setNewAcc(v=>({...v,result:e.target.value}))}/></Fl>
+        <RetroBtn onClick={()=>{ if(!newAcc.date) return; setF(p=>({...p, accidentLogs:[...(p.accidentLogs||[]),{...newAcc,id:Date.now()}]})); setNewAcc({type:"重大事故",date:"",detail:"",result:""}); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+          <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
+        </RetroBtn>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"160px", overflowY:"auto", marginBottom:"12px" }}>
+        {accidentLogs.length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
+        {[...accidentLogs].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec => (
+          <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <span style={{ fontWeight:700, color:"#e63946" }}>{rec.date} 【{rec.type}】</span>
+              <RetroBtn small onClick={()=>setF(p=>({...p,accidentLogs:(p.accidentLogs||[]).filter(x=>x.id!==rec.id)}))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+                <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
+              </RetroBtn>
+            </div>
+            {rec.detail && <div style={{ color:"#333", marginTop:"2px" }}>内容：{rec.detail}</div>}
+            {rec.result && <div style={{ color:"#555", marginTop:"2px" }}>処理：{rec.result}</div>}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"6px" }}>自社内事故歴</div>
+      <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#fafbfc", marginBottom:"8px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="事故発生日"><RetroInput type="date" value={newInt.date} onChange={e=>setNewInt(v=>({...v,date:e.target.value}))}/></Fl>
+          <Fl label="処理結果"><RetroInput value={newInt.result} onChange={e=>setNewInt(v=>({...v,result:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="事故内容"><RetroTextarea value={newInt.detail} onChange={e=>setNewInt(v=>({...v,detail:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
+        <RetroBtn onClick={()=>{ if(!newInt.date) return; setF(p=>({...p, internalLogs:[...(p.internalLogs||[]),{...newInt,id:Date.now()}]})); setNewInt({date:"",detail:"",result:""}); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+          <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
+        </RetroBtn>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"160px", overflowY:"auto" }}>
+        {internalLogs.length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
+        {[...internalLogs].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec => (
+          <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <span style={{ fontWeight:700, color:"#e65100" }}>{rec.date}</span>
+              <RetroBtn small onClick={()=>setF(p=>({...p,internalLogs:(p.internalLogs||[]).filter(x=>x.id!==rec.id)}))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+                <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
+              </RetroBtn>
+            </div>
+            {rec.detail && <div>内容：{rec.detail}</div>}
+            {rec.result && <div>処理：{rec.result}</div>}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+};
+
+const DriversHealthFormTab = ({ f, setF }) => {
+  const healthLogs = f.healthLogs || [];
+  const trainingLogs = f.trainingLogs || [];
+  const [newHealth, setNewHealth] = useState({ date:"", org:"", note:"" });
+  const [newTraining, setNewTraining] = useState({ date:"", content:"", sign:"" });
+  return (
+    <>
+      <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"6px" }}>健康診断履歴</div>
+      <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#fafbfc", marginBottom:"8px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="実施日"><RetroInput type="date" value={newHealth.date} onChange={e=>setNewHealth(v=>({...v,date:e.target.value}))}/></Fl>
+          <Fl label="実施医療機関"><RetroInput value={newHealth.org} onChange={e=>setNewHealth(v=>({...v,org:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="特記事項"><RetroTextarea value={newHealth.note} onChange={e=>setNewHealth(v=>({...v,note:e.target.value}))} placeholder="高血圧・糖尿病など" style={{ minHeight:"60px" }}/></Fl>
+        <RetroBtn onClick={()=>{ if(!newHealth.date) return; setF(p=>({...p, healthLogs:[...(p.healthLogs||[]),{...newHealth,id:Date.now()}]})); setNewHealth({date:"",org:"",note:""}); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+          <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
+        </RetroBtn>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"180px", overflowY:"auto", marginBottom:"12px" }}>
+        {healthLogs.length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
+        {[...healthLogs].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec => (
+          <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <span style={{ fontWeight:700, color:"#007a74" }}>{rec.date} — {rec.org||"—"}</span>
+              <RetroBtn small onClick={()=>setF(p=>({...p,healthLogs:(p.healthLogs||[]).filter(x=>x.id!==rec.id)}))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+                <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
+              </RetroBtn>
+            </div>
+            {rec.note && <div style={{ color:"#555", marginTop:"2px" }}>特記：{rec.note}</div>}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"6px" }}>初任運転者特別指導・安全教育履歴</div>
+      <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#fafbfc", marginBottom:"8px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="実施日"><RetroInput type="date" value={newTraining.date} onChange={e=>setNewTraining(v=>({...v,date:e.target.value}))}/></Fl>
+          <Fl label="安全管理者署名"><RetroInput value={newTraining.sign} onChange={e=>setNewTraining(v=>({...v,sign:e.target.value}))}/></Fl>
+        </div>
+        <Fl label="指導内容"><RetroTextarea value={newTraining.content} onChange={e=>setNewTraining(v=>({...v,content:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
+        <RetroBtn onClick={()=>{ if(!newTraining.date) return; setF(p=>({...p, trainingLogs:[...(p.trainingLogs||[]),{...newTraining,id:Date.now()}]})); setNewTraining({date:"",content:"",sign:""}); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+          <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
+        </RetroBtn>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"160px", overflowY:"auto" }}>
+        {trainingLogs.length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
+        {[...trainingLogs].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec => (
+          <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <span style={{ fontWeight:700, color:"#007a74" }}>{rec.date}</span>
+              <RetroBtn small onClick={()=>setF(p=>({...p,trainingLogs:(p.trainingLogs||[]).filter(x=>x.id!==rec.id)}))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+                <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
+              </RetroBtn>
+            </div>
+            {rec.content && <div>内容：{rec.content}</div>}
+            {rec.sign && <div>署名：{rec.sign}</div>}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+};
+
 const DriversPage = ({ data, setData }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const [showModal, setShowModal] = useState(false);
@@ -3288,42 +3421,8 @@ const DriversPage = ({ data, setData }) => {
         </Fl>
       </>
     );
-    if (tab === "accident") return (
-      <>
-        <Fl label="過去重大事故歴">
-          <CheckRow label="なし" checked={!f.accidentHistory} onChange={v=>setF(p=>({...p,accidentHistory:!v}))}/>
-          <CheckRow label="あり" checked={!!f.accidentHistory} onChange={v=>setF(p=>({...p,accidentHistory:v}))}/>
-        </Fl>
-        {f.accidentHistory && <Fl label="事故内容"><RetroTextarea value={f.accidentDetail||""} onChange={e=>setF(v=>({...v,accidentDetail:e.target.value}))}/></Fl>}
-        <Fl label="行政処分歴">
-          <CheckRow label="なし" checked={!f.violationHistory} onChange={v=>setF(p=>({...p,violationHistory:!v}))}/>
-          <CheckRow label="あり" checked={!!f.violationHistory} onChange={v=>setF(p=>({...p,violationHistory:v}))}/>
-        </Fl>
-        {f.violationHistory && <Fl label="処分内容・年月日"><RetroTextarea value={f.violationDetail||""} onChange={e=>setF(v=>({...v,violationDetail:e.target.value}))}/></Fl>}
-        <div style={{ marginTop:"8px", fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"4px" }}>自社内事故歴</div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="事故発生日"><RetroInput type="date" value={f.internalAccidentDate||""} onChange={e=>setF(v=>({...v,internalAccidentDate:e.target.value}))}/></Fl>
-          <Fl label="処理結果"><RetroInput value={f.internalAccidentResult||""} onChange={e=>setF(v=>({...v,internalAccidentResult:e.target.value}))}/></Fl>
-        </div>
-        <Fl label="事故内容"><RetroTextarea value={f.internalAccidentDetail||""} onChange={e=>setF(v=>({...v,internalAccidentDetail:e.target.value}))}/></Fl>
-      </>
-    );
-    if (tab === "health") return (
-      <>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="健康診断実施日"><RetroInput type="date" value={f.healthCheckDate||""} onChange={e=>setF(v=>({...v,healthCheckDate:e.target.value}))}/></Fl>
-          <Fl label="実施医療機関"><RetroInput value={f.healthCheckOrg||""} onChange={e=>setF(v=>({...v,healthCheckOrg:e.target.value}))}/></Fl>
-        </div>
-        <Fl label="特記事項"><RetroTextarea value={f.healthNote||""} placeholder="高血圧・糖尿病など" onChange={e=>setF(v=>({...v,healthNote:e.target.value}))}/></Fl>
-        <div style={{ marginTop:"8px", fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"4px" }}>初任運転者特別指導</div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="実施日"><RetroInput type="date" value={f.initialTrainingDate||""} onChange={e=>setF(v=>({...v,initialTrainingDate:e.target.value}))}/></Fl>
-          <Fl label="安全管理者署名"><RetroInput value={f.safetyManagerSign||""} onChange={e=>setF(v=>({...v,safetyManagerSign:e.target.value}))}/></Fl>
-        </div>
-        <Fl label="指導内容"><RetroTextarea value={f.initialTrainingContent||""} onChange={e=>setF(v=>({...v,initialTrainingContent:e.target.value}))}/></Fl>
-        <Fl label="安全教育実施履歴"><RetroTextarea value={f.safetyEducationHistory||""} onChange={e=>setF(v=>({...v,safetyEducationHistory:e.target.value}))}/></Fl>
-      </>
-    );
+    if (tab === "accident") return <DriversAccidentFormTab f={f} setF={setF} />;
+    if (tab === "health") return <DriversHealthFormTab f={f} setF={setF} />;
     if (tab === "vehicle") return (
       <>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
@@ -3480,23 +3579,46 @@ const DriversPage = ({ data, setData }) => {
               </div>
             )}
             {activeTab==="accident" && (
-              <div style={{ display:"grid", gridTemplateColumns:"140px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
-                <div style={{ color:"#888" }}>重大事故歴</div><div>{selectedDriver?.accidentHistory?"あり":"なし"}{selectedDriver?.accidentHistory&&selectedDriver?.accidentDetail?" / "+selectedDriver.accidentDetail:""}</div>
-                <div style={{ color:"#888" }}>行政処分歴</div><div>{selectedDriver?.violationHistory?"あり":"なし"}{selectedDriver?.violationHistory&&selectedDriver?.violationDetail?" / "+selectedDriver.violationDetail:""}</div>
-                <div style={{ color:"#888" }}>自社事故日</div><div>{selectedDriver?.internalAccidentDate||"—"}</div>
-                <div style={{ color:"#888" }}>事故内容</div><div>{selectedDriver?.internalAccidentDetail||"—"}</div>
-                <div style={{ color:"#888" }}>処理結果</div><div>{selectedDriver?.internalAccidentResult||"—"}</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+                <div style={{ fontSize:"12px", fontWeight:700, color:"#555" }}>重大事故・行政処分歴</div>
+                {(selectedDriver?.accidentLogs||[]).length===0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
+                {[...(selectedDriver?.accidentLogs||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec=>(
+                  <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
+                    <div style={{ fontWeight:700, color:"#e63946" }}>{rec.date} 【{rec.type}】</div>
+                    {rec.detail && <div>内容：{rec.detail}</div>}
+                    {rec.result && <div>処理：{rec.result}</div>}
+                  </div>
+                ))}
+                <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginTop:"8px" }}>自社内事故歴</div>
+                {(selectedDriver?.internalLogs||[]).length===0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
+                {[...(selectedDriver?.internalLogs||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec=>(
+                  <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
+                    <div style={{ fontWeight:700, color:"#e65100" }}>{rec.date}</div>
+                    {rec.detail && <div>内容：{rec.detail}</div>}
+                    {rec.result && <div>処理：{rec.result}</div>}
+                  </div>
+                ))}
               </div>
             )}
             {activeTab==="health" && (
-              <div style={{ display:"grid", gridTemplateColumns:"140px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
-                <div style={{ color:"#888" }}>健康診断実施日</div><div>{selectedDriver?.healthCheckDate||"—"}</div>
-                <div style={{ color:"#888" }}>実施医療機関</div><div>{selectedDriver?.healthCheckOrg||"—"}</div>
-                <div style={{ color:"#888" }}>特記事項</div><div>{selectedDriver?.healthNote||"—"}</div>
-                <div style={{ color:"#888" }}>初任指導実施日</div><div>{selectedDriver?.initialTrainingDate||"—"}</div>
-                <div style={{ color:"#888" }}>指導内容</div><div>{selectedDriver?.initialTrainingContent||"—"}</div>
-                <div style={{ color:"#888" }}>安全管理者署名</div><div>{selectedDriver?.safetyManagerSign||"—"}</div>
-                <div style={{ color:"#888" }}>教育履歴</div><div>{selectedDriver?.safetyEducationHistory||"—"}</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+                <div style={{ fontSize:"12px", fontWeight:700, color:"#555" }}>健康診断履歴</div>
+                {(selectedDriver?.healthLogs||[]).length===0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
+                {[...(selectedDriver?.healthLogs||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec=>(
+                  <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
+                    <div style={{ fontWeight:700, color:"#007a74" }}>{rec.date} — {rec.org||"—"}</div>
+                    {rec.note && <div>特記：{rec.note}</div>}
+                  </div>
+                ))}
+                <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginTop:"8px" }}>指導・教育履歴</div>
+                {(selectedDriver?.trainingLogs||[]).length===0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
+                {[...(selectedDriver?.trainingLogs||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec=>(
+                  <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
+                    <div style={{ fontWeight:700, color:"#007a74" }}>{rec.date}</div>
+                    {rec.content && <div>内容：{rec.content}</div>}
+                    {rec.sign && <div>署名：{rec.sign}</div>}
+                  </div>
+                ))}
               </div>
             )}
             {activeTab==="vehicle" && (
