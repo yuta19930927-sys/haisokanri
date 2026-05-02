@@ -2325,16 +2325,14 @@ const QualityMgmtPage = ({ data, setData }) => {
                             }
                           }}>
                           {isEditing ? (
-                            f === "備考" ? (
-                              <input value={cellForm[f]} onChange={e=>setCellForm(v=>({...v,[f]:e.target.value}))}
+                              <input
+                                value={cellForm[f]}
+                                onChange={e=>setCellForm(v=>({...v,[f]:e.target.value}))}
                                 onBlur={()=>saveCell(driver.id, dateStr, cellForm)}
-                                style={{ width:"80px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px" }} autoFocus/>
-                            ) : (
-                              <input type="number" value={cellForm[f]} onChange={e=>setCellForm(v=>({...v,[f]:e.target.value}))}
-                                onBlur={()=>saveCell(driver.id, dateStr, cellForm)}
-                                onKeyDown={e=>{ if(e.key==="Enter") saveCell(driver.id, dateStr, cellForm); }}
-                                style={{ width:"44px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px", textAlign:"center" }}/>
-                            )
+                                onKeyDown={e=>{ if(e.key==="Enter") saveCell(driver.id, dateStr, cellForm); if(e.key==="Escape") setEditingCell(null); }}
+                                style={{ width: f==="備考" ? "80px" : "44px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px", textAlign: f==="備考" ? "left" : "center" }}
+                                autoFocus
+                              />
                           ) : (
                             <span style={{ color: f==="誤配"&&Number(rec?.[f])>0?"#e63946":f==="クレーム"&&Number(rec?.[f])>0?"#e63946":f==="時間帯不履行"&&Number(rec?.[f])>0?"#ff9800":"#333", fontWeight: (f==="誤配"||f==="クレーム"||f==="時間帯不履行")&&Number(rec?.[f])>0?700:400 }}>
                               {rec?.[f] || ""}
