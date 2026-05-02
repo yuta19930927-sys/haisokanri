@@ -3438,6 +3438,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const [menuOpen, setMenuOpen] = useState(false);
   const [data, setData] = useState(initialData);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
   const previousDataRef = useRef(createEmptyData());
   const latestDataRef = useRef(initialData);
   const saveGenerationRef = useRef(0);
@@ -3601,10 +3603,10 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           <div style={{ fontSize:"10px", color:"#999" }}>Delivery Management System</div>
         </div>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
-          <button style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
+          <button onClick={()=>setShowSettings(v=>!v)} style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
             <Icon size={18}><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 5 0c0 1.7-2.5 2-2.5 3.5"/><line x1="12" y1="17.5" x2="12" y2="17.5"/></Icon>
           </button>
-          <button style={{ position:"relative", border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
+          <button onClick={()=>setShowNotifications(v=>!v)} style={{ position:"relative", border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
             <Icon size={18}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 6-3 8h18c0-2-3-1-3-8"/><path d="M10 19a2 2 0 0 0 4 0"/></Icon>
             <span style={{ position:"absolute", top:"0", right:"0", width:"7px", height:"7px", borderRadius:"50%", background:"#e63946" }} />
           </button>
@@ -3673,6 +3675,68 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         {overdueCount>0&&<span style={{ fontSize:"11px", color:"#c62828", background:"#ffebee", border:"1px solid #e63946", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>延滞：{overdueCount}件</span>}
         <span style={{ fontSize:"11px", color:"#999" }}>Ver.2.0</span>
       </div>
+
+      {showSettings && (
+        <Modal title="設定・管理" icon={<Icon size={14}><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 5 0c0 1.7-2.5 2-2.5 3.5"/><line x1="12" y1="17.5" x2="12" y2="17.5"/></Icon>} onClose={()=>setShowSettings(false)} width={640}>
+          <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px" }}>削除済みデータの復元</div>
+          {["customers","drivers","vehicles","orders","invoices"].map(key => {
+            const labelMap = { customers:"顧客", drivers:"ドライバー", vehicles:"車両", orders:"受注", invoices:"請求書" };
+            const deleted = (Array.isArray(data?.[key]) ? data[key] : []).filter(item => item?.deleted);
+            if (deleted.length === 0) return null;
+            return (
+              <div key={key} style={{ marginBottom:"12px" }}>
+                <div style={{ fontSize:"12px", fontWeight:700, color:"#007a74", marginBottom:"6px" }}>{labelMap[key]}（{deleted.length}件）</div>
+                {deleted.map(item => {
+                  const label = item?.name || item?.plate || item?.customerName || item?.id || "—";
+                  return (
+                    <div key={item?.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff", marginBottom:"4px" }}>
+                      <span style={{ fontSize:"12px", color:"#333" }}>{item?.id} — {label}</span>
+                      <RetroBtn small onClick={()=>{ setData(d=>({ ...d, [key]:(Array.isArray(d?.[key])?d[key]:[]).map(x=>x?.id===item?.id?{...x,deleted:false}:x) })); }} style={{ background:"#e8f5e9", color:"#2e7d32", borderColor:"#4caf50" }}>復元</RetroBtn>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+          {["customers","drivers","vehicles","orders","invoices"].every(key => (Array.isArray(data?.[key]) ? data[key] : []).filter(item => item?.deleted).length === 0) && (
+            <div style={{ fontSize:"12px", color:"#999", textAlign:"center", padding:"20px" }}>削除済みデータはありません</div>
+          )}
+        </Modal>
+      )}
+
+      {showNotifications && (
+        <Modal title="通知センター" icon={<Icon size={14}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 6-3 8h18c0-2-3-1-3-8"/><path d="M10 19a2 2 0 0 0 4 0"/></Icon>} onClose={()=>setShowNotifications(false)} width={560}>
+          {(() => {
+            const today = new Date();
+            const in30 = new Date(); in30.setDate(today.getDate() + 30);
+            const fmt = d => d.toISOString().slice(0,10);
+            const todayStr = fmt(today);
+            const in30Str = fmt(in30);
+            const alerts = [];
+            (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v=>!v?.deleted).forEach(v => {
+              if (v?.nextInspection && v.nextInspection <= in30Str) alerts.push({ color:"#cc0099", text:`【車検期限】${v?.plate||v?.id} — ${v.nextInspection}` });
+              if (v?.insuranceExpiry && v.insuranceExpiry <= in30Str) alerts.push({ color:"#9b27af", text:`【任意保険更新】${v?.plate||v?.id} — ${v.insuranceExpiry}` });
+              if (v?.liabilityExpiry && v.liabilityExpiry <= in30Str) alerts.push({ color:"#7b1fa2", text:`【自賠責更新】${v?.plate||v?.id} — ${v.liabilityExpiry}` });
+              const history = v?.inspectionHistory || [];
+              const latest = [...history].sort((a,b)=>(b.date||"").localeCompare(a.date||""))[0];
+              if (latest?.nextDate && latest.nextDate <= in30Str) alerts.push({ color:"#e65100", text:`【点検期限】${v?.plate||v?.id} — ${latest.nextDate}` });
+            });
+            (Array.isArray(data?.drivers) ? data.drivers : []).filter(d=>!d?.deleted).forEach(d => {
+              if (d?.license_expiry && d.license_expiry <= in30Str) alerts.push({ color:"#9933cc", text:`【免許更新】${d?.name||d?.id} — ${d.license_expiry}` });
+            });
+            (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched").forEach(b => {
+              alerts.push({ color:"#ff9800", text:`【未照合入金】${b?.date} ¥${(Number(b?.amount)||0).toLocaleString()} ${b?.description||""}` });
+            });
+            if (alerts.length === 0) return <div style={{ fontSize:"12px", color:"#999", textAlign:"center", padding:"20px" }}>通知はありません</div>;
+            return alerts.map((a, i) => (
+              <div key={i} style={{ display:"flex", alignItems:"center", gap:"10px", padding:"8px 10px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff", marginBottom:"6px" }}>
+                <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:a.color, flexShrink:0 }}/>
+                <span style={{ fontSize:"12px", color:"#333" }}>{a.text}</span>
+              </div>
+            ));
+          })()}
+        </Modal>
+      )}
     </div>
   );
 }
