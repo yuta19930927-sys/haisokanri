@@ -2199,14 +2199,13 @@ const CustomersPage = ({ data, setData }) => {
 const QualityMgmtPage = ({ data, setData }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const qualityRecords = Array.isArray(data?.qualityRecords) ? data.qualityRecords : [];
-
   const now = new Date();
   const [selectedMonth, setSelectedMonth] = useState(() =>
     `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`
   );
   const [activeTab, setActiveTab] = useState("daily");
   const [editingCell, setEditingCell] = useState(null);
-  const [cellForm, setCellForm] = useState({持出個数:"", 配完個数:"", 誤配:"", クレーム:"", 時間帯不履行:"", 備考:"" });
+  const [cellForm, setCellForm] = useState({ 持出個数:"", 配完個数:"", 誤配:"", クレーム:"", 時間帯不履行:"", 備考:"" });
 
   const getDaysInMonth = (monthStr) => {
     const [y, m] = monthStr.split("-").map(Number);
@@ -2235,9 +2234,7 @@ const QualityMgmtPage = ({ data, setData }) => {
 
   const daysInMonth = getDaysInMonth(selectedMonth);
   const [year, month] = selectedMonth.split("-").map(Number);
-
   const fields = ["持出個数","配完個数","誤配","クレーム","時間帯不履行","備考"];
-  const numFields = ["持出個数","配完個数","誤配","クレーム","時間帯不履行"];
 
   const monthlySummary = drivers.map(driver => {
     const recs = qualityRecords.filter(r => r.driverId === driver.id && r.date?.startsWith(selectedMonth));
@@ -2261,7 +2258,6 @@ const QualityMgmtPage = ({ data, setData }) => {
           <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ border:"none", borderRadius:"4px 4px 0 0", padding:"8px 14px", fontSize:"12px", fontWeight:700, cursor:"pointer", background: activeTab===t.id ? "#00a09a" : "#f0f2f5", color: activeTab===t.id ? "#fff" : "#555" }}>{t.label}</button>
         ))}
       </div>
-
       <div style={{ display:"flex", alignItems:"center", gap:"8px", flexWrap:"wrap" }}>
         <span style={{ fontSize:"12px", color:"#666", fontWeight:700 }}>表示月：</span>
         {months.map(m => (
@@ -2275,9 +2271,9 @@ const QualityMgmtPage = ({ data, setData }) => {
         <div style={{ overflowX:"auto" }}>
           <table style={{ borderCollapse:"collapse", fontSize:"11px", fontFamily:"'Noto Sans JP', sans-serif", minWidth:"800px" }}>
             <thead>
-              <tr style={{ background:"#00a09a", color:"#fff", position:"sticky", top:0 }}>
-                <th style={{ padding:"8px 10px", textAlign:"left", whiteSpace:"nowrap", minWidth:"60px", borderRight:"1px solid rgba(255,255,255,0.3)" }}>日付</th>
-                {drivers.map(driver => (
+              <tr style={{ background:"#00a09a", color:"#fff" }}>
+                <th style={{ padding:"8px 10px", textAlign:"left", whiteSpace:"nowrap", minWidth:"70px", borderRight:"1px solid rgba(255,255,255,0.3)" }}>日付</th>
+                {drivers.flatMap(driver => (
                   <th key={driver.id} colSpan={6} style={{ padding:"8px 10px", textAlign:"center", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.3)" }}>
                     {driver.name}
                   </th>
@@ -2287,7 +2283,7 @@ const QualityMgmtPage = ({ data, setData }) => {
                 <th style={{ padding:"6px 10px", borderRight:"1px solid rgba(255,255,255,0.2)" }}></th>
                 {drivers.flatMap(driver =>
                   fields.map(f => (
-                    <th key={`${driver.id}-${f}`} style={{ padding:"6px 6px", textAlign:"center", fontSize:"10px", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.2)", minWidth:"50px" }}>{f}</th>
+                    <th key={`${driver.id}-${f}`} style={{ padding:"6px 4px", textAlign:"center", fontSize:"10px", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.2)", minWidth:"50px" }}>{f}</th>
                   ))
                 )}
               </tr>
@@ -2308,34 +2304,37 @@ const QualityMgmtPage = ({ data, setData }) => {
                     </td>
                     {drivers.flatMap(driver => {
                       const rec = getRecord(driver.id, dateStr);
-                      const isEditing = editingCell === `${driver.id}-${dateStr}`;
+                      const cellKey = `${driver.id}-${dateStr}`;
+                      const isEditing = editingCell === cellKey;
                       return fields.map(f => (
-                        <td key={`${driver.id}-${dateStr}-${f}`} style={{ padding:"4px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", minWidth:"50px" }}
+                        <td key={`${cellKey}-${f}`}
+                          style={{ padding:"2px 2px", textAlign:"center", borderRight:"1px solid #e8e8e8", minWidth:"50px", cursor:"pointer" }}
                           onClick={() => {
-                            if (!isEditing) {
-                              setEditingCell(`${driver.id}-${dateStr}`);
-                              setCellForm({
-                                持出個数: rec?.持出個数||"",
-                                配完個数: rec?.配完個数||"",
-                                誤配: rec?.誤配||"",
-                                クレーム: rec?.クレーム||"",
-                                時間帯不履行: rec?.時間帯不履行||"",
-                                備考: rec?.備考||"",
-                              });
-                            }
+                            setEditingCell(cellKey);
+                            setCellForm({
+                              持出個数: rec?.持出個数 ?? "",
+                              配完個数: rec?.配完個数 ?? "",
+                              誤配: rec?.誤配 ?? "",
+                              クレーム: rec?.クレーム ?? "",
+                              時間帯不履行: rec?.時間帯不履行 ?? "",
+                              備考: rec?.備考 ?? "",
+                            });
                           }}>
                           {isEditing ? (
-                              <input
-                                value={cellForm[f]}
-                                onChange={e=>setCellForm(v=>({...v,[f]:e.target.value}))}
-                                onBlur={()=>saveCell(driver.id, dateStr, cellForm)}
-                                onKeyDown={e=>{ if(e.key==="Enter") saveCell(driver.id, dateStr, cellForm); if(e.key==="Escape") setEditingCell(null); }}
-                                style={{ width: f==="備考" ? "80px" : "44px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px", textAlign: f==="備考" ? "left" : "center" }}
-                                autoFocus
-                              />
+                            <input
+                              value={cellForm[f] ?? ""}
+                              onChange={e => setCellForm(v => ({ ...v, [f]: e.target.value }))}
+                              onBlur={() => saveCell(driver.id, dateStr, cellForm)}
+                              onKeyDown={e => {
+                                if (e.key === "Enter") saveCell(driver.id, dateStr, cellForm);
+                                if (e.key === "Escape") setEditingCell(null);
+                              }}
+                              style={{ width: f === "備考" ? "80px" : "44px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px", textAlign: f === "備考" ? "left" : "center" }}
+                              autoFocus
+                            />
                           ) : (
-                            <span style={{ color: f==="誤配"&&Number(rec?.[f])>0?"#e63946":f==="クレーム"&&Number(rec?.[f])>0?"#e63946":f==="時間帯不履行"&&Number(rec?.[f])>0?"#ff9800":"#333", fontWeight: (f==="誤配"||f==="クレーム"||f==="時間帯不履行")&&Number(rec?.[f])>0?700:400 }}>
-                              {rec?.[f] || ""}
+                            <span style={{ color: (f==="誤配"||f==="クレーム")&&Number(rec?.[f])>0?"#e63946":f==="時間帯不履行"&&Number(rec?.[f])>0?"#ff9800":"#333", fontWeight:(f==="誤配"||f==="クレーム"||f==="時間帯不履行")&&Number(rec?.[f])>0?700:400 }}>
+                              {rec?.[f] ?? ""}
                             </span>
                           )}
                         </td>
@@ -2349,8 +2348,8 @@ const QualityMgmtPage = ({ data, setData }) => {
                 {drivers.flatMap(driver => {
                   const recs = qualityRecords.filter(r=>r.driverId===driver.id&&r.date?.startsWith(selectedMonth));
                   return fields.map(f => (
-                    <td key={`total-${driver.id}-${f}`} style={{ padding:"6px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontSize:"11px" }}>
-                      {f==="備考" ? "" : recs.reduce((s,r)=>s+(Number(r[f])||0),0)||""}
+                    <td key={`total-${driver.id}-${f}`} style={{ padding:"6px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontSize:"11px", fontWeight:700 }}>
+                      {f==="備考" ? "" : (recs.reduce((s,r)=>s+(Number(r[f])||0),0) || "")}
                     </td>
                   ));
                 })}
@@ -2417,7 +2416,6 @@ const QualityMgmtPage = ({ data, setData }) => {
     </div>
   );
 };
-
 const SalesMgmtPage = ({ data, setData }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
