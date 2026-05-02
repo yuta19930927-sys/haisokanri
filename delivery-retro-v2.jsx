@@ -188,6 +188,13 @@ const initialData = {
     bankInfo: "みずほ銀行 東京支店 普通 1234567 ハイソウカンリ（カ",
     stampImage: "",
   },
+  jobTypes: [
+    { id:"JT-001", name:"ルート", calcPattern:"count", taxable:true, unitPrice:180, driverUnitPrice:150, note:"個数×単価" },
+    { id:"JT-002", name:"チビ宅", calcPattern:"count", taxable:true, unitPrice:200, driverUnitPrice:160, note:"個数×単価" },
+    { id:"JT-003", name:"デカ宅", calcPattern:"count", taxable:true, unitPrice:350, driverUnitPrice:280, note:"個数×単価" },
+    { id:"JT-004", name:"チャーター", calcPattern:"fixed", taxable:true, unitPrice:14000, driverUnitPrice:11000, note:"固定料金" },
+  ],
+  dailyRecords: [],
 };
 
 // ===== UI COMPONENTS =====
@@ -2188,6 +2195,338 @@ const CustomersPage = ({ data, setData }) => {
   );
 };
 
+const SalesMgmtPage = ({ data, setData }) => {
+  const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
+  const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
+  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+  const dailyRecords = Array.isArray(data?.dailyRecords) ? data.dailyRecords : [];
+  const [activeTab, setActiveTab] = useState("daily");
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  });
+  const [showJobTypeModal, setShowJobTypeModal] = useState(false);
+  const [editingJobType, setEditingJobType] = useState(null);
+  const [jobTypeForm, setJobTypeForm] = useState({ name:"", calcPattern:"count", taxable:true, unitPrice:"", driverUnitPrice:"", note:"" });
+  const [showRecordModal, setShowRecordModal] = useState(false);
+  const [editingRecord, setEditingRecord] = useState(null);
+  const [recordForm, setRecordForm] = useState({
+    date: new Date().toISOString().slice(0,10),
+    driverId:"", customerId:"", jobTypeId:"",
+    count:"", distance:"", hours:"",
+    unitPrice:"", driverUnitPrice:"",
+    salesAmount:0, driverAmount:0,
+    note:"",
+  });
+
+  const calcPatternLabel = { count:"個数×単価", fixed:"固定料金", distance:"距離制", time:"時間制" };
+
+  const calcAmounts = (form, jt) => {
+    const pattern = jt?.calcPattern || form.calcPattern || "count";
+    const up = Number(form.unitPrice) || Number(jt?.unitPrice) || 0;
+    const dup = Number(form.driverUnitPrice) || Number(jt?.driverUnitPrice) || 0;
+    let sales = 0, driver = 0;
+    if (pattern === "count") { const c = Number(form.count)||0; sales = c * up; driver = c * dup; }
+    else if (pattern === "fixed") { sales = up; driver = dup; }
+    else if (pattern === "distance") { const d = Number(form.distance)||0; sales = d * up; driver = d * dup; }
+    else if (pattern === "time") { const h = Number(form.hours)||0; sales = h * up; driver = h * dup; }
+    return { salesAmount: sales, driverAmount: driver };
+  };
+
+  const updateRecordCalc = (newForm) => {
+    const jt = jobTypes.find(j => j?.id === newForm.jobTypeId);
+    const { salesAmount, driverAmount } = calcAmounts(newForm, jt);
+    setRecordForm({ ...newForm, salesAmount, driverAmount });
+  };
+
+  const openAddRecord = () => {
+    const base = { date: new Date().toISOString().slice(0,10), driverId:"", customerId:"", jobTypeId:"", count:"", distance:"", hours:"", unitPrice:"", driverUnitPrice:"", salesAmount:0, driverAmount:0, note:"" };
+    setEditingRecord(null);
+    setRecordForm(base);
+    setShowRecordModal(true);
+  };
+
+  const openEditRecord = (rec) => {
+    setEditingRecord(rec);
+    setRecordForm({ ...rec, count: rec.count||"", distance: rec.distance||"", hours: rec.hours||"" });
+    setShowRecordModal(true);
+  };
+
+  const saveRecord = () => {
+    if (!recordForm.date || !recordForm.driverId || !recordForm.customerId || !recordForm.jobTypeId) return;
+    const jt = jobTypes.find(j => j?.id === recordForm.jobTypeId);
+    const { salesAmount, driverAmount } = calcAmounts(recordForm, jt);
+    const next = { ...recordForm, salesAmount, driverAmount };
+    setData(d => {
+      const current = Array.isArray(d?.dailyRecords) ? d.dailyRecords : [];
+      if (editingRecord) return { ...d, dailyRecords: current.map(r => r?.id === editingRecord.id ? { ...r, ...next } : r) };
+      return { ...d, dailyRecords: [...current, { ...next, id: `DR-${Date.now()}` }] };
+    });
+    setShowRecordModal(false);
+  };
+
+  const deleteRecord = (id) => {
+    if (!window.confirm("この記録を削除しますか？")) return;
+    setData(d => ({ ...d, dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).filter(r => r?.id !== id) }));
+  };
+
+  const saveJobType = () => {
+    if (!jobTypeForm.name) return;
+    setData(d => {
+      const current = Array.isArray(d?.jobTypes) ? d.jobTypes : [];
+      if (editingJobType) return { ...d, jobTypes: current.map(j => j?.id === editingJobType.id ? { ...j, ...jobTypeForm, unitPrice: Number(jobTypeForm.unitPrice)||0, driverUnitPrice: Number(jobTypeForm.driverUnitPrice)||0 } : j) };
+      return { ...d, jobTypes: [...current, { ...jobTypeForm, id: `JT-${String(current.length+1).padStart(3,"0")}`, unitPrice: Number(jobTypeForm.unitPrice)||0, driverUnitPrice: Number(jobTypeForm.driverUnitPrice)||0 }] };
+    });
+    setShowJobTypeModal(false);
+  };
+
+  const deleteJobType = (id) => {
+    if (!window.confirm("この仕事種別を削除しますか？")) return;
+    setData(d => ({ ...d, jobTypes: (Array.isArray(d?.jobTypes) ? d.jobTypes : []).filter(j => j?.id !== id) }));
+  };
+
+  const monthRecords = dailyRecords.filter(r => r?.date?.startsWith(selectedMonth));
+
+  const driverSummary = drivers.map(driver => {
+    const recs = monthRecords.filter(r => r?.driverId === driver?.id);
+    return {
+      driver,
+      count: recs.length,
+      workDays: new Set(recs.map(r => r?.date)).size,
+      salesTotal: recs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0),
+      driverTotal: recs.reduce((s, r) => s + (Number(r?.driverAmount)||0), 0),
+    };
+  }).filter(s => s.count > 0);
+
+  const customerSummary = customers.map(customer => {
+    const recs = monthRecords.filter(r => r?.customerId === customer?.id);
+    const subtotal = recs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0);
+    const taxable = recs.filter(r => { const jt = jobTypes.find(j=>j?.id===r?.jobTypeId); return jt?.taxable !== false; }).reduce((s,r)=>s+(Number(r?.salesAmount)||0),0);
+    const tax = Math.round(taxable * 0.1);
+    return { customer, count: recs.length, subtotal, tax, total: subtotal + tax };
+  }).filter(s => s.count > 0);
+
+  const salesIcon = <Icon size={14}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>;
+  const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
+  const editIcon = <Icon size={12}><path d="M12 20h9"/><path d="m16.5 3.5 4 4L7 21l-4 1 1-4Z"/></Icon>;
+  const trashIcon = <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></Icon>;
+
+  const tabs = [
+    { id:"daily", label:"日次入力" },
+    { id:"summary", label:"月次集計" },
+    { id:"jobtypes", label:"仕事種別マスタ" },
+  ];
+
+  const jt = jobTypes.find(j => j?.id === recordForm.jobTypeId);
+  const pattern = jt?.calcPattern || "count";
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+      <div style={{ display:"flex", gap:"4px", flexWrap:"wrap", borderBottom:"2px solid #e8e8e8", paddingBottom:"8px" }}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ border:"none", borderRadius:"4px 4px 0 0", padding:"8px 14px", fontSize:"12px", fontWeight:700, cursor:"pointer", background: activeTab===t.id ? "#00a09a" : "#f0f2f5", color: activeTab===t.id ? "#fff" : "#555" }}>{t.label}</button>
+        ))}
+      </div>
+
+      {activeTab === "daily" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <div style={{ fontSize:"14px", fontWeight:700, color:"#222" }}>日次配送実績入力</div>
+            <RetroBtn onClick={openAddRecord} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}実績を追加</RetroBtn>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+            <span style={{ fontSize:"12px", color:"#666" }}>表示月：</span>
+            <input type="month" value={selectedMonth} onChange={e=>setSelectedMonth(e.target.value)} style={{ border:"1px solid #d0d0d0", borderRadius:"4px", padding:"6px 10px", fontSize:"13px" }}/>
+          </div>
+          <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", overflow:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:"12px", fontFamily:"'Noto Sans JP', sans-serif" }}>
+              <thead>
+                <tr style={{ background:"#fafbfc" }}>
+                  {["日付","ドライバー","顧客","仕事種別","個数","距離","時間","売上金額","支払額","備考","操作"].map(h => (
+                    <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontWeight:700, color:"#666", fontSize:"11px", borderBottom:cardBorder, whiteSpace:"nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {monthRecords.length === 0 && <tr><td colSpan={11} style={{ padding:"16px", textAlign:"center", color:"#999" }}>この月の記録はありません</td></tr>}
+                {[...monthRecords].sort((a,b)=>b.date?.localeCompare(a.date||"")).map(rec => {
+                  const driver = drivers.find(d=>d?.id===rec?.driverId);
+                  const customer = customers.find(c=>c?.id===rec?.customerId);
+                  const jt = jobTypes.find(j=>j?.id===rec?.jobTypeId);
+                  return (
+                    <tr key={rec.id} style={{ borderBottom:"1px solid #f0f0f0" }} onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"} onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+                      <td style={{ padding:"8px 10px" }}>{rec.date}</td>
+                      <td style={{ padding:"8px 10px" }}>{driver?.name||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{customer?.name||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{jt?.name||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{rec.count||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{rec.distance||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{rec.hours||"—"}</td>
+                      <td style={{ padding:"8px 10px", color:"#007a74", fontWeight:700 }}>¥{(Number(rec.salesAmount)||0).toLocaleString()}</td>
+                      <td style={{ padding:"8px 10px", color:"#e65100", fontWeight:700 }}>¥{(Number(rec.driverAmount)||0).toLocaleString()}</td>
+                      <td style={{ padding:"8px 10px", color:"#888", fontSize:"11px" }}>{rec.note||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>
+                        <div style={{ display:"flex", gap:"4px" }}>
+                          <RetroBtn small onClick={()=>openEditRecord(rec)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>{editIcon}</RetroBtn>
+                          <RetroBtn small onClick={()=>deleteRecord(rec.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>{trashIcon}</RetroBtn>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:"8px" }}>
+            {[
+              ["月間売上合計", "¥"+monthRecords.reduce((s,r)=>s+(Number(r?.salesAmount)||0),0).toLocaleString(), "#00a09a"],
+              ["月間支払合計", "¥"+monthRecords.reduce((s,r)=>s+(Number(r?.driverAmount)||0),0).toLocaleString(), "#e65100"],
+              ["件数", monthRecords.length+"件", "#2196f3"],
+              ["稼働ドライバー", new Set(monthRecords.map(r=>r?.driverId)).size+"名", "#7b1fa2"],
+            ].map(([l,v,c])=>(
+              <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
+                <div style={{ fontSize:"11px", color:"#888", fontWeight:700, marginBottom:"4px" }}>{l}</div>
+                <div style={{ fontSize:"18px", fontWeight:700, color:c }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "summary" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+            <span style={{ fontSize:"12px", color:"#666" }}>集計月：</span>
+            <input type="month" value={selectedMonth} onChange={e=>setSelectedMonth(e.target.value)} style={{ border:"1px solid #d0d0d0", borderRadius:"4px", padding:"6px 10px", fontSize:"13px" }}/>
+          </div>
+          <Panel title="ドライバー別月次集計" icon={salesIcon}>
+            <RetroTable
+              headers={["ドライバー","件数","稼働日数","月間売上","月間支払額","粗利"]}
+              rows={driverSummary.length === 0 ? [[<span style={{color:"#999"}}>データなし</span>,"","","","",""]] : driverSummary.map(s => [
+                <span style={{ fontWeight:700, color:"#007a74" }}>{s.driver?.name||"—"}</span>,
+                s.count+"件",
+                s.workDays+"日",
+                <span style={{ color:"#007a74", fontWeight:700 }}>¥{s.salesTotal.toLocaleString()}</span>,
+                <span style={{ color:"#e65100", fontWeight:700 }}>¥{s.driverTotal.toLocaleString()}</span>,
+                <span style={{ color:"#2e7d32", fontWeight:700 }}>¥{(s.salesTotal-s.driverTotal).toLocaleString()}</span>,
+              ])}
+            />
+          </Panel>
+          <Panel title="顧客別月次集計（請求予定）" icon={salesIcon}>
+            <RetroTable
+              headers={["顧客","件数","小計","消費税","合計請求額"]}
+              rows={customerSummary.length === 0 ? [[<span style={{color:"#999"}}>データなし</span>,"","","",""]] : customerSummary.map(s => [
+                <span style={{ fontWeight:700, color:"#007a74" }}>{s.customer?.name||"—"}</span>,
+                s.count+"件",
+                <span style={{ fontWeight:700 }}>¥{s.subtotal.toLocaleString()}</span>,
+                <span>¥{s.tax.toLocaleString()}</span>,
+                <span style={{ color:"#007a74", fontWeight:700 }}>¥{s.total.toLocaleString()}</span>,
+              ])}
+            />
+          </Panel>
+        </div>
+      )}
+
+      {activeTab === "jobtypes" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <div style={{ fontSize:"14px", fontWeight:700, color:"#222" }}>仕事種別マスタ</div>
+            <RetroBtn onClick={()=>{ setEditingJobType(null); setJobTypeForm({ name:"", calcPattern:"count", taxable:true, unitPrice:"", driverUnitPrice:"", note:"" }); setShowJobTypeModal(true); }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}種別を追加</RetroBtn>
+          </div>
+          <RetroTable
+            headers={["ID","種別名","計算パターン","売上単価","支払単価","課税","メモ","操作"]}
+            rows={jobTypes.map(jt => [
+              <span style={{ color:"#007a74", fontWeight:700 }}>{jt?.id}</span>,
+              <span style={{ fontWeight:700 }}>{jt?.name}</span>,
+              calcPatternLabel[jt?.calcPattern]||jt?.calcPattern,
+              <span style={{ color:"#007a74" }}>¥{(Number(jt?.unitPrice)||0).toLocaleString()}</span>,
+              <span style={{ color:"#e65100" }}>¥{(Number(jt?.driverUnitPrice)||0).toLocaleString()}</span>,
+              jt?.taxable ? <span style={{ color:"#2e7d32", fontWeight:700 }}>課税</span> : <span style={{ color:"#888" }}>非課税</span>,
+              <span style={{ fontSize:"11px", color:"#888" }}>{jt?.note||"—"}</span>,
+              <div style={{ display:"flex", gap:"4px" }}>
+                <RetroBtn small onClick={()=>{ setEditingJobType(jt); setJobTypeForm({ ...jt, unitPrice: String(jt?.unitPrice||""), driverUnitPrice: String(jt?.driverUnitPrice||"") }); setShowJobTypeModal(true); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
+                <RetroBtn small onClick={()=>deleteJobType(jt?.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+              </div>
+            ])}
+          />
+        </div>
+      )}
+
+      {showRecordModal && (
+        <Modal title={editingRecord ? "実績編集" : "実績追加"} icon={salesIcon} onClose={()=>setShowRecordModal(false)} width={560}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+            <Fl label="日付"><RetroInput type="date" value={recordForm.date} onChange={e=>updateRecordCalc({...recordForm,date:e.target.value})}/></Fl>
+            <Fl label="ドライバー">
+              <RetroSelect value={recordForm.driverId} onChange={e=>updateRecordCalc({...recordForm,driverId:e.target.value})}>
+                <option value="">選択</option>
+                {drivers.map(d=><option key={d?.id} value={d?.id}>{d?.name}</option>)}
+              </RetroSelect>
+            </Fl>
+            <Fl label="顧客">
+              <RetroSelect value={recordForm.customerId} onChange={e=>updateRecordCalc({...recordForm,customerId:e.target.value})}>
+                <option value="">選択</option>
+                {customers.map(c=><option key={c?.id} value={c?.id}>{c?.name}</option>)}
+              </RetroSelect>
+            </Fl>
+            <Fl label="仕事種別">
+              <RetroSelect value={recordForm.jobTypeId} onChange={e=>{ const jt=jobTypes.find(j=>j?.id===e.target.value); updateRecordCalc({...recordForm,jobTypeId:e.target.value,unitPrice:String(jt?.unitPrice||""),driverUnitPrice:String(jt?.driverUnitPrice||"")}); }}>
+                <option value="">選択</option>
+                {jobTypes.map(j=><option key={j?.id} value={j?.id}>{j?.name}</option>)}
+              </RetroSelect>
+            </Fl>
+          </div>
+          {jt && <div style={{ background:"#e8f5f4", border:"1px solid #00a09a", borderRadius:"6px", padding:"8px 10px", fontSize:"12px", color:"#007a74", marginBottom:"8px" }}>計算パターン：{calcPatternLabel[pattern]} / 売上単価：¥{Number(recordForm.unitPrice||jt?.unitPrice).toLocaleString()} / 支払単価：¥{Number(recordForm.driverUnitPrice||jt?.driverUnitPrice).toLocaleString()}</div>}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px 12px" }}>
+            {(pattern==="count"||pattern==="fixed"||!pattern) && <Fl label="個数"><RetroInput type="number" value={recordForm.count} onChange={e=>updateRecordCalc({...recordForm,count:e.target.value})}/></Fl>}
+            {pattern==="distance" && <Fl label="距離(km)"><RetroInput type="number" value={recordForm.distance} onChange={e=>updateRecordCalc({...recordForm,distance:e.target.value})}/></Fl>}
+            {pattern==="time" && <Fl label="稼働時間(h)"><RetroInput type="number" value={recordForm.hours} onChange={e=>updateRecordCalc({...recordForm,hours:e.target.value})}/></Fl>}
+            <Fl label="売上単価"><RetroInput type="number" value={recordForm.unitPrice} onChange={e=>updateRecordCalc({...recordForm,unitPrice:e.target.value})}/></Fl>
+            <Fl label="支払単価"><RetroInput type="number" value={recordForm.driverUnitPrice} onChange={e=>updateRecordCalc({...recordForm,driverUnitPrice:e.target.value})}/></Fl>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px", background:"#f9fcfc", border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", marginBottom:"8px" }}>
+            <Fl label="売上金額（自動計算）"><div style={{ fontSize:"18px", fontWeight:700, color:"#007a74", padding:"6px 0" }}>¥{(Number(recordForm.salesAmount)||0).toLocaleString()}</div></Fl>
+            <Fl label="支払額（自動計算）"><div style={{ fontSize:"18px", fontWeight:700, color:"#e65100", padding:"6px 0" }}>¥{(Number(recordForm.driverAmount)||0).toLocaleString()}</div></Fl>
+          </div>
+          <Fl label="備考"><RetroInput value={recordForm.note} onChange={e=>setRecordForm(v=>({...v,note:e.target.value}))}/></Fl>
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"10px" }}>
+            <RetroBtn onClick={()=>setShowRecordModal(false)}>キャンセル</RetroBtn>
+            <RetroBtn onClick={saveRecord} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存する</RetroBtn>
+          </div>
+        </Modal>
+      )}
+
+      {showJobTypeModal && (
+        <Modal title={editingJobType ? "仕事種別編集" : "仕事種別追加"} icon={salesIcon} onClose={()=>setShowJobTypeModal(false)} width={480}>
+          <Fl label="種別名"><RetroInput value={jobTypeForm.name} onChange={e=>setJobTypeForm(v=>({...v,name:e.target.value}))} placeholder="例：ルート、チビ宅"/></Fl>
+          <Fl label="計算パターン">
+            <RetroSelect value={jobTypeForm.calcPattern} onChange={e=>setJobTypeForm(v=>({...v,calcPattern:e.target.value}))}>
+              <option value="count">個数×単価</option>
+              <option value="fixed">固定料金</option>
+              <option value="distance">距離制（km×単価）</option>
+              <option value="time">時間制（時間×単価）</option>
+            </RetroSelect>
+          </Fl>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+            <Fl label="売上単価（円）"><RetroInput type="number" value={jobTypeForm.unitPrice} onChange={e=>setJobTypeForm(v=>({...v,unitPrice:e.target.value}))} placeholder="例：180"/></Fl>
+            <Fl label="ドライバー支払単価（円）"><RetroInput type="number" value={jobTypeForm.driverUnitPrice} onChange={e=>setJobTypeForm(v=>({...v,driverUnitPrice:e.target.value}))} placeholder="例：150"/></Fl>
+          </div>
+          <Fl label="課税区分">
+            <label style={{ display:"inline-flex", alignItems:"center", gap:"6px", fontSize:"12px", cursor:"pointer" }}>
+              <input type="checkbox" checked={!!jobTypeForm.taxable} onChange={e=>setJobTypeForm(v=>({...v,taxable:e.target.checked}))}/>
+              課税（消費税10%）
+            </label>
+          </Fl>
+          <Fl label="メモ"><RetroInput value={jobTypeForm.note} onChange={e=>setJobTypeForm(v=>({...v,note:e.target.value}))}/></Fl>
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"10px" }}>
+            <RetroBtn onClick={()=>setShowJobTypeModal(false)}>キャンセル</RetroBtn>
+            <RetroBtn onClick={saveJobType} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存する</RetroBtn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
 const InvoicesPage = ({ data, setData }) => {
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
@@ -3290,6 +3629,7 @@ const MENU = [
   { id:"customers", icon:<Icon size={16}><circle cx="9" cy="8" r="3"/><circle cx="16" cy="9" r="2.5"/><path d="M3 20c1.4-3 3.8-4.5 6-4.5"/><path d="M10 20c1.8-3 4.6-4.5 7-4.5"/></Icon>, label:"顧客管理", section:"マスタ管理" },
   { id:"invoices",  icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>, label:"請求管理", section:"経理" },
   { id:"bank",      icon:<Icon size={16}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>, label:"口座・入金", section:"経理" },
+  { id:"sales_mgmt", icon:<Icon size={16}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>, label:"売上管理", section:"経理" },
 ];
 
 const TABLE_CONFIG = [
@@ -3301,6 +3641,8 @@ const TABLE_CONFIG = [
   { key: "events", table: "events" },
   { key: "payables", table: "payables" },
   { key: "companyInfo", table: "company_info", single: true },
+  { key: "jobTypes", table: "job_types" },
+  { key: "dailyRecords", table: "daily_records" },
 ];
 
 const createEmptyData = () => ({
@@ -3313,6 +3655,8 @@ const createEmptyData = () => ({
   events: [],
   payables: [],
   companyInfo: null,
+  jobTypes: [],
+  dailyRecords: [],
 });
 
 const fetchDataFromSupabase = async () => {
@@ -3585,7 +3929,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
 
   const badges = { dispatch:pendingCount, bank:unmatchedCount+overdueCount };
 
-  const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, drivers:DriversPage, vehicles:VehiclesPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage };
+  const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, drivers:DriversPage, vehicles:VehiclesPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage, sales_mgmt: SalesMgmtPage };
   const PageComponent = pages[page];
 
   const sectionOrder = ["メイン", "案件管理", "マスタ管理", "経理"];
