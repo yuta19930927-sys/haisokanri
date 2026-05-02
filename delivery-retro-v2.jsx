@@ -195,6 +195,7 @@ const initialData = {
     { id:"JT-004", name:"チャーター", calcPattern:"fixed", taxable:true, unitPrice:14000, driverUnitPrice:11000, note:"固定料金" },
   ],
   dailyRecords: [],
+  qualityRecords: [],
 };
 
 // ===== UI COMPONENTS =====
@@ -2195,6 +2196,230 @@ const CustomersPage = ({ data, setData }) => {
   );
 };
 
+const QualityMgmtPage = ({ data, setData }) => {
+  const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
+  const qualityRecords = Array.isArray(data?.qualityRecords) ? data.qualityRecords : [];
+
+  const now = new Date();
+  const [selectedMonth, setSelectedMonth] = useState(() =>
+    `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`
+  );
+  const [activeTab, setActiveTab] = useState("daily");
+  const [editingCell, setEditingCell] = useState(null);
+  const [cellForm, setCellForm] = useState({持出個数:"", 配完個数:"", 誤配:"", クレーム:"", 時間帯不履行:"", 備考:"" });
+
+  const getDaysInMonth = (monthStr) => {
+    const [y, m] = monthStr.split("-").map(Number);
+    return new Date(y, m, 0).getDate();
+  };
+
+  const getRecord = (driverId, date) =>
+    qualityRecords.find(r => r.driverId === driverId && r.date === date) || null;
+
+  const saveCell = (driverId, date, form) => {
+    setData(d => {
+      const current = Array.isArray(d?.qualityRecords) ? d.qualityRecords : [];
+      const existing = current.find(r => r.driverId === driverId && r.date === date);
+      if (existing) {
+        return { ...d, qualityRecords: current.map(r => r.driverId === driverId && r.date === date ? { ...r, ...form } : r) };
+      }
+      return { ...d, qualityRecords: [...current, { id:`QR-${Date.now()}`, driverId, date, ...form }] };
+    });
+    setEditingCell(null);
+  };
+
+  const months = Array.from({ length: 4 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  });
+
+  const daysInMonth = getDaysInMonth(selectedMonth);
+  const [year, month] = selectedMonth.split("-").map(Number);
+
+  const fields = ["持出個数","配完個数","誤配","クレーム","時間帯不履行","備考"];
+  const numFields = ["持出個数","配完個数","誤配","クレーム","時間帯不履行"];
+
+  const monthlySummary = drivers.map(driver => {
+    const recs = qualityRecords.filter(r => r.driverId === driver.id && r.date?.startsWith(selectedMonth));
+    return {
+      driver,
+      持出個数: recs.reduce((s,r)=>s+(Number(r.持出個数)||0),0),
+      配完個数: recs.reduce((s,r)=>s+(Number(r.配完個数)||0),0),
+      誤配: recs.reduce((s,r)=>s+(Number(r.誤配)||0),0),
+      クレーム: recs.reduce((s,r)=>s+(Number(r.クレーム)||0),0),
+      時間帯不履行: recs.reduce((s,r)=>s+(Number(r.時間帯不履行)||0),0),
+      稼働日数: recs.filter(r=>Number(r.持出個数)>0).length,
+    };
+  });
+
+  const qualityIcon = <Icon size={14}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>;
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+      <div style={{ display:"flex", gap:"4px", flexWrap:"wrap", borderBottom:"2px solid #e8e8e8", paddingBottom:"8px" }}>
+        {[{ id:"daily", label:"日次入力" },{ id:"summary", label:"月次集計" }].map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ border:"none", borderRadius:"4px 4px 0 0", padding:"8px 14px", fontSize:"12px", fontWeight:700, cursor:"pointer", background: activeTab===t.id ? "#00a09a" : "#f0f2f5", color: activeTab===t.id ? "#fff" : "#555" }}>{t.label}</button>
+        ))}
+      </div>
+
+      <div style={{ display:"flex", alignItems:"center", gap:"8px", flexWrap:"wrap" }}>
+        <span style={{ fontSize:"12px", color:"#666", fontWeight:700 }}>表示月：</span>
+        {months.map(m => (
+          <button key={m} onClick={()=>setSelectedMonth(m)} style={{ border:"1px solid #d0d0d0", borderRadius:"4px", padding:"5px 12px", fontSize:"12px", fontWeight:600, cursor:"pointer", background: selectedMonth===m ? "#00a09a" : "#fff", color: selectedMonth===m ? "#fff" : "#555" }}>
+            {m.replace("-","年")}月
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "daily" && (
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ borderCollapse:"collapse", fontSize:"11px", fontFamily:"'Noto Sans JP', sans-serif", minWidth:"800px" }}>
+            <thead>
+              <tr style={{ background:"#00a09a", color:"#fff", position:"sticky", top:0 }}>
+                <th style={{ padding:"8px 10px", textAlign:"left", whiteSpace:"nowrap", minWidth:"60px", borderRight:"1px solid rgba(255,255,255,0.3)" }}>日付</th>
+                {drivers.map(driver => (
+                  <th key={driver.id} colSpan={6} style={{ padding:"8px 10px", textAlign:"center", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.3)" }}>
+                    {driver.name}
+                  </th>
+                ))}
+              </tr>
+              <tr style={{ background:"#007a74", color:"#fff" }}>
+                <th style={{ padding:"6px 10px", borderRight:"1px solid rgba(255,255,255,0.2)" }}></th>
+                {drivers.flatMap(driver =>
+                  fields.map(f => (
+                    <th key={`${driver.id}-${f}`} style={{ padding:"6px 6px", textAlign:"center", fontSize:"10px", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.2)", minWidth:"50px" }}>{f}</th>
+                  ))
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({ length: daysInMonth }, (_, i) => {
+                const day = i + 1;
+                const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
+                const dow = new Date(year, month-1, day).getDay();
+                const isWeekend = dow === 0 || dow === 6;
+                const dowLabel = ["日","月","火","水","木","金","土"][dow];
+                return (
+                  <tr key={dateStr} style={{ background: isWeekend ? "#f0f7ff" : "#fff", borderBottom:"1px solid #e8e8e8" }}
+                    onMouseEnter={e=>e.currentTarget.style.background=isWeekend?"#e3f0ff":"#f9fcfc"}
+                    onMouseLeave={e=>e.currentTarget.style.background=isWeekend?"#f0f7ff":"#fff"}>
+                    <td style={{ padding:"6px 10px", fontWeight:700, whiteSpace:"nowrap", color: dow===0?"#e63946":dow===6?"#2196f3":"#333", borderRight:"1px solid #e8e8e8", background: isWeekend?"#f0f7ff":"#fafbfc" }}>
+                      {month}/{day}({dowLabel})
+                    </td>
+                    {drivers.flatMap(driver => {
+                      const rec = getRecord(driver.id, dateStr);
+                      const isEditing = editingCell === `${driver.id}-${dateStr}`;
+                      return fields.map(f => (
+                        <td key={`${driver.id}-${dateStr}-${f}`} style={{ padding:"4px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", minWidth:"50px" }}
+                          onClick={() => {
+                            if (!isEditing) {
+                              setEditingCell(`${driver.id}-${dateStr}`);
+                              setCellForm({
+                                持出個数: rec?.持出個数||"",
+                                配完個数: rec?.配完個数||"",
+                                誤配: rec?.誤配||"",
+                                クレーム: rec?.クレーム||"",
+                                時間帯不履行: rec?.時間帯不履行||"",
+                                備考: rec?.備考||"",
+                              });
+                            }
+                          }}>
+                          {isEditing ? (
+                            f === "備考" ? (
+                              <input value={cellForm[f]} onChange={e=>setCellForm(v=>({...v,[f]:e.target.value}))}
+                                onBlur={()=>saveCell(driver.id, dateStr, cellForm)}
+                                style={{ width:"80px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px" }} autoFocus/>
+                            ) : (
+                              <input type="number" value={cellForm[f]} onChange={e=>setCellForm(v=>({...v,[f]:e.target.value}))}
+                                onBlur={()=>saveCell(driver.id, dateStr, cellForm)}
+                                onKeyDown={e=>{ if(e.key==="Enter") saveCell(driver.id, dateStr, cellForm); }}
+                                style={{ width:"44px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px", textAlign:"center" }}/>
+                            )
+                          ) : (
+                            <span style={{ color: f==="誤配"&&Number(rec?.[f])>0?"#e63946":f==="クレーム"&&Number(rec?.[f])>0?"#e63946":f==="時間帯不履行"&&Number(rec?.[f])>0?"#ff9800":"#333", fontWeight: (f==="誤配"||f==="クレーム"||f==="時間帯不履行")&&Number(rec?.[f])>0?700:400 }}>
+                              {rec?.[f] || ""}
+                            </span>
+                          )}
+                        </td>
+                      ));
+                    })}
+                  </tr>
+                );
+              })}
+              <tr style={{ background:"#e8f5f4", fontWeight:700, borderTop:"2px solid #00a09a" }}>
+                <td style={{ padding:"6px 10px", fontWeight:700, color:"#007a74", borderRight:"1px solid #e8e8e8" }}>合計</td>
+                {drivers.flatMap(driver => {
+                  const recs = qualityRecords.filter(r=>r.driverId===driver.id&&r.date?.startsWith(selectedMonth));
+                  return fields.map(f => (
+                    <td key={`total-${driver.id}-${f}`} style={{ padding:"6px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontSize:"11px" }}>
+                      {f==="備考" ? "" : recs.reduce((s,r)=>s+(Number(r[f])||0),0)||""}
+                    </td>
+                  ));
+                })}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {activeTab === "summary" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+          <Panel title={`${selectedMonth.replace("-","年")}月 月次集計`} icon={qualityIcon}>
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:"12px", fontFamily:"'Noto Sans JP', sans-serif" }}>
+                <thead>
+                  <tr style={{ background:"#fafbfc" }}>
+                    {["ドライバー","稼働日数","持出個数","配完個数","誤配","クレーム","時間帯不履行","配完率","誤配率"].map(h=>(
+                      <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontWeight:700, color:"#666", fontSize:"11px", borderBottom:cardBorder, whiteSpace:"nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthlySummary.filter(s=>s.稼働日数>0).map(s=>{
+                    const completionRate = s.持出個数>0 ? ((s.配完個数/s.持出個数)*100).toFixed(1) : "—";
+                    const mistakeRate = s.持出個数>0 ? ((s.誤配/s.持出個数)*100).toFixed(2) : "—";
+                    return (
+                      <tr key={s.driver.id} style={{ borderBottom:"1px solid #f0f0f0" }}
+                        onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"}
+                        onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+                        <td style={{ padding:"8px 10px", fontWeight:700, color:"#007a74" }}>{s.driver.name}</td>
+                        <td style={{ padding:"8px 10px" }}>{s.稼働日数}日</td>
+                        <td style={{ padding:"8px 10px" }}>{s.持出個数.toLocaleString()}</td>
+                        <td style={{ padding:"8px 10px" }}>{s.配完個数.toLocaleString()}</td>
+                        <td style={{ padding:"8px 10px", color:s.誤配>0?"#e63946":"#333", fontWeight:s.誤配>0?700:400 }}>{s.誤配}</td>
+                        <td style={{ padding:"8px 10px", color:s.クレーム>0?"#e63946":"#333", fontWeight:s.クレーム>0?700:400 }}>{s.クレーム}</td>
+                        <td style={{ padding:"8px 10px", color:s.時間帯不履行>0?"#ff9800":"#333", fontWeight:s.時間帯不履行>0?700:400 }}>{s.時間帯不履行}</td>
+                        <td style={{ padding:"8px 10px", color:Number(completionRate)<95?"#e63946":"#2e7d32", fontWeight:700 }}>{completionRate}%</td>
+                        <td style={{ padding:"8px 10px", color:Number(mistakeRate)>0?"#e63946":"#2e7d32", fontWeight:700 }}>{mistakeRate}{mistakeRate!=="—"?"%":""}</td>
+                      </tr>
+                    );
+                  })}
+                  {monthlySummary.filter(s=>s.稼働日数>0).length===0&&(
+                    <tr><td colSpan={9} style={{ padding:"16px", textAlign:"center", color:"#999" }}>この月のデータはありません</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:"8px" }}>
+            {[
+              ["総持出個数", monthlySummary.reduce((s,r)=>s+r.持出個数,0).toLocaleString()+"個", "#00a09a"],
+              ["総誤配数", monthlySummary.reduce((s,r)=>s+r.誤配,0)+"件", "#e63946"],
+              ["総クレーム", monthlySummary.reduce((s,r)=>s+r.クレーム,0)+"件", "#e63946"],
+              ["時間帯不履行", monthlySummary.reduce((s,r)=>s+r.時間帯不履行,0)+"件", "#ff9800"],
+            ].map(([l,v,c])=>(
+              <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
+                <div style={{ fontSize:"11px", color:"#888", fontWeight:700, marginBottom:"4px" }}>{l}</div>
+                <div style={{ fontSize:"18px", fontWeight:700, color:c }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SalesMgmtPage = ({ data, setData }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
@@ -3948,6 +4173,7 @@ const MENU = [
   { id:"invoices",  icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>, label:"請求管理", section:"経理" },
   { id:"bank",      icon:<Icon size={16}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>, label:"口座・入金", section:"経理" },
   { id:"sales_mgmt", icon:<Icon size={16}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>, label:"売上管理", section:"経理" },
+  { id:"quality_mgmt", icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績・品質管理", section:"経理" },
 ];
 
 const TABLE_CONFIG = [
@@ -3961,6 +4187,7 @@ const TABLE_CONFIG = [
   { key: "companyInfo", table: "company_info", single: true },
   { key: "jobTypes", table: "job_types" },
   { key: "dailyRecords", table: "daily_records" },
+  { key: "qualityRecords", table: "quality_records" },
 ];
 
 const createEmptyData = () => ({
@@ -3975,6 +4202,7 @@ const createEmptyData = () => ({
   companyInfo: null,
   jobTypes: [],
   dailyRecords: [],
+  qualityRecords: [],
 });
 
 const fetchDataFromSupabase = async () => {
@@ -4247,7 +4475,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
 
   const badges = { dispatch:pendingCount, bank:unmatchedCount+overdueCount };
 
-  const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, drivers:DriversPage, vehicles:VehiclesPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage, sales_mgmt: SalesMgmtPage };
+  const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, drivers:DriversPage, vehicles:VehiclesPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage, sales_mgmt: SalesMgmtPage, quality_mgmt: QualityMgmtPage };
   const PageComponent = pages[page];
 
   const sectionOrder = ["メイン", "案件管理", "マスタ管理", "経理"];
