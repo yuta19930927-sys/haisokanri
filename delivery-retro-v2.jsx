@@ -2219,6 +2219,11 @@ const SalesMgmtPage = ({ data, setData }) => {
     note:"",
   });
 
+  const driverRoutes = (() => {
+    const driver = drivers.find(d => d?.id === recordForm.driverId);
+    return driver?.routes || [];
+  })();
+
   const calcPatternLabel = { count:"個数×単価", fixed:"固定料金", distance:"距離制", time:"時間制" };
 
   const calcAmounts = (form, jt) => {
@@ -2462,6 +2467,33 @@ const SalesMgmtPage = ({ data, setData }) => {
                 {drivers.map(d=><option key={d?.id} value={d?.id}>{d?.name}</option>)}
               </RetroSelect>
             </Fl>
+            {driverRoutes.length > 0 && (
+              <div style={{ gridColumn:"1/-1" }}>
+                <Fl label="登録済みルートから選択（自動入力）">
+                  <RetroSelect onChange={e=>{
+                    if (!e.target.value) return;
+                    const route = driverRoutes[Number(e.target.value)];
+                    if (!route) return;
+                    const jt = jobTypes.find(j=>j?.id===route?.jobTypeId);
+                    updateRecordCalc({
+                      ...recordForm,
+                      customerId: route.customerId||"",
+                      jobTypeId: route.jobTypeId||"",
+                      unitPrice: String(route.unitPrice||jt?.unitPrice||""),
+                      driverUnitPrice: String(route.driverUnitPrice||jt?.driverUnitPrice||""),
+                    });
+                    e.target.value = "";
+                  }}>
+                    <option value="">— ルートを選んで自動入力 —</option>
+                    {driverRoutes.map((route, idx) => {
+                      const customer = customers.find(c=>c?.id===route?.customerId);
+                      const jt = jobTypes.find(j=>j?.id===route?.jobTypeId);
+                      return <option key={idx} value={idx}>{customer?.name||"顧客未設定"} / {jt?.name||"種別未設定"} / ¥{Number(route?.unitPrice||0).toLocaleString()}</option>;
+                    })}
+                  </RetroSelect>
+                </Fl>
+              </div>
+            )}
             <Fl label="顧客">
               <RetroSelect value={recordForm.customerId} onChange={e=>updateRecordCalc({...recordForm,customerId:e.target.value})}>
                 <option value="">選択</option>
@@ -3079,6 +3111,7 @@ const DriversPage = ({ data, setData }) => {
     { id:"accident", label:"④事故歴" },
     { id:"health", label:"⑤健康・教育" },
     { id:"vehicle", label:"⑥車両情報" },
+    { id:"routes", label:"⑦担当ルート" },
   ];
 
   const TabBar = ({ value, onChange }) => (
@@ -3233,6 +3266,50 @@ const DriversPage = ({ data, setData }) => {
         </Fl>
       </>
     );
+    if (tab === "routes") {
+      const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
+      const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+      const routes = f.routes || [];
+      return (
+        <>
+          <div style={{ fontSize:"12px", color:"#666", marginBottom:"10px" }}>このドライバーがよく担当する顧客・仕事種別・単価を登録しておくと、日次入力時に自動入力されます。</div>
+          {routes.map((route, idx) => (
+            <div key={idx} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", marginBottom:"8px", background:"#fafbfc" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"6px" }}>
+                <span style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>ルート {idx+1}</span>
+                <RetroBtn small onClick={()=>setF(v=>({ ...v, routes: (v.routes||[]).filter((_,i)=>i!==idx) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+                <Fl label="顧客">
+                  <RetroSelect value={route.customerId||""} onChange={e=>setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,customerId:e.target.value}:r) }))}>
+                    <option value="">選択</option>
+                    {customers.map(c=><option key={c?.id} value={c?.id}>{c?.name}</option>)}
+                  </RetroSelect>
+                </Fl>
+                <Fl label="仕事種別">
+                  <RetroSelect value={route.jobTypeId||""} onChange={e=>{ const jt=jobTypes.find(j=>j?.id===e.target.value); setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,jobTypeId:e.target.value,unitPrice:String(jt?.unitPrice||""),driverUnitPrice:String(jt?.driverUnitPrice||"")}:r) })); }}>
+                    <option value="">選択</option>
+                    {jobTypes.map(j=><option key={j?.id} value={j?.id}>{j?.name}</option>)}
+                  </RetroSelect>
+                </Fl>
+                <Fl label="売上単価（円）">
+                  <RetroInput type="number" value={route.unitPrice||""} onChange={e=>setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,unitPrice:e.target.value}:r) }))}/>
+                </Fl>
+                <Fl label="支払単価（円）">
+                  <RetroInput type="number" value={route.driverUnitPrice||""} onChange={e=>setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,driverUnitPrice:e.target.value}:r) }))}/>
+                </Fl>
+              </div>
+              <Fl label="メモ">
+                <RetroInput value={route.note||""} placeholder="例：午前便、週3回など" onChange={e=>setF(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,note:e.target.value}:r) }))}/>
+              </Fl>
+            </div>
+          ))}
+          <RetroBtn onClick={()=>setF(v=>({ ...v, routes: [...(v.routes||[]), { customerId:"", jobTypeId:"", unitPrice:"", driverUnitPrice:"", note:"" }] }))} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+            <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>ルートを追加
+          </RetroBtn>
+        </>
+      );
+    }
     return null;
   };
 
@@ -3352,6 +3429,24 @@ const DriversPage = ({ data, setData }) => {
                 <div style={{ color:"#888" }}>証券番号</div><div>{selectedDriver?.insurancePolicyNumber||"—"}</div>
                 <div style={{ color:"#888" }}>補償額</div><div>{selectedDriver?.insuranceCoverage||"—"}</div>
                 <div style={{ color:"#888" }}>保険証コピー</div><div>{selectedDriver?.insuranceCopySaved?"保管済":"—"}</div>
+              </div>
+            )}
+            {activeTab==="routes" && (
+              <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
+                {(selectedDriver?.routes||[]).length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>担当ルート未登録</div>}
+                {(selectedDriver?.routes||[]).map((route, idx) => {
+                  const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c=>!c?.deleted);
+                  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+                  const customer = customers.find(c=>c?.id===route?.customerId);
+                  const jt = jobTypes.find(j=>j?.id===route?.jobTypeId);
+                  return (
+                    <div key={idx} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#fff", fontSize:"12px" }}>
+                      <div style={{ fontWeight:700, color:"#007a74", marginBottom:"4px" }}>ルート {idx+1} {route?.note ? `— ${route.note}` : ""}</div>
+                      <div>顧客：{customer?.name||"—"} / 仕事種別：{jt?.name||"—"}</div>
+                      <div>売上単価：¥{Number(route?.unitPrice||0).toLocaleString()} / 支払単価：¥{Number(route?.driverUnitPrice||0).toLocaleString()}</div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
