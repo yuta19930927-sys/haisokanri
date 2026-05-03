@@ -2366,9 +2366,8 @@ const QualityMgmtPage = ({ data, setData }) => {
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(200px, 1fr))", gap:"8px" }}>
                 {drivers.map(driver => {
                   const recs = qualityRecords.filter(r => r.driverId === driver.id && r.date?.startsWith(selectedMonth));
-                  const 持出 = recs.reduce((s,r)=>s+(Number(r.持出個数)||0),0);
-                  const 誤配 = recs.reduce((s,r)=>s+(Number(r.誤配)||0),0);
-                  const クレーム = recs.reduce((s,r)=>s+(Number(r.クレーム)||0),0);
+                  const 持出 = recs.reduce((s,r)=>s+(Number(r["持出個数"])||0),0);
+                  const 配完 = recs.reduce((s,r)=>s+(Number(r["配完個数"])||0),0);
                   return (
                     <div key={driver.id}
                       onClick={() => setSelectedDriverId(driver.id)}
@@ -2376,18 +2375,14 @@ const QualityMgmtPage = ({ data, setData }) => {
                       onMouseEnter={e=>e.currentTarget.style.background="#e8f5f4"}
                       onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
                       <div style={{ fontSize:"14px", fontWeight:700, color:"#007a74", marginBottom:"8px" }}>{driver.name}</div>
-                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px", fontSize:"11px" }}>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"4px", fontSize:"11px" }}>
                         <div style={{ textAlign:"center" }}>
                           <div style={{ color:"#888" }}>持出</div>
                           <div style={{ fontWeight:700, color:"#333" }}>{持出||"—"}</div>
                         </div>
                         <div style={{ textAlign:"center" }}>
-                          <div style={{ color:"#888" }}>誤配</div>
-                          <div style={{ fontWeight:700, color:誤配>0?"#e63946":"#333" }}>{誤配||"—"}</div>
-                        </div>
-                        <div style={{ textAlign:"center" }}>
-                          <div style={{ color:"#888" }}>クレーム</div>
-                          <div style={{ fontWeight:700, color:クレーム>0?"#e63946":"#333" }}>{クレーム||"—"}</div>
+                          <div style={{ color:"#888" }}>配完</div>
+                          <div style={{ fontWeight:700, color:"#333" }}>{配完||"—"}</div>
                         </div>
                       </div>
                     </div>
