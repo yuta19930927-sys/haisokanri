@@ -2300,8 +2300,56 @@ const QualityMgmtPage = ({ data, setData }) => {
                             onChange={e => setCellValue(e.target.value)}
                             onBlur={() => saveCell(driver.id, dateStr, f, cellValue)}
                             onKeyDown={e => {
-                              if (e.key === "Enter") saveCell(driver.id, dateStr, f, cellValue);
-                              if (e.key === "Escape") { setEditingCell(null); setEditingField(null); }
+                              if (e.key === "Escape") { setEditingCell(null); setEditingField(null); return; }
+                              const fieldIndex = fields.indexOf(f);
+                              const dayIndex = Array.from({ length: daysInMonth }, (_, i) => `${selectedMonth}-${String(i+1).padStart(2,"0")}`).indexOf(dateStr);
+                              const totalDays = daysInMonth;
+                              if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
+                                e.preventDefault();
+                                saveCell(driver.id, dateStr, f, cellValue);
+                                const nextFieldIndex = fieldIndex + 1;
+                                if (nextFieldIndex < fields.length) {
+                                  setTimeout(() => { setEditingCell(`${driver.id}-${dateStr}`); setEditingField(fields[nextFieldIndex]); setCellValue(getRecord(driver.id, dateStr)?.[fields[nextFieldIndex]] ?? ""); }, 50);
+                                } else if (dayIndex + 1 < totalDays) {
+                                  const nextDate = `${selectedMonth}-${String(dayIndex+2).padStart(2,"0")}`;
+                                  setTimeout(() => { setEditingCell(`${driver.id}-${nextDate}`); setEditingField(fields[0]); setCellValue(getRecord(driver.id, nextDate)?.[fields[0]] ?? ""); }, 50);
+                                }
+                              } else if (e.key === "Tab" && e.shiftKey) {
+                                e.preventDefault();
+                                saveCell(driver.id, dateStr, f, cellValue);
+                                const prevFieldIndex = fieldIndex - 1;
+                                if (prevFieldIndex >= 0) {
+                                  setTimeout(() => { setEditingCell(`${driver.id}-${dateStr}`); setEditingField(fields[prevFieldIndex]); setCellValue(getRecord(driver.id, dateStr)?.[fields[prevFieldIndex]] ?? ""); }, 50);
+                                }
+                              } else if (e.key === "ArrowRight") {
+                                e.preventDefault();
+                                saveCell(driver.id, dateStr, f, cellValue);
+                                const nextFieldIndex = fieldIndex + 1;
+                                if (nextFieldIndex < fields.length) {
+                                  setTimeout(() => { setEditingCell(`${driver.id}-${dateStr}`); setEditingField(fields[nextFieldIndex]); setCellValue(getRecord(driver.id, dateStr)?.[fields[nextFieldIndex]] ?? ""); }, 50);
+                                }
+                              } else if (e.key === "ArrowLeft") {
+                                e.preventDefault();
+                                saveCell(driver.id, dateStr, f, cellValue);
+                                const prevFieldIndex = fieldIndex - 1;
+                                if (prevFieldIndex >= 0) {
+                                  setTimeout(() => { setEditingCell(`${driver.id}-${dateStr}`); setEditingField(fields[prevFieldIndex]); setCellValue(getRecord(driver.id, dateStr)?.[fields[prevFieldIndex]] ?? ""); }, 50);
+                                }
+                              } else if (e.key === "ArrowDown") {
+                                e.preventDefault();
+                                saveCell(driver.id, dateStr, f, cellValue);
+                                if (dayIndex + 1 < totalDays) {
+                                  const nextDate = `${selectedMonth}-${String(dayIndex+2).padStart(2,"0")}`;
+                                  setTimeout(() => { setEditingCell(`${driver.id}-${nextDate}`); setEditingField(f); setCellValue(getRecord(driver.id, nextDate)?.[f] ?? ""); }, 50);
+                                }
+                              } else if (e.key === "ArrowUp") {
+                                e.preventDefault();
+                                saveCell(driver.id, dateStr, f, cellValue);
+                                if (dayIndex - 1 >= 0) {
+                                  const prevDate = `${selectedMonth}-${String(dayIndex).padStart(2,"0")}`;
+                                  setTimeout(() => { setEditingCell(`${driver.id}-${prevDate}`); setEditingField(f); setCellValue(getRecord(driver.id, prevDate)?.[f] ?? ""); }, 50);
+                                }
+                              }
                             }}
                             style={{ width: f === "備考" ? "120px" : "60px", fontSize:"12px", border:"1px solid #00a09a", borderRadius:"2px", padding:"4px 6px", textAlign: f === "備考" ? "left" : "center" }}
                             autoFocus
@@ -2436,9 +2484,10 @@ const QualityMgmtPage = ({ data, setData }) => {
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:"8px" }}>
             {[
               ["総持出個数", monthlySummary.reduce((s,r)=>s+r.持出個数,0).toLocaleString()+"個", "#00a09a"],
+              ["総配完個数", monthlySummary.reduce((s,r)=>s+r.配完個数,0).toLocaleString()+"個", "#2196f3"],
+              ["総時間帯不履行", monthlySummary.reduce((s,r)=>s+r.時間帯不履行,0)+"件", "#ff9800"],
               ["総誤配数", monthlySummary.reduce((s,r)=>s+r.誤配,0)+"件", "#e63946"],
               ["総クレーム", monthlySummary.reduce((s,r)=>s+r.クレーム,0)+"件", "#e63946"],
-              ["時間帯不履行", monthlySummary.reduce((s,r)=>s+r.時間帯不履行,0)+"件", "#ff9800"],
             ].map(([l,v,c])=>(
               <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
                 <div style={{ fontSize:"11px", color:"#888", fontWeight:700, marginBottom:"4px" }}>{l}</div>
