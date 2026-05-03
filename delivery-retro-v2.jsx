@@ -262,8 +262,8 @@ const RetroSelect = ({ children, ...props }) => (
 const RetroTextarea = (props) => (
   <textarea {...props} style={{ ...inputBase, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", padding:"9px 10px", color:UI.text, outline:"none", width:"100%", boxSizing:"border-box", resize:"vertical", minHeight:"80px", ...props.style }} />
 );
-const Fl = ({ label, children }) => (
-  <div style={{ marginBottom:"8px" }}>
+const Fl = ({ label, children, style }) => (
+  <div style={{ marginBottom:"8px", ...style }}>
     <div style={{ fontFamily:"'Noto Sans JP', sans-serif", fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"4px" }}>{label}</div>
     {children}
   </div>
@@ -3772,45 +3772,110 @@ const DriversPage = ({ data, setData }) => {
       </>
     );
     if (tab === "routes") {
-      const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
       const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+      const customers = Array.isArray(data?.customers) ? data.customers : [];
+      const dekaStyles = ["100以下","140","160","180","200","220","240","260"];
       const routes = form.routes || [];
+
+      const addRoute = () => {
+        setForm(f => ({ ...f, routes: [...(f.routes||[]), {
+          id: Date.now(),
+          customerId: "",
+          jobTypeId: "",
+          unitPrice: "",
+          driverUnitPrice: "",
+          dekaRates: dekaStyles.map(s => ({ size: s, unitPrice: "", driverUnitPrice: "" })),
+          note: "",
+        }]}));
+      };
+
+      const removeRoute = (id) => {
+        setForm(f => ({ ...f, routes: (f.routes||[]).filter(r => r.id !== id) }));
+      };
+
+      const updateRoute = (id, key, value) => {
+        setForm(f => ({ ...f, routes: (f.routes||[]).map(r => r.id === id ? { ...r, [key]: value } : r) }));
+      };
+
+      const updateDekaRate = (routeId, size, key, value) => {
+        setForm(f => ({ ...f, routes: (f.routes||[]).map(r => {
+          if (r.id !== routeId) return r;
+          const dekaRates = (r.dekaRates || dekaStyles.map(s => ({ size: s, unitPrice: "", driverUnitPrice: "" }))).map(dr =>
+            dr.size === size ? { ...dr, [key]: value } : dr
+          );
+          return { ...r, dekaRates };
+        })}));
+      };
+
       return (
         <>
-          <div style={{ fontSize:"12px", color:"#666", marginBottom:"10px" }}>このドライバーがよく担当する顧客・仕事種別・単価を登録しておくと、日次入力時に自動入力されます。</div>
-          {routes.map((route, idx) => (
-            <div key={idx} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", marginBottom:"8px", background:"#fafbfc" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"6px" }}>
-                <span style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>ルート {idx+1}</span>
-                <RetroBtn small onClick={()=>setForm(v=>({ ...v, routes: (v.routes||[]).filter((_,i)=>i!==idx) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+          <div style={{ fontSize:"12px", color:"#666", marginBottom:"10px" }}>
+            このドライバーがよく担当する顧客・仕事種別・単価を登録しておくと、日次入力時に自動入力されます。
+          </div>
+          {routes.map((route, idx) => {
+            const selectedJobType = jobTypes.find(j => j?.id === route.jobTypeId);
+            const isDeka = selectedJobType?.name === "デカ宅";
+            return (
+              <div key={route.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"12px", marginBottom:"10px", background:"#fafbfc" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"8px" }}>
+                  <span style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>ルート {idx+1}</span>
+                  <RetroBtn small onClick={()=>removeRoute(route.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+                  <Fl label="顧客">
+                    <RetroSelect value={route.customerId} onChange={e=>updateRoute(route.id,"customerId",e.target.value)}>
+                      <option value="">選択</option>
+                      {customers.map(c=><option key={c?.id} value={c?.id}>{c?.name}</option>)}
+                    </RetroSelect>
+                  </Fl>
+                  <Fl label="仕事種別">
+                    <RetroSelect value={route.jobTypeId} onChange={e=>updateRoute(route.id,"jobTypeId",e.target.value)}>
+                      <option value="">選択</option>
+                      {jobTypes.map(j=><option key={j?.id} value={j?.id}>{j?.name}</option>)}
+                    </RetroSelect>
+                  </Fl>
+                </div>
+                {!isDeka && (
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+                    <Fl label="売上単価（円）"><RetroInput type="number" value={route.unitPrice} onChange={e=>updateRoute(route.id,"unitPrice",e.target.value)} placeholder="例：180"/></Fl>
+                    <Fl label="支払単価（円）"><RetroInput type="number" value={route.driverUnitPrice} onChange={e=>updateRoute(route.id,"driverUnitPrice",e.target.value)} placeholder="例：150"/></Fl>
+                  </div>
+                )}
+                {isDeka && (
+                  <div style={{ marginTop:"8px" }}>
+                    <div style={{ fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"6px" }}>サイズ別単価設定</div>
+                    <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", overflow:"hidden" }}>
+                      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:"12px" }}>
+                        <thead>
+                          <tr style={{ background:"#f0f2f5" }}>
+                            <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, color:"#555", borderBottom:"1px solid #e8e8e8" }}>サイズ</th>
+                            <th style={{ padding:"6px 10px", textAlign:"center", fontWeight:700, color:"#555", borderBottom:"1px solid #e8e8e8" }}>売上単価（円）</th>
+                            <th style={{ padding:"6px 10px", textAlign:"center", fontWeight:700, color:"#555", borderBottom:"1px solid #e8e8e8" }}>支払単価（円）</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(route.dekaRates || dekaStyles.map(s=>({size:s,unitPrice:"",driverUnitPrice:""}))).map(dr => (
+                            <tr key={dr.size} style={{ borderBottom:"1px solid #f0f0f0" }}>
+                              <td style={{ padding:"6px 10px", fontWeight:700, color:"#007a74" }}>{dr.size}</td>
+                              <td style={{ padding:"4px 8px" }}>
+                                <RetroInput type="number" value={dr.unitPrice} onChange={e=>updateDekaRate(route.id,dr.size,"unitPrice",e.target.value)} placeholder="例：300"/>
+                              </td>
+                              <td style={{ padding:"4px 8px" }}>
+                                <RetroInput type="number" value={dr.driverUnitPrice} onChange={e=>updateDekaRate(route.id,dr.size,"driverUnitPrice",e.target.value)} placeholder="例：250"/>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                <Fl label="メモ" style={{ marginTop:"8px" }}><RetroInput value={route.note} onChange={e=>updateRoute(route.id,"note",e.target.value)} placeholder="例：午前便、週3回など"/></Fl>
               </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
-                <Fl label="顧客">
-                  <RetroSelect value={route.customerId||""} onChange={e=>setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,customerId:e.target.value}:r) }))}>
-                    <option value="">選択</option>
-                    {customers.map(c=><option key={c?.id} value={c?.id}>{c?.name}</option>)}
-                  </RetroSelect>
-                </Fl>
-                <Fl label="仕事種別">
-                  <RetroSelect value={route.jobTypeId||""} onChange={e=>{ const jt=jobTypes.find(j=>j?.id===e.target.value); setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,jobTypeId:e.target.value,unitPrice:String(jt?.unitPrice||""),driverUnitPrice:String(jt?.driverUnitPrice||"")}:r) })); }}>
-                    <option value="">選択</option>
-                    {jobTypes.map(j=><option key={j?.id} value={j?.id}>{j?.name}</option>)}
-                  </RetroSelect>
-                </Fl>
-                <Fl label="売上単価（円）">
-                  <RetroInput type="number" value={route.unitPrice||""} onChange={e=>setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,unitPrice:e.target.value}:r) }))}/>
-                </Fl>
-                <Fl label="支払単価（円）">
-                  <RetroInput type="number" value={route.driverUnitPrice||""} onChange={e=>setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,driverUnitPrice:e.target.value}:r) }))}/>
-                </Fl>
-              </div>
-              <Fl label="メモ">
-                <RetroInput value={route.note||""} placeholder="例：午前便、週3回など" onChange={e=>setForm(v=>({ ...v, routes: (v.routes||[]).map((r,i)=>i===idx?{...r,note:e.target.value}:r) }))}/>
-              </Fl>
-            </div>
-          ))}
-          <RetroBtn onClick={()=>setForm(v=>({ ...v, routes: [...(v.routes||[]), { customerId:"", jobTypeId:"", unitPrice:"", driverUnitPrice:"", note:"" }] }))} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
-            <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>ルートを追加
+            );
+          })}
+          <RetroBtn onClick={addRoute} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+            <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>ルートを追加
           </RetroBtn>
         </>
       );
