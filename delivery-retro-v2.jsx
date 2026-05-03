@@ -2204,6 +2204,7 @@ const QualityMgmtPage = ({ data, setData }) => {
     `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`
   );
   const [activeTab, setActiveTab] = useState("daily");
+  const [selectedDriverId, setSelectedDriverId] = useState(null);
   const [editingCell, setEditingCell] = useState(null);
   const [editingField, setEditingField] = useState(null);
   const [cellValue, setCellValue] = useState("");
@@ -2253,106 +2254,149 @@ const QualityMgmtPage = ({ data, setData }) => {
   });
 
   const qualityIcon = <Icon size={14}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>;
+  const backIcon = <Icon size={14}><polyline points="15,18 9,12 15,6"/></Icon>;
+
+  const selectedDriver = drivers.find(d => d.id === selectedDriverId) || null;
+
+  const renderDriverTable = (driver) => {
+    const recs = qualityRecords.filter(r => r.driverId === driver.id && r.date?.startsWith(selectedMonth));
+    return (
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ borderCollapse:"collapse", fontSize:"11px", fontFamily:"'Noto Sans JP', sans-serif", width:"100%" }}>
+          <thead>
+            <tr style={{ background:"#00a09a", color:"#fff" }}>
+              <th style={{ padding:"8px 10px", textAlign:"left", minWidth:"80px", borderRight:"1px solid rgba(255,255,255,0.3)" }}>日付</th>
+              {fields.map(f => (
+                <th key={f} style={{ padding:"8px 10px", textAlign:"center", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.3)", minWidth:"70px" }}>{f}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: daysInMonth }, (_, i) => {
+              const day = i + 1;
+              const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
+              const dow = new Date(year, month-1, day).getDay();
+              const isWeekend = dow === 0 || dow === 6;
+              const dowLabel = ["日","月","火","水","木","金","土"][dow];
+              const rec = getRecord(driver.id, dateStr);
+              return (
+                <tr key={dateStr} style={{ background: isWeekend ? "#f0f7ff" : "#fff", borderBottom:"1px solid #e8e8e8" }}>
+                  <td style={{ padding:"6px 10px", fontWeight:700, whiteSpace:"nowrap", color: dow===0?"#e63946":dow===6?"#2196f3":"#333", borderRight:"1px solid #e8e8e8", background: isWeekend?"#f0f7ff":"#fafbfc" }}>
+                    {month}/{day}({dowLabel})
+                  </td>
+                  {fields.map(f => {
+                    const isThisEditing = editingCell === `${driver.id}-${dateStr}` && editingField === f;
+                    return (
+                      <td key={f}
+                        style={{ padding:"2px", textAlign:"center", borderRight:"1px solid #e8e8e8", cursor:"pointer", background: isThisEditing ? "#e8f5f4" : "transparent" }}
+                        onClick={() => {
+                          setEditingCell(`${driver.id}-${dateStr}`);
+                          setEditingField(f);
+                          setCellValue(rec?.[f] ?? "");
+                        }}>
+                        {isThisEditing ? (
+                          <input
+                            value={cellValue}
+                            onChange={e => setCellValue(e.target.value)}
+                            onBlur={() => saveCell(driver.id, dateStr, f, cellValue)}
+                            onKeyDown={e => {
+                              if (e.key === "Enter") saveCell(driver.id, dateStr, f, cellValue);
+                              if (e.key === "Escape") { setEditingCell(null); setEditingField(null); }
+                            }}
+                            style={{ width: f === "備考" ? "120px" : "60px", fontSize:"12px", border:"1px solid #00a09a", borderRadius:"2px", padding:"4px 6px", textAlign: f === "備考" ? "left" : "center" }}
+                            autoFocus
+                          />
+                        ) : (
+                          <span style={{ display:"block", padding:"4px 6px", color: (f==="誤配"||f==="クレーム")&&Number(rec?.[f])>0?"#e63946":f==="時間帯不履行"&&Number(rec?.[f])>0?"#ff9800":"#333", fontWeight:(f==="誤配"||f==="クレーム"||f==="時間帯不履行")&&Number(rec?.[f])>0?700:400 }}>
+                            {rec?.[f] ?? ""}
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+            <tr style={{ background:"#e8f5f4", borderTop:"2px solid #00a09a" }}>
+              <td style={{ padding:"8px 10px", fontWeight:700, color:"#007a74", borderRight:"1px solid #e8e8e8" }}>合計</td>
+              {fields.map(f => (
+                <td key={f} style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>
+                  {f==="備考" ? "" : (recs.reduce((s,r)=>s+(Number(r[f])||0),0) || "")}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
       <div style={{ display:"flex", gap:"4px", flexWrap:"wrap", borderBottom:"2px solid #e8e8e8", paddingBottom:"8px" }}>
         {[{ id:"daily", label:"日次入力" },{ id:"summary", label:"月次集計" }].map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ border:"none", borderRadius:"4px 4px 0 0", padding:"8px 14px", fontSize:"12px", fontWeight:700, cursor:"pointer", background: activeTab===t.id ? "#00a09a" : "#f0f2f5", color: activeTab===t.id ? "#fff" : "#555" }}>{t.label}</button>
+          <button key={t.id} onClick={() => { setActiveTab(t.id); setSelectedDriverId(null); }} style={{ border:"none", borderRadius:"4px 4px 0 0", padding:"8px 14px", fontSize:"12px", fontWeight:700, cursor:"pointer", background: activeTab===t.id ? "#00a09a" : "#f0f2f5", color: activeTab===t.id ? "#fff" : "#555" }}>{t.label}</button>
         ))}
       </div>
+
       <div style={{ display:"flex", alignItems:"center", gap:"8px", flexWrap:"wrap" }}>
         <span style={{ fontSize:"12px", color:"#666", fontWeight:700 }}>表示月：</span>
         {months.map(m => (
-          <button key={m} onClick={()=>setSelectedMonth(m)} style={{ border:"1px solid #d0d0d0", borderRadius:"4px", padding:"5px 12px", fontSize:"12px", fontWeight:600, cursor:"pointer", background: selectedMonth===m ? "#00a09a" : "#fff", color: selectedMonth===m ? "#fff" : "#555" }}>
+          <button key={m} onClick={()=>{ setSelectedMonth(m); setSelectedDriverId(null); }} style={{ border:"1px solid #d0d0d0", borderRadius:"4px", padding:"5px 12px", fontSize:"12px", fontWeight:600, cursor:"pointer", background: selectedMonth===m ? "#00a09a" : "#fff", color: selectedMonth===m ? "#fff" : "#555" }}>
             {m.replace("-","年")}月
           </button>
         ))}
       </div>
 
       {activeTab === "daily" && (
-        <div style={{ overflowX:"auto" }}>
-          <table style={{ borderCollapse:"collapse", fontSize:"11px", fontFamily:"'Noto Sans JP', sans-serif", minWidth:"800px" }}>
-            <thead>
-              <tr style={{ background:"#00a09a", color:"#fff" }}>
-                <th style={{ padding:"8px 10px", textAlign:"left", whiteSpace:"nowrap", minWidth:"70px", borderRight:"1px solid rgba(255,255,255,0.3)" }}>日付</th>
-                {drivers.flatMap(driver => [
-                  <th key={driver.id} colSpan={6} style={{ padding:"8px 10px", textAlign:"center", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.3)" }}>
-                    {driver.name}
-                  </th>
-                ])}
-              </tr>
-              <tr style={{ background:"#007a74", color:"#fff" }}>
-                <th style={{ padding:"6px 10px", borderRight:"1px solid rgba(255,255,255,0.2)" }}></th>
-                {drivers.flatMap(driver =>
-                  fields.map(f => (
-                    <th key={`${driver.id}-${f}`} style={{ padding:"6px 4px", textAlign:"center", fontSize:"10px", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.2)", minWidth:"50px" }}>{f}</th>
-                  ))
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({ length: daysInMonth }, (_, i) => {
-                const day = i + 1;
-                const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
-                const dow = new Date(year, month-1, day).getDay();
-                const isWeekend = dow === 0 || dow === 6;
-                const dowLabel = ["日","月","火","水","木","金","土"][dow];
-                return (
-                  <tr key={dateStr} style={{ background: isWeekend ? "#f0f7ff" : "#fff", borderBottom:"1px solid #e8e8e8" }}>
-                    <td style={{ padding:"6px 10px", fontWeight:700, whiteSpace:"nowrap", color: dow===0?"#e63946":dow===6?"#2196f3":"#333", borderRight:"1px solid #e8e8e8", background: isWeekend?"#f0f7ff":"#fafbfc" }}>
-                      {month}/{day}({dowLabel})
-                    </td>
-                    {drivers.flatMap(driver => {
-                      const rec = getRecord(driver.id, dateStr);
-                      return fields.map(f => {
-                        const isThisEditing = editingCell === `${driver.id}-${dateStr}` && editingField === f;
-                        return (
-                          <td key={`${driver.id}-${dateStr}-${f}`}
-                            style={{ padding:"2px", textAlign:"center", borderRight:"1px solid #e8e8e8", minWidth:"50px", cursor:"pointer", background: isThisEditing ? "#e8f5f4" : "transparent" }}
-                            onClick={() => {
-                              setEditingCell(`${driver.id}-${dateStr}`);
-                              setEditingField(f);
-                              setCellValue(rec?.[f] ?? "");
-                            }}>
-                            {isThisEditing ? (
-                              <input
-                                value={cellValue}
-                                onChange={e => setCellValue(e.target.value)}
-                                onBlur={() => saveCell(driver.id, dateStr, f, cellValue)}
-                                onKeyDown={e => {
-                                  if (e.key === "Enter") saveCell(driver.id, dateStr, f, cellValue);
-                                  if (e.key === "Escape") { setEditingCell(null); setEditingField(null); }
-                                }}
-                                style={{ width: f === "備考" ? "80px" : "44px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px", textAlign: f === "備考" ? "left" : "center" }}
-                                autoFocus
-                              />
-                            ) : (
-                              <span style={{ color: (f==="誤配"||f==="クレーム")&&Number(rec?.[f])>0?"#e63946":f==="時間帯不履行"&&Number(rec?.[f])>0?"#ff9800":"#333", fontWeight:(f==="誤配"||f==="クレーム"||f==="時間帯不履行")&&Number(rec?.[f])>0?700:400 }}>
-                                {rec?.[f] ?? ""}
-                              </span>
-                            )}
-                          </td>
-                        );
-                      });
-                    })}
-                  </tr>
-                );
-              })}
-              <tr style={{ background:"#e8f5f4", fontWeight:700, borderTop:"2px solid #00a09a" }}>
-                <td style={{ padding:"6px 10px", fontWeight:700, color:"#007a74", borderRight:"1px solid #e8e8e8" }}>合計</td>
-                {drivers.flatMap(driver => {
-                  const recs = qualityRecords.filter(r=>r.driverId===driver.id&&r.date?.startsWith(selectedMonth));
-                  return fields.map(f => (
-                    <td key={`total-${driver.id}-${f}`} style={{ padding:"6px 4px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontSize:"11px", fontWeight:700 }}>
-                      {f==="備考" ? "" : (recs.reduce((s,r)=>s+(Number(r[f])||0),0) || "")}
-                    </td>
-                  ));
+        <>
+          {selectedDriver ? (
+            <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+                <RetroBtn onClick={() => { setSelectedDriverId(null); setEditingCell(null); setEditingField(null); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
+                  {backIcon} ドライバー一覧に戻る
+                </RetroBtn>
+                <span style={{ fontSize:"16px", fontWeight:700, color:"#007a74" }}>{selectedDriver.name} — {selectedMonth.replace("-","年")}月</span>
+              </div>
+              {renderDriverTable(selectedDriver)}
+            </div>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+              <div style={{ fontSize:"13px", color:"#666", marginBottom:"4px" }}>ドライバーを選択してください</div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(200px, 1fr))", gap:"8px" }}>
+                {drivers.map(driver => {
+                  const recs = qualityRecords.filter(r => r.driverId === driver.id && r.date?.startsWith(selectedMonth));
+                  const 持出 = recs.reduce((s,r)=>s+(Number(r.持出個数)||0),0);
+                  const 誤配 = recs.reduce((s,r)=>s+(Number(r.誤配)||0),0);
+                  const クレーム = recs.reduce((s,r)=>s+(Number(r.クレーム)||0),0);
+                  return (
+                    <div key={driver.id}
+                      onClick={() => setSelectedDriverId(driver.id)}
+                      style={{ border:"1px solid #e8e8e8", borderRadius:"8px", padding:"14px", background:"#fff", cursor:"pointer", borderLeft:"4px solid #00a09a" }}
+                      onMouseEnter={e=>e.currentTarget.style.background="#e8f5f4"}
+                      onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+                      <div style={{ fontSize:"14px", fontWeight:700, color:"#007a74", marginBottom:"8px" }}>{driver.name}</div>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px", fontSize:"11px" }}>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ color:"#888" }}>持出</div>
+                          <div style={{ fontWeight:700, color:"#333" }}>{持出||"—"}</div>
+                        </div>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ color:"#888" }}>誤配</div>
+                          <div style={{ fontWeight:700, color:誤配>0?"#e63946":"#333" }}>{誤配||"—"}</div>
+                        </div>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ color:"#888" }}>クレーム</div>
+                          <div style={{ fontWeight:700, color:クレーム>0?"#e63946":"#333" }}>{クレーム||"—"}</div>
+                        </div>
+                      </div>
+                    </div>
+                  );
                 })}
-              </tr>
-            </tbody>
-          </table>
-        </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {activeTab === "summary" && (
@@ -2372,8 +2416,10 @@ const QualityMgmtPage = ({ data, setData }) => {
                     const completionRate = s.持出個数>0 ? ((s.配完個数/s.持出個数)*100).toFixed(1) : "—";
                     const mistakeRate = s.持出個数>0 ? ((s.誤配/s.持出個数)*100).toFixed(2) : "—";
                     return (
-                      <tr key={s.driver.id} style={{ borderBottom:"1px solid #f0f0f0" }}>
-                        <td style={{ padding:"8px 10px", fontWeight:700, color:"#007a74" }}>{s.driver.name}</td>
+                      <tr key={s.driver.id} style={{ borderBottom:"1px solid #f0f0f0" }}
+                        onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"}
+                        onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+                        <td style={{ padding:"8px 10px", fontWeight:700, color:"#007a74", cursor:"pointer" }} onClick={()=>{ setActiveTab("daily"); setSelectedDriverId(s.driver.id); }}>{s.driver.name}</td>
                         <td style={{ padding:"8px 10px" }}>{s.稼働日数}日</td>
                         <td style={{ padding:"8px 10px" }}>{s.持出個数.toLocaleString()}</td>
                         <td style={{ padding:"8px 10px" }}>{s.配完個数.toLocaleString()}</td>
