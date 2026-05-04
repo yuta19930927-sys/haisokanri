@@ -2305,6 +2305,7 @@ const QualityMgmtPage = ({ data, setData }) => {
               <th style={{ padding:"8px 10px", textAlign:"left", minWidth:"80px", borderRight:"1px solid rgba(255,255,255,0.3)" }}>日付</th>
               {fields.map(f => <th key={f} style={{ padding:"8px 10px", textAlign:"center", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.3)", minWidth:"70px" }}>{f}</th>)}
               <th style={{ padding:"8px 10px", textAlign:"center", minWidth:"90px" }}>売上</th>
+              <th style={{ padding:"8px 10px", textAlign:"center", minWidth:"90px" }}>支払</th>
             </tr>
           </thead>
           <tbody>
@@ -2316,6 +2317,7 @@ const QualityMgmtPage = ({ data, setData }) => {
               const dowLabel = ["日","月","火","水","木","金","土"][dow];
               const rec = getRecord(selectedDriverId, dateStr, selectedJobTypeId);
               const daySales = (Number(rec?.["配完個数"]||0)) * unitPrice;
+              const driverPay = (Number(rec?.["配完個数"]||0)) * driverUnitPrice;
               return (
                 <tr key={dateStr} style={{ background: isWeekend?"#f0f7ff":"#fff", borderBottom:"1px solid #e8e8e8" }}>
                   <td style={{ padding:"6px 10px", fontWeight:700, color: dow===0?"#e63946":dow===6?"#2196f3":"#333", borderRight:"1px solid #e8e8e8", background: isWeekend?"#f0f7ff":"#fafbfc" }}>{month}/{day}({dowLabel})</td>
@@ -2336,6 +2338,7 @@ const QualityMgmtPage = ({ data, setData }) => {
                     );
                   })}
                   <td style={{ padding:"6px 4px", textAlign:"center", color:"#007a74", fontWeight:700 }}>{daySales>0?`¥${daySales.toLocaleString()}`:""}</td>
+                  <td style={{ padding:"6px 4px", textAlign:"center", color:"#e65100", fontWeight:700 }}>{driverPay>0?`¥${driverPay.toLocaleString()}`:""}</td>
                 </tr>
               );
             })}
@@ -2348,6 +2351,9 @@ const QualityMgmtPage = ({ data, setData }) => {
               ))}
               <td style={{ padding:"8px 10px", textAlign:"center", color:"#007a74", fontWeight:700 }}>
                 ¥{recs.reduce((s,r)=>s+(Number(r["配完個数"]||0))*unitPrice,0).toLocaleString()}
+              </td>
+              <td style={{ padding:"8px 10px", textAlign:"center", color:"#e65100", fontWeight:700 }}>
+                ¥{recs.reduce((s,r)=>s+(Number(r["配完個数"]||0))*driverUnitPrice,0).toLocaleString()}
               </td>
             </tr>
           </tbody>
@@ -2373,6 +2379,7 @@ const QualityMgmtPage = ({ data, setData }) => {
               <th style={{ padding:"8px 6px", textAlign:"center", borderRight:"1px solid rgba(255,255,255,0.3)", minWidth:"55px" }}>クレーム</th>
               <th style={{ padding:"8px 6px", textAlign:"center", borderRight:"1px solid rgba(255,255,255,0.3)", minWidth:"80px" }}>備考</th>
               <th style={{ padding:"8px 6px", textAlign:"center", minWidth:"80px" }}>売上</th>
+              <th style={{ padding:"8px 6px", textAlign:"center", minWidth:"80px" }}>支払</th>
             </tr>
           </thead>
           <tbody>
@@ -2386,6 +2393,10 @@ const QualityMgmtPage = ({ data, setData }) => {
               const daySales = dekaStyles.reduce((s, size) => {
                 const rate = dekaRates.find(dr=>dr.size===size);
                 return s + (Number(rec?.[`deka_${size}`]||0)) * (Number(rate?.unitPrice)||0);
+              }, 0);
+              const dayDriver = dekaStyles.reduce((s, size) => {
+                const rate = dekaRates.find(dr=>dr.size===size);
+                return s + (Number(rec?.[`deka_${size}`]||0)) * (Number(rate?.driverUnitPrice)||0);
               }, 0);
               return (
                 <tr key={dateStr} style={{ background: isWeekend?"#f0f7ff":"#fff", borderBottom:"1px solid #e8e8e8" }}>
@@ -2407,6 +2418,7 @@ const QualityMgmtPage = ({ data, setData }) => {
                     );
                   })}
                   <td style={{ padding:"6px 4px", textAlign:"center", color:"#007a74", fontWeight:700 }}>{daySales>0?`¥${daySales.toLocaleString()}`:""}</td>
+                  <td style={{ padding:"6px 4px", textAlign:"center", color:"#e65100", fontWeight:700 }}>{dayDriver>0?`¥${dayDriver.toLocaleString()}`:""}</td>
                 </tr>
               );
             })}
@@ -2425,6 +2437,12 @@ const QualityMgmtPage = ({ data, setData }) => {
                 ¥{recs.reduce((s,r)=>s+dekaStyles.reduce((ss,size)=>{
                   const rate=dekaRates.find(dr=>dr.size===size);
                   return ss+(Number(r[`deka_${size}`]||0))*(Number(rate?.unitPrice)||0);
+                },0),0).toLocaleString()}
+              </td>
+              <td style={{ padding:"8px 4px", textAlign:"center", color:"#e65100", fontWeight:700 }}>
+                ¥{recs.reduce((s,r)=>s+dekaStyles.reduce((ss,size)=>{
+                  const rate=dekaRates.find(dr=>dr.size===size);
+                  return ss+(Number(r[`deka_${size}`]||0))*(Number(rate?.driverUnitPrice)||0);
                 },0),0).toLocaleString()}
               </td>
             </tr>
