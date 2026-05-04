@@ -3543,6 +3543,8 @@ const DriversHealthFormTab = ({ form, setForm }) => {
 
 const DriversPage = ({ data, setData }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
+  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+  const allCustomers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [selectedDriverId, setSelectedDriverId] = useState(null);
@@ -3772,8 +3774,6 @@ const DriversPage = ({ data, setData }) => {
       </>
     );
     if (tab === "routes") {
-      const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
-      const customers = Array.isArray(data?.customers) ? data.customers : [];
       const dekaStyles = ["100以下","140","160","180","200","220","240","260"];
       const routes = form.routes || [];
 
@@ -3825,7 +3825,7 @@ const DriversPage = ({ data, setData }) => {
                   <Fl label="顧客">
                     <RetroSelect value={route.customerId} onChange={e=>updateRoute(route.id,"customerId",e.target.value)}>
                       <option value="">選択</option>
-                      {customers.map(c=><option key={c?.id} value={c?.id}>{c?.name}</option>)}
+                      {allCustomers.map(c=><option key={c?.id} value={c?.id}>{c?.name}</option>)}
                     </RetroSelect>
                   </Fl>
                   <Fl label="仕事種別">
