@@ -2292,6 +2292,9 @@ const QualityMgmtPage = ({ data, setData }) => {
   const backIcon = <Icon size={14}><polyline points="15,18 9,12 15,6"/></Icon>;
 
   const renderChibiTable = () => {
+    const route = (selectedDriver?.routes||[]).find(r => r.jobTypeId === selectedJobTypeId);
+    const unitPrice = Number(route?.unitPrice||0);
+    const driverUnitPrice = Number(route?.driverUnitPrice||0);
     const fields = ["持出個数","配完個数","誤配","クレーム","時間帯不履行","備考"];
     const recs = qualityRecords.filter(r => r.driverId === selectedDriverId && r.jobTypeId === selectedJobTypeId && r.date?.startsWith(selectedMonth));
     return (
@@ -2301,6 +2304,7 @@ const QualityMgmtPage = ({ data, setData }) => {
             <tr style={{ background:"#00a09a", color:"#fff" }}>
               <th style={{ padding:"8px 10px", textAlign:"left", minWidth:"80px", borderRight:"1px solid rgba(255,255,255,0.3)" }}>日付</th>
               {fields.map(f => <th key={f} style={{ padding:"8px 10px", textAlign:"center", whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,0.3)", minWidth:"70px" }}>{f}</th>)}
+              <th style={{ padding:"8px 10px", textAlign:"center", minWidth:"90px" }}>売上</th>
             </tr>
           </thead>
           <tbody>
@@ -2311,6 +2315,7 @@ const QualityMgmtPage = ({ data, setData }) => {
               const isWeekend = dow === 0 || dow === 6;
               const dowLabel = ["日","月","火","水","木","金","土"][dow];
               const rec = getRecord(selectedDriverId, dateStr, selectedJobTypeId);
+              const daySales = (Number(rec?.["配完個数"]||0)) * unitPrice;
               return (
                 <tr key={dateStr} style={{ background: isWeekend?"#f0f7ff":"#fff", borderBottom:"1px solid #e8e8e8" }}>
                   <td style={{ padding:"6px 10px", fontWeight:700, color: dow===0?"#e63946":dow===6?"#2196f3":"#333", borderRight:"1px solid #e8e8e8", background: isWeekend?"#f0f7ff":"#fafbfc" }}>{month}/{day}({dowLabel})</td>
@@ -2330,6 +2335,7 @@ const QualityMgmtPage = ({ data, setData }) => {
                       </td>
                     );
                   })}
+                  <td style={{ padding:"6px 4px", textAlign:"center", color:"#007a74", fontWeight:700 }}>{daySales>0?`¥${daySales.toLocaleString()}`:""}</td>
                 </tr>
               );
             })}
@@ -2340,6 +2346,9 @@ const QualityMgmtPage = ({ data, setData }) => {
                   {f==="備考"?"": (recs.reduce((s,r)=>s+(Number(r[f])||0),0)||"")}
                 </td>
               ))}
+              <td style={{ padding:"8px 10px", textAlign:"center", color:"#007a74", fontWeight:700 }}>
+                ¥{recs.reduce((s,r)=>s+(Number(r["配完個数"]||0))*unitPrice,0).toLocaleString()}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -2426,9 +2435,10 @@ const QualityMgmtPage = ({ data, setData }) => {
   };
 
   const renderRouteTable = () => {
-    const route = (selectedDriver?.routes||[]).find(r => r.jobTypeId === selectedJobTypeId);
     const fields = ["salesAmount","driverAmount","誤配","クレーム","備考"];
     const recs = qualityRecords.filter(r => r.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r.date?.startsWith(selectedMonth));
+    const totalSales = recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0);
+    const totalDriver = recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0);
     return (
       <div style={{ overflowX:"auto" }}>
         <table style={{ borderCollapse:"collapse", fontSize:"12px", fontFamily:"'Noto Sans JP', sans-serif", width:"100%" }}>
@@ -2455,7 +2465,6 @@ const QualityMgmtPage = ({ data, setData }) => {
                   <td style={{ padding:"6px 10px", fontWeight:700, color: dow===0?"#e63946":dow===6?"#2196f3":"#333", borderRight:"1px solid #e8e8e8", background: isWeekend?"#f0f7ff":"#fafbfc" }}>{month}/{day}({dowLabel})</td>
                   {fields.map(f => {
                     const isThisEditing = editingCell===`${selectedDriverId}-${dateStr}-${selectedJobTypeId}` && editingField===f;
-                    const label = f==="salesAmount"?"売上":f==="driverAmount"?"支払":f;
                     return (
                       <td key={f} style={{ padding:"2px", textAlign:"center", borderRight:"1px solid #e8e8e8", cursor:"pointer" }}
                         onClick={() => { setEditingCell(`${selectedDriverId}-${dateStr}-${selectedJobTypeId}`); setEditingField(f); setCellValue(rec?.[f]??""); }}>
@@ -2477,8 +2486,8 @@ const QualityMgmtPage = ({ data, setData }) => {
             })}
             <tr style={{ background:"#e8f5f4", borderTop:"2px solid #00a09a" }}>
               <td style={{ padding:"8px 10px", fontWeight:700, color:"#007a74", borderRight:"1px solid #e8e8e8" }}>合計</td>
-              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>¥{recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0).toLocaleString()}</td>
-              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#e65100", fontWeight:700 }}>¥{recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0).toLocaleString()}</td>
+              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>¥{totalSales.toLocaleString()}</td>
+              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#e65100", fontWeight:700 }}>¥{totalDriver.toLocaleString()}</td>
               <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>{recs.reduce((s,r)=>s+(Number(r["誤配"])||0),0)||""}</td>
               <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>{recs.reduce((s,r)=>s+(Number(r["クレーム"])||0),0)||""}</td>
               <td></td>
@@ -2492,6 +2501,9 @@ const QualityMgmtPage = ({ data, setData }) => {
   const renderCharterTable = () => {
     const fields = ["count","salesAmount","driverAmount","備考"];
     const recs = qualityRecords.filter(r => r.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r.date?.startsWith(selectedMonth));
+    const totalSales = recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0);
+    const totalDriver = recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0);
+    const totalCount = recs.reduce((s,r)=>s+(Number(r.count)||0),0);
     return (
       <div style={{ overflowX:"auto" }}>
         <table style={{ borderCollapse:"collapse", fontSize:"12px", fontFamily:"'Noto Sans JP', sans-serif", width:"100%" }}>
@@ -2538,9 +2550,9 @@ const QualityMgmtPage = ({ data, setData }) => {
             })}
             <tr style={{ background:"#e8f5f4", borderTop:"2px solid #00a09a" }}>
               <td style={{ padding:"8px 10px", fontWeight:700, color:"#007a74", borderRight:"1px solid #e8e8e8" }}>合計</td>
-              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>{recs.reduce((s,r)=>s+(Number(r.count)||0),0)||""}</td>
-              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>¥{recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0).toLocaleString()}</td>
-              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#e65100", fontWeight:700 }}>¥{recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0).toLocaleString()}</td>
+              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>{totalCount||""}</td>
+              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>¥{totalSales.toLocaleString()}</td>
+              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#e65100", fontWeight:700 }}>¥{totalDriver.toLocaleString()}</td>
               <td></td>
             </tr>
           </tbody>
