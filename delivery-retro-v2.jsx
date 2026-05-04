@@ -4280,7 +4280,22 @@ const VehiclesPage = ({ data, setData }) => {
   const selectedVehicle = vehicles.find(v => v?.id === selectedVehicleId) || null;
   const blankForm = { plate:"", type:"", maker:"", year:"", maxLoad:"", vehicleWeight:"", grossWeight:"", nextInspection:"", inspectionHistory:[], accidentHistory:[], violationHistory:[], insuranceExpiry:"", liabilityExpiry:"", vehicleInsurance:"", roadServicePhone:"", assignedDriverId:"", status:"available", notes:"" };
   const openAdd = () => { setEditingId(null); setForm({...blankForm}); setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" }); setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" }); setNewViolation({ date:"", content:"", penalty:"" }); setActiveTab("basic"); setShowModal(true); };
-  const openEdit = (vehicle) => { setEditingId(vehicle?.id||null); setForm({...blankForm,...vehicle}); setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" }); setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" }); setNewViolation({ date:"", content:"", penalty:"" }); setActiveTab("basic"); setShowModal(true); setSelectedVehicleId(null); };
+  const openEdit = (vehicle) => {
+    setEditingId(vehicle?.id || null);
+    setForm({
+      ...blankForm,
+      ...vehicle,
+      inspectionHistory: Array.isArray(vehicle?.inspectionHistory) ? vehicle.inspectionHistory : [],
+      accidentHistory: Array.isArray(vehicle?.accidentHistory) ? vehicle.accidentHistory : [],
+      violationHistory: Array.isArray(vehicle?.violationHistory) ? vehicle.violationHistory : [],
+    });
+    setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" });
+    setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" });
+    setNewViolation({ date:"", content:"", penalty:"" });
+    setActiveTab("basic");
+    setShowModal(true);
+    setSelectedVehicleId(null);
+  };
   const saveVehicle = () => {
     if (!form.plate) return;
     setData((d) => {
