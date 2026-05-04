@@ -4311,7 +4311,16 @@ const VehiclesPage = ({ data, setData }) => {
     setData((d) => ({ ...d, vehicles: (Array.isArray(d?.vehicles) ? d.vehicles : []).map(v => v?.id === id ? { ...v, deleted: true } : v) }));
     setSelectedVehicleId(null);
   };
-  const addInspection = () => { if (!newInspection.date) return; setForm(f => ({ ...f, inspectionHistory: [...(f.inspectionHistory||[]), { ...newInspection, id: Date.now() }] })); setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" }); };
+  const addInspection = () => {
+    if (!newInspection.date) return;
+    console.log("addInspection called", newInspection);
+    setForm(f => {
+      const updated = { ...f, inspectionHistory: [...(f.inspectionHistory||[]), { ...newInspection, id: Date.now() }] };
+      console.log("updated form inspectionHistory", updated.inspectionHistory);
+      return updated;
+    });
+    setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" });
+  };
   const removeInspection = (id) => { setForm(f => ({ ...f, inspectionHistory: (f.inspectionHistory||[]).filter(x => x.id !== id) })); };
   const addAccident = () => { if (!newAccident.datetime) return; setForm(f => ({ ...f, accidentHistory: [...(f.accidentHistory||[]), { ...newAccident, id: Date.now() }] })); setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" }); };
   const removeAccident = (id) => { setForm(f => ({ ...f, accidentHistory: (f.accidentHistory||[]).filter(x => x.id !== id) })); };
