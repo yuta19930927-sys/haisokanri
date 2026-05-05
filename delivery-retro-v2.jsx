@@ -3079,6 +3079,7 @@ const SalesMgmtPage = ({ data, setData }) => {
                             sentAt: null,
                             sentTo: "",
                             salesMgmtMonth: selectedMonth,
+                            _dbId: crypto.randomUUID(),
                           };
                           setData(d => ({
                             ...d,
@@ -4784,15 +4785,16 @@ const invoiceRowToUpsert = (row) => {
   let dbId;
   if (row.payload != null && typeof row.payload === "object") {
     payload = { ...row.payload };
-    dbId = row._dbId ?? row.id;
+    dbId = row._dbId ?? null;
   } else {
     const rest = { ...row };
-    dbId = rest._dbId ?? rest.id;
+    dbId = rest._dbId ?? null;
     delete rest._dbId;
     payload = { ...rest };
-    if (!dbId) dbId = payload.id;
   }
-  if (!dbId) return null;
+  if (!dbId) {
+    dbId = crypto.randomUUID();
+  }
   return { id: dbId, payload };
 };
 
