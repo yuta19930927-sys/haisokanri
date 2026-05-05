@@ -5053,7 +5053,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           </svg>
           <div style={{ display:"flex", flexDirection:"column", lineHeight:1.15, justifyContent:"center" }}>
             <div style={{ fontSize:"15px", color:"#00a09a", fontWeight:700 }}>ハコマネ</div>
-            <div style={{ fontSize:"10px", color:"#999", fontWeight:500 }}>配送管理システム</div>
+            <div style={{ fontSize:"10px", color:"#999", fontWeight:500 }}>Delivery Management System</div>
           </div>
         </div>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
