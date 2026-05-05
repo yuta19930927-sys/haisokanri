@@ -3599,10 +3599,22 @@ const DriversAccidentFormTab = ({ form, setForm }) => {
         </div>
         <Fl label="内容"><RetroTextarea value={newAcc.detail} onChange={e=>setNewAcc(v=>({...v,detail:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
         <Fl label="処理結果"><RetroInput value={newAcc.result} onChange={e=>setNewAcc(v=>({...v,result:e.target.value}))}/></Fl>
-        <RetroBtn onClick={() => {
+        <RetroBtn onClick={async () => {
           if (!newAcc.date) return;
           const updated = [...(form.accidentLogs || []), { ...newAcc, id: Date.now() }];
           setForm(prev => ({ ...prev, accidentLogs: updated }));
+          const { error } = await supabase
+            .from('driver_incidents')
+            .insert({
+              driver_id: form.id,
+              incident_type: 'major',
+              incident_date: newAcc.date,
+              description: newAcc.detail || null,
+              counterparty: null,
+              amount: null,
+              memo: [newAcc.type ? `種別:${newAcc.type}` : null, newAcc.result ? `処理:${newAcc.result}` : null].filter(Boolean).join(" / ") || null
+            });
+          if (error) console.error('driver_incidents(major) insert error:', error);
           setNewAcc({ type:"重大事故", date:"", detail:"", result:"" });
         }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
           <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
@@ -3631,10 +3643,22 @@ const DriversAccidentFormTab = ({ form, setForm }) => {
           <Fl label="処理結果"><RetroInput value={newInt.result} onChange={e=>setNewInt(v=>({...v,result:e.target.value}))}/></Fl>
         </div>
         <Fl label="事故内容"><RetroTextarea value={newInt.detail} onChange={e=>setNewInt(v=>({...v,detail:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
-        <RetroBtn onClick={() => {
+        <RetroBtn onClick={async () => {
           if (!newInt.date) return;
           const updated = [...(form.internalLogs || []), { ...newInt, id: Date.now() }];
           setForm(prev => ({ ...prev, internalLogs: updated }));
+          const { error } = await supabase
+            .from('driver_incidents')
+            .insert({
+              driver_id: form.id,
+              incident_type: 'internal',
+              incident_date: newInt.date,
+              description: newInt.detail || null,
+              counterparty: null,
+              amount: null,
+              memo: newInt.result || null
+            });
+          if (error) console.error('driver_incidents(internal) insert error:', error);
           setNewInt({ date:"", detail:"", result:"" });
         }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
           <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
@@ -4311,7 +4335,7 @@ const VehiclesPage = ({ data, setData }) => {
     setData((d) => ({ ...d, vehicles: (Array.isArray(d?.vehicles) ? d.vehicles : []).map(v => v?.id === id ? { ...v, deleted: true } : v) }));
     setSelectedVehicleId(null);
   };
-  const addInspection = () => {
+  const addInspection = async () => {
     if (!newInspection.date) return;
     console.log("addInspection called", newInspection);
     setForm(f => {
@@ -4319,12 +4343,57 @@ const VehiclesPage = ({ data, setData }) => {
       console.log("updated form inspectionHistory", updated.inspectionHistory);
       return updated;
     });
+    const { error } = await supabase
+      .from('vehicle_inspections')
+      .insert({
+        vehicle_id: form.id,
+        inspection_date: newInspection.date,
+        inspection_type: "定期点検",
+        result: newInspection.issue || null,
+        next_inspection_date: newInspection.nextDate || null,
+        memo: [newInspection.shop ? `工場:${newInspection.shop}` : null, newInspection.content || null].filter(Boolean).join(" / ") || null
+      });
+    if (error) console.error('vehicle_inspections insert error:', error);
     setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" });
   };
   const removeInspection = (id) => { setForm(f => ({ ...f, inspectionHistory: (f.inspectionHistory||[]).filter(x => x.id !== id) })); };
-  const addAccident = () => { if (!newAccident.datetime) return; setForm(f => ({ ...f, accidentHistory: [...(f.accidentHistory||[]), { ...newAccident, id: Date.now() }] })); setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" }); };
+  const addAccident = async () => {
+    if (!newAccident.datetime) return;
+    setForm(f => ({ ...f, accidentHistory: [...(f.accidentHistory||[]), { ...newAccident, id: Date.now() }] }));
+    const { error } = await supabase
+      .from('vehicle_incidents')
+      .insert({
+        vehicle_id: form.id,
+        incident_type: 'accident',
+        incident_date: newAccident.datetime.slice(0, 10),
+        description: newAccident.place || null,
+        counterparty: newAccident.opponent || null,
+        amount: null,
+        memo: [newAccident.repairStatus ? `修理:${newAccident.repairStatus}` : null, newAccident.insuranceUsed ? "保険対応あり" : "保険対応なし", newAccident.note || null].filter(Boolean).join(" / ") || null
+      });
+    if (error) console.error('vehicle_incidents(accident) insert error:', error);
+    setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" });
+  };
   const removeAccident = (id) => { setForm(f => ({ ...f, accidentHistory: (f.accidentHistory||[]).filter(x => x.id !== id) })); };
-  const addViolation = () => { if (!newViolation.date) return; setForm(f => ({ ...f, violationHistory: [...(f.violationHistory||[]), { ...newViolation, id: Date.now() }] })); setNewViolation({ date:"", content:"", penalty:"" }); };
+  const addViolation = async () => {
+    if (!newViolation.date) return;
+    setForm(f => ({ ...f, violationHistory: [...(f.violationHistory||[]), { ...newViolation, id: Date.now() }] }));
+    const penaltyAmount = Number(newViolation.penalty);
+    const hasPenaltyAmount = newViolation.penalty !== "" && Number.isFinite(penaltyAmount);
+    const { error } = await supabase
+      .from('vehicle_incidents')
+      .insert({
+        vehicle_id: form.id,
+        incident_type: 'violation',
+        incident_date: newViolation.date,
+        description: newViolation.content || null,
+        counterparty: null,
+        amount: hasPenaltyAmount ? penaltyAmount : null,
+        memo: hasPenaltyAmount ? null : (newViolation.penalty || null)
+      });
+    if (error) console.error('vehicle_incidents(violation) insert error:', error);
+    setNewViolation({ date:"", content:"", penalty:"" });
+  };
   const removeViolation = (id) => { setForm(f => ({ ...f, violationHistory: (f.violationHistory||[]).filter(x => x.id !== id) })); };
   const vehicleIcon = <Icon size={14}><rect x="3" y="9" width="18" height="7" rx="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>;
   const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
@@ -4366,7 +4435,10 @@ const VehiclesPage = ({ data, setData }) => {
           </div>
           <Fl label="整備内容"><RetroTextarea value={newInspection.content} onChange={e=>setNewInspection(v=>({...v,content:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
           <Fl label="不具合箇所"><RetroInput value={newInspection.issue} onChange={e=>setNewInspection(v=>({...v,issue:e.target.value}))}/></Fl>
-          <RetroBtn onClick={addInspection} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}記録を追加</RetroBtn>
+          <RetroBtn onClick={addInspection} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}✅ この点検を保存</RetroBtn>
+          <p style={{fontSize:'11px', color:'#888', marginTop:'4px'}}>
+            ※入力後、必ずこのボタンを押してください
+          </p>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"200px", overflowY:"auto" }}>
           {(f.inspectionHistory||[]).length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
@@ -4398,7 +4470,10 @@ const VehiclesPage = ({ data, setData }) => {
           </div>
           <Fl label="保険対応"><CB label="保険対応あり" checked={newAccident.insuranceUsed} onChange={v=>setNewAccident(p=>({...p,insuranceUsed:v}))}/></Fl>
           <Fl label="備考"><RetroTextarea value={newAccident.note} onChange={e=>setNewAccident(v=>({...v,note:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
-          <RetroBtn onClick={addAccident} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}事故記録を追加</RetroBtn>
+          <RetroBtn onClick={addAccident} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}✅ この事故を保存</RetroBtn>
+          <p style={{fontSize:'11px', color:'#888', marginTop:'4px'}}>
+            ※入力後、必ずこのボタンを押してください
+          </p>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"140px", overflowY:"auto", marginBottom:"12px" }}>
           {(f.accidentHistory||[]).length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
@@ -4420,7 +4495,10 @@ const VehiclesPage = ({ data, setData }) => {
             <Fl label="違反内容"><RetroInput value={newViolation.content} onChange={e=>setNewViolation(v=>({...v,content:e.target.value}))}/></Fl>
             <Fl label="行政処分"><RetroInput value={newViolation.penalty} onChange={e=>setNewViolation(v=>({...v,penalty:e.target.value}))}/></Fl>
           </div>
-          <RetroBtn onClick={addViolation} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}違反記録を追加</RetroBtn>
+          <RetroBtn onClick={addViolation} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}✅ この違反を保存</RetroBtn>
+          <p style={{fontSize:'11px', color:'#888', marginTop:'4px'}}>
+            ※入力後、必ずこのボタンを押してください
+          </p>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"120px", overflowY:"auto" }}>
           {(f.violationHistory||[]).length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}
@@ -4514,7 +4592,7 @@ const VehiclesPage = ({ data, setData }) => {
           <div style={{ minHeight:"300px" }}>{renderFormTab(activeTab, form, setForm)}</div>
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"12px" }}>
             <RetroBtn onClick={()=>setShowModal(false)}>キャンセル</RetroBtn>
-            <RetroBtn onClick={saveVehicle} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存する</RetroBtn>
+            <RetroBtn onClick={saveVehicle} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>車両情報を保存</RetroBtn>
           </div>
         </Modal>
       )}
