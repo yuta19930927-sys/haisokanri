@@ -2224,6 +2224,7 @@ const QualityMgmtPage = ({ data, setData }) => {
     qualityRecords.find(r => r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId) || null;
 
   const saveCell = (driverId, date, jobTypeId, field, value, customerId, salesAmount, driverAmount) => {
+    console.log("saveCell called", { driverId, date, jobTypeId, field, value, customerId, salesAmount, driverAmount });
     setData(d => {
       const current = Array.isArray(d?.qualityRecords) ? d.qualityRecords : [];
       const existing = current.find(r => r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId);
