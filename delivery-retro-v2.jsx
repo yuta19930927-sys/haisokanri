@@ -2223,17 +2223,26 @@ const QualityMgmtPage = ({ data, setData }) => {
   const getRecord = (driverId, date, jobTypeId) =>
     qualityRecords.find(r => r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId) || null;
 
-  const saveCell = (driverId, date, jobTypeId, field, value) => {
+  const saveCell = (driverId, date, jobTypeId, field, value, customerId, salesAmount, driverAmount) => {
     setData(d => {
       const current = Array.isArray(d?.qualityRecords) ? d.qualityRecords : [];
       const existing = current.find(r => r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId);
       if (existing) {
         return { ...d, qualityRecords: current.map(r =>
           r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId
-            ? { ...r, [field]: value } : r
+            ? { ...r, [field]: value, customerId: customerId||r.customerId, salesAmount: salesAmount||r.salesAmount, driverAmount: driverAmount||r.driverAmount } : r
         )};
       }
-      return { ...d, qualityRecords: [...current, { id:`QR-${Date.now()}`, driverId, date, jobTypeId, [field]: value }] };
+      return { ...d, qualityRecords: [...current, {
+        id: `QR-${Date.now()}`,
+        driverId,
+        date,
+        jobTypeId,
+        [field]: value,
+        customerId: customerId || null,
+        salesAmount: salesAmount || null,
+        driverAmount: driverAmount || null
+      }] };
     });
     setEditingCell(null);
     setEditingField(null);
@@ -2328,8 +2337,26 @@ const QualityMgmtPage = ({ data, setData }) => {
                         onClick={() => { setEditingCell(`${selectedDriverId}-${dateStr}-${selectedJobTypeId}`); setEditingField(f); setCellValue(rec?.[f]??""); }}>
                         {isThisEditing ? (
                           <input value={cellValue} onChange={e=>setCellValue(e.target.value)}
-                            onBlur={()=>saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue)}
-                            onKeyDown={e=>{ if(e.key==="Enter")saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue); if(e.key==="Escape"){setEditingCell(null);setEditingField(null);} }}
+                            onBlur={()=>saveCell(
+                              selectedDriverId,
+                              dateStr,
+                              selectedJobTypeId,
+                              f,
+                              cellValue,
+                              route?.customerId || null,
+                              f === "配完個数" ? (Number(cellValue)||0) * Number(route?.unitPrice||0) : null,
+                              f === "配完個数" ? (Number(cellValue)||0) * Number(route?.driverPrice||route?.driverUnitPrice||0) : null
+                            )}
+                            onKeyDown={e=>{ if(e.key==="Enter")saveCell(
+                              selectedDriverId,
+                              dateStr,
+                              selectedJobTypeId,
+                              f,
+                              cellValue,
+                              route?.customerId || null,
+                              f === "配完個数" ? (Number(cellValue)||0) * Number(route?.unitPrice||0) : null,
+                              f === "配完個数" ? (Number(cellValue)||0) * Number(route?.driverPrice||route?.driverUnitPrice||0) : null
+                            ); if(e.key==="Escape"){setEditingCell(null);setEditingField(null);} }}
                             style={{ width:f==="備考"?"120px":"60px", fontSize:"12px", border:"1px solid #00a09a", borderRadius:"2px", padding:"4px 6px", textAlign:f==="備考"?"left":"center" }} autoFocus/>
                         ) : (
                           <span style={{ display:"block", padding:"4px 6px", color:(f==="誤配"||f==="クレーム")&&Number(rec?.[f])>0?"#e63946":f==="時間帯不履行"&&Number(rec?.[f])>0?"#ff9800":"#333" }}>{rec?.[f]??""}</span>
@@ -2403,13 +2430,23 @@ const QualityMgmtPage = ({ data, setData }) => {
                   <td style={{ padding:"6px 10px", fontWeight:700, color: dow===0?"#e63946":dow===6?"#2196f3":"#333", borderRight:"1px solid #e8e8e8", background: isWeekend?"#f0f7ff":"#fafbfc" }}>{month}/{day}({dowLabel})</td>
                   {allFields.map(f => {
                     const isThisEditing = editingCell===`${selectedDriverId}-${dateStr}-${selectedJobTypeId}` && editingField===f;
+                    const totalSales = dekaStyles.reduce((s, size) => {
+                      const rate = dekaRates.find(dr => dr.size === size);
+                      const nextQty = f === `deka_${size}` ? Number(cellValue||0) : Number(rec?.[`deka_${size}`]||0);
+                      return s + nextQty * (Number(rate?.unitPrice)||0);
+                    }, 0);
+                    const totalDriver = dekaStyles.reduce((s, size) => {
+                      const rate = dekaRates.find(dr => dr.size === size);
+                      const nextQty = f === `deka_${size}` ? Number(cellValue||0) : Number(rec?.[`deka_${size}`]||0);
+                      return s + nextQty * (Number(rate?.driverPrice||rate?.driverUnitPrice||0));
+                    }, 0);
                     return (
                       <td key={f} style={{ padding:"2px", textAlign:"center", borderRight:"1px solid #e8e8e8", cursor:"pointer" }}
                         onClick={() => { setEditingCell(`${selectedDriverId}-${dateStr}-${selectedJobTypeId}`); setEditingField(f); setCellValue(rec?.[f]??""); }}>
                         {isThisEditing ? (
                           <input value={cellValue} onChange={e=>setCellValue(e.target.value)}
-                            onBlur={()=>saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue)}
-                            onKeyDown={e=>{ if(e.key==="Enter")saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue); if(e.key==="Escape"){setEditingCell(null);setEditingField(null);} }}
+                            onBlur={()=>saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue,route?.customerId || null,totalSales,totalDriver)}
+                            onKeyDown={e=>{ if(e.key==="Enter")saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue,route?.customerId || null,totalSales,totalDriver); if(e.key==="Escape"){setEditingCell(null);setEditingField(null);} }}
                             style={{ width:f==="備考"?"100px":"50px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px", textAlign:"center" }} autoFocus/>
                         ) : (
                           <span style={{ display:"block", padding:"3px 4px" }}>{rec?.[f]??""}</span>
@@ -4706,12 +4743,30 @@ const saveDataToSupabase = async (nextData, prevData) => {
       ? (nextData[key] ? [{ id: nextData[key]?.id || "COMPANY-001", payload: nextData[key] }] : [])
       : (Array.isArray(nextData[key]) ? nextData[key] : [])
           .filter((row) => row && row.id && (key !== "invoices" || invoiceRowToUpsert(row)))
-          .map((row) => (key === "invoices" ? invoiceRowToUpsert(row) : { id: row.id, payload: row }));
+          .map((row) => {
+            if (key === "invoices") return invoiceRowToUpsert(row);
+            if (key === "qualityRecords") return {
+              id: row.id,
+              payload: row,
+              driverid: row.driverId || null,
+              date: row.date || null
+            };
+            return { id: row.id, payload: row };
+          });
     const previousRows = single
       ? (prevData[key] ? [{ id: prevData[key]?.id || "COMPANY-001", payload: prevData[key] }] : [])
       : (Array.isArray(prevData[key]) ? prevData[key] : [])
           .filter((row) => row && row.id && (key !== "invoices" || invoiceRowToUpsert(row)))
-          .map((row) => (key === "invoices" ? invoiceRowToUpsert(row) : { id: row.id, payload: row }));
+          .map((row) => {
+            if (key === "invoices") return invoiceRowToUpsert(row);
+            if (key === "qualityRecords") return {
+              id: row.id,
+              payload: row,
+              driverid: row.driverId || null,
+              date: row.date || null
+            };
+            return { id: row.id, payload: row };
+          });
 
     if (currentRows.length > 0) {
       const upsertRows = currentRows;
