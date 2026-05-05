@@ -3032,7 +3032,9 @@ const SalesMgmtPage = ({ data, setData }) => {
                 {customerSummary.map(s => {
                   const alreadyExists = (Array.isArray(data?.invoices) ? data.invoices : []).some(inv => {
                     const p = inv?.payload ? (typeof inv.payload === "string" ? JSON.parse(inv.payload) : inv.payload) : inv;
-                    return p?.salesMgmtMonth === selectedMonth && (p?.customerId === s.customer?.id || inv?.customerId === s.customer?.id);
+                    return p?.salesMgmtMonth === selectedMonth
+                      && p?.salesMgmtMonth != null
+                      && (p?.customerId === s.customer?.id || inv?.customerId === s.customer?.id);
                   });
                   return (
                     <div key={s.customer?.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff" }}>
