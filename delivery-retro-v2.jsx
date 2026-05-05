@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { supabase } from "./src/lib/supabase";
 
-// ===== T-LINK THEME =====
+// ===== ハコマネ THEME =====
 const UI = {
   accent: "#00a09a",
   accentDark: "#007a74",
@@ -3367,7 +3367,7 @@ const InvoicesPage = ({ data, setData }) => {
   const buildInvoiceHtml = (inv) => {
     const customer = customers.find((c) => c?.id === inv?.customerId);
     const fallbackCompany = {
-      name: "T-LINK",
+      name: "ハコマネ",
       tagline: "LOGISTICS & DELIVERY SOLUTIONS",
       address: "住所未設定",
       phone: "電話未設定",
@@ -5043,10 +5043,18 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
           </button>
         )}
-        <div style={{ width:"30px", height:"30px", borderRadius:"5px", background:"linear-gradient(135deg,#00a09a,#007a74)", color:"#fff", display:"grid", placeItems:"center", fontWeight:700, fontSize:"12px" }}>T-L</div>
-        <div style={{ display:"flex", flexDirection:"column", lineHeight:1.1 }}>
-          <div style={{ fontSize:"14px", color:"#222", fontWeight:500 }}><span style={{ color:"#00a09a", fontWeight:700 }}>T-LINK</span> 配送管理システム</div>
-          <div style={{ fontSize:"10px", color:"#999" }}>Delivery Management System</div>
+        <div style={{ display:"flex", alignItems:"center", gap:"10px", flexShrink:0 }}>
+          <svg viewBox="0 0 40 40" width="36" height="36" fill="none" aria-hidden style={{ flexShrink:0 }}>
+            <rect width="40" height="40" rx="8" fill="#00a09a"/>
+            <rect x="8" y="14" width="16" height="14" rx="2" stroke="white" strokeWidth="2" fill="none"/>
+            <path d="M8 19h16" stroke="white" strokeWidth="2"/>
+            <path d="M24 22 Q30 16 34 20 Q38 24 32 28 Q28 30 26 26" stroke="white" strokeWidth="2.2" strokeLinecap="round" fill="none"/>
+            <path d="M22 24 Q16 30 20 34 Q24 38 28 32" stroke="white" strokeWidth="2.2" strokeLinecap="round" fill="none"/>
+          </svg>
+          <div style={{ display:"flex", flexDirection:"column", lineHeight:1.15, justifyContent:"center" }}>
+            <div style={{ fontSize:"15px", color:"#00a09a", fontWeight:700 }}>ハコマネ</div>
+            <div style={{ fontSize:"10px", color:"#999", fontWeight:500 }}>配送管理システム</div>
+          </div>
         </div>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
           <button onClick={()=>setShowSettings(v=>!v)} style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
@@ -5073,7 +5081,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           <aside style={{ width:"210px", borderRight:`1px solid ${UI.sidebarBorder}`, background:UI.sidebarBg, padding:"10px", boxSizing:"border-box", flexShrink:0 }}>
             <div style={{ background:UI.sidebarHeader, border:`1px solid ${UI.sidebarBorder}`, borderRadius:"6px", padding:"8px", marginBottom:"10px" }}>
               <div style={{ fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"6px" }}>組織</div>
-              <div style={{ background:"#fff", border:cardBorder, borderRadius:"4px", padding:"6px 8px", fontSize:"12px", color:"#333", marginBottom:"6px" }}>T-LINK 本社</div>
+              <div style={{ background:"#fff", border:cardBorder, borderRadius:"4px", padding:"6px 8px", fontSize:"12px", color:"#333", marginBottom:"6px" }}>ハコマネ 本社</div>
               <div style={{ fontSize:"11px", color:"#888" }}>{now.getFullYear()}年{now.getMonth()+1}月{now.getDate()}日 {now.getHours()}:{String(now.getMinutes()).padStart(2,"0")}</div>
             </div>
             {sectionOrder.map((section)=>(
