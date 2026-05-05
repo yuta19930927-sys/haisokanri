@@ -2230,7 +2230,14 @@ const QualityMgmtPage = ({ data, setData }) => {
       if (existing) {
         return { ...d, qualityRecords: current.map(r =>
           r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId
-            ? { ...r, [field]: value, customerId: customerId||r.customerId, salesAmount: salesAmount||r.salesAmount, driverAmount: driverAmount||r.driverAmount } : r
+            ? {
+                ...r,
+                [field]: value,
+                ...(customerId !== undefined && customerId !== null ? { customerId } : {}),
+                ...(salesAmount !== undefined && salesAmount !== null ? { salesAmount } : {}),
+                ...(driverAmount !== undefined && driverAmount !== null ? { driverAmount } : {})
+              }
+            : r
         )};
       }
       return { ...d, qualityRecords: [...current, {
@@ -2242,7 +2249,7 @@ const QualityMgmtPage = ({ data, setData }) => {
         customerId: customerId || null,
         salesAmount: salesAmount || null,
         driverAmount: driverAmount || null
-      }] };
+      }]};
     });
     setEditingCell(null);
     setEditingField(null);
