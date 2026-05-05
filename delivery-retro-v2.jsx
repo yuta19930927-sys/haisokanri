@@ -2737,6 +2737,7 @@ const QualityMgmtPage = ({ data, setData }) => {
   );
 };
 const SalesMgmtPage = ({ data, setData }) => {
+  const qualityRecords = Array.isArray(data?.qualityRecords) ? data.qualityRecords : [];
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
@@ -2833,23 +2834,53 @@ const SalesMgmtPage = ({ data, setData }) => {
 
   const monthRecords = dailyRecords.filter(r => r?.date?.startsWith(selectedMonth));
 
+  const qualitySummary = qualityRecords
+    .filter(r => r.salesAmount && r.customerId && r.date?.startsWith(selectedMonth))
+    .reduce((acc, r) => {
+      const key = `${r.driverId}_${r.customerId}_${r.jobTypeId}_${r.date}`;
+      if (!acc[key]) {
+        acc[key] = {
+          id: `QR-${key}`,
+          date: r.date,
+          driverId: r.driverId,
+          customerId: r.customerId,
+          jobTypeId: r.jobTypeId,
+          salesAmount: 0,
+          driverAmount: 0,
+          source: "quality",
+        };
+      }
+      acc[key].salesAmount += Number(r.salesAmount || 0);
+      acc[key].driverAmount += Number(r.driverAmount || 0);
+      return acc;
+    }, {});
+
+  const qualityDailyRows = Object.values(qualitySummary);
+
+  const totalSales = [...monthRecords, ...qualityDailyRows].reduce((s, r) => s + Number(r.salesAmount || 0), 0);
+  const totalDriver = [...monthRecords, ...qualityDailyRows].reduce((s, r) => s + Number(r.driverAmount || 0), 0);
+
   const driverSummary = drivers.map(driver => {
     const recs = monthRecords.filter(r => r?.driverId === driver?.id);
+    const qrecs = qualityDailyRows.filter(r => r?.driverId === driver?.id);
+    const allDates = [...recs.map(r => r?.date), ...qrecs.map(r => r?.date)];
     return {
       driver,
-      count: recs.length,
-      workDays: new Set(recs.map(r => r?.date)).size,
-      salesTotal: recs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0),
-      driverTotal: recs.reduce((s, r) => s + (Number(r?.driverAmount)||0), 0),
+      count: recs.length + qrecs.length,
+      workDays: new Set(allDates.filter(Boolean)).size,
+      salesTotal: recs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0) + qrecs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0),
+      driverTotal: recs.reduce((s, r) => s + (Number(r?.driverAmount)||0), 0) + qrecs.reduce((s, r) => s + (Number(r?.driverAmount)||0), 0),
     };
   }).filter(s => s.count > 0);
 
   const customerSummary = customers.map(customer => {
     const recs = monthRecords.filter(r => r?.customerId === customer?.id);
-    const subtotal = recs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0);
-    const taxable = recs.filter(r => { const jt = jobTypes.find(j=>j?.id===r?.jobTypeId); return jt?.taxable !== false; }).reduce((s,r)=>s+(Number(r?.salesAmount)||0),0);
+    const qrecs = qualityDailyRows.filter(r => r?.customerId === customer?.id);
+    const combined = [...recs, ...qrecs];
+    const subtotal = combined.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0);
+    const taxable = combined.filter(r => { const jt = jobTypes.find(j=>j?.id===r?.jobTypeId); return jt?.taxable !== false; }).reduce((s,r)=>s+(Number(r?.salesAmount)||0),0);
     const tax = Math.round(taxable * 0.1);
-    return { customer, count: recs.length, subtotal, tax, total: subtotal + tax };
+    return { customer, count: combined.length, subtotal, tax, total: subtotal + tax };
   }).filter(s => s.count > 0);
 
   const salesIcon = <Icon size={14}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>;
@@ -2894,7 +2925,7 @@ const SalesMgmtPage = ({ data, setData }) => {
                 </tr>
               </thead>
               <tbody>
-                {monthRecords.length === 0 && <tr><td colSpan={11} style={{ padding:"16px", textAlign:"center", color:"#999" }}>この月の記録はありません</td></tr>}
+                {monthRecords.length === 0 && qualityDailyRows.length === 0 && <tr><td colSpan={11} style={{ padding:"16px", textAlign:"center", color:"#999" }}>この月の記録はありません</td></tr>}
                 {[...monthRecords].sort((a,b)=>b.date?.localeCompare(a.date||"")).map(rec => {
                   const driver = drivers.find(d=>d?.id===rec?.driverId);
                   const customer = customers.find(c=>c?.id===rec?.customerId);
@@ -2920,15 +2951,35 @@ const SalesMgmtPage = ({ data, setData }) => {
                     </tr>
                   );
                 })}
+                {[...qualityDailyRows].sort((a,b)=>b.date?.localeCompare(a.date||"")).map(row => {
+                  const driver = drivers.find(d => d?.id === row.driverId);
+                  const customer = customers.find(c => c?.id === row.customerId);
+                  const jobType = jobTypes.find(j => j?.id === row.jobTypeId);
+                  return (
+                    <tr key={row.id} style={{ borderBottom:"1px solid #f0f0f0", background:"#f0fffe" }} onMouseEnter={e=>{ e.currentTarget.style.background="#e0faf7"; }} onMouseLeave={e=>{ e.currentTarget.style.background="#f0fffe"; }}>
+                      <td style={{ padding:"8px 10px" }}>{row.date}</td>
+                      <td style={{ padding:"8px 10px" }}>{driver?.name||row.driverId||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{customer?.name||row.customerId||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{jobType?.name||row.jobTypeId||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>—</td>
+                      <td style={{ padding:"8px 10px" }}>—</td>
+                      <td style={{ padding:"8px 10px" }}>—</td>
+                      <td style={{ padding:"8px 10px", color:"#007a74", fontWeight:700 }}>¥{Number(row.salesAmount).toLocaleString()}</td>
+                      <td style={{ padding:"8px 10px", color:"#e65100", fontWeight:700 }}>¥{Number(row.driverAmount).toLocaleString()}</td>
+                      <td style={{ padding:"8px 10px", color:"#888", fontSize:"11px" }}>実績・品質連携</td>
+                      <td style={{ padding:"8px 10px" }} />
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:"8px" }}>
             {[
-              ["月間売上合計", "¥"+monthRecords.reduce((s,r)=>s+(Number(r?.salesAmount)||0),0).toLocaleString(), "#00a09a"],
-              ["月間支払合計", "¥"+monthRecords.reduce((s,r)=>s+(Number(r?.driverAmount)||0),0).toLocaleString(), "#e65100"],
-              ["件数", monthRecords.length+"件", "#2196f3"],
-              ["稼働ドライバー", new Set(monthRecords.map(r=>r?.driverId)).size+"名", "#7b1fa2"],
+              ["月間売上合計", "¥"+totalSales.toLocaleString(), "#00a09a"],
+              ["月間支払合計", "¥"+totalDriver.toLocaleString(), "#e65100"],
+              ["件数", (monthRecords.length + qualityDailyRows.length)+"件", "#2196f3"],
+              ["稼働ドライバー", new Set([...monthRecords.map(r=>r?.driverId), ...qualityDailyRows.map(r=>r?.driverId)].filter(Boolean)).size+"名", "#7b1fa2"],
             ].map(([l,v,c])=>(
               <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
                 <div style={{ fontSize:"11px", color:"#888", fontWeight:700, marginBottom:"4px" }}>{l}</div>
@@ -2995,7 +3046,7 @@ const SalesMgmtPage = ({ data, setData }) => {
                         <span style={{ fontSize:"11px", color:"#2e7d32", fontWeight:700, background:"#e8f5e9", border:"1px solid #4caf50", borderRadius:"999px", padding:"2px 10px" }}>生成済</span>
                       ) : (
                         <RetroBtn small onClick={() => {
-                          const recs = monthRecords.filter(r => r?.customerId === s.customer?.id);
+                          const recs = [...monthRecords, ...qualityDailyRows].filter(r => r?.customerId === s.customer?.id);
                           const lineItems = recs.map(r => {
                             const jt = jobTypes.find(j => j?.id === r?.jobTypeId);
                             const driver = drivers.find(d => d?.id === r?.driverId);
