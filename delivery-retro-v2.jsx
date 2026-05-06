@@ -1690,6 +1690,30 @@ const OrdersPage = ({ data, setData, tenantId, userRole }) => {
         }
         return o;
       }),
+      dailyRecords: [
+        ...(Array.isArray(d?.dailyRecords) ? d.dailyRecords : []),
+        ...(Array.isArray(d?.orders) ? d.orders : [])
+          .filter((o) =>
+            o?.deliveryDate && o.deliveryDate < todayStr &&
+            o?.status !== "delivered" && o?.status !== "cancelled" &&
+            !(Array.isArray(d?.dailyRecords) ? d.dailyRecords : [])
+              .some((r) => r?.orderId === o.id)
+          )
+          .map((o) => ({
+            id: `DR-${Date.now()}-${o.id}`,
+            orderId: o.id,
+            date: o.deliveryDate,
+            driverId: o.assignedDriverId || "",
+            customerId: o.customerId || "",
+            jobTypeId: o.jobTypeId || "",
+            count: 1,
+            distance: o.distance || "",
+            hours: o.hours || "",
+            salesAmount: Number(o.amount) || 0,
+            driverAmount: 0,
+            note: `受注 ${o.id} より自動連携`,
+          })),
+      ],
     }));
   }, [data?.orders, setData]);
 
