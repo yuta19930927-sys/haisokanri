@@ -4951,13 +4951,12 @@ const TenantsPage = ({ tenantId, userRole }) => {
   const [plan, setPlan] = useState("standard");
   const [saving, setSaving] = useState(false);
   const [tenantFormError, setTenantFormError] = useState(null);
-  const [inviteError, setInviteError] = useState(null);
   const [usersModalTenant, setUsersModalTenant] = useState(null);
   const [profiles, setProfiles] = useState([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteTenantId, setInviteTenantId] = useState(null);
-  const [inviteModalOpen, setInviteModalOpen] = useState(false);
+  const [inviteTenantId, setInviteTenantId] = useState("");
+  const [inviting, setInviting] = useState(false);
 
   const loadTenants = async () => {
     setLoading(true);
@@ -5033,18 +5032,50 @@ const TenantsPage = ({ tenantId, userRole }) => {
     setRows((prev) => [data, ...prev.filter((r) => r?.id !== data?.id)]);
   };
 
-  const openInviteModal = () => {
-    const em = String(inviteEmail || "").trim();
-    if (!em) {
-      setInviteError("招待先のメールアドレスを入力してください");
-      return;
+  const handleInvite = async () => {
+    if (inviting) return;
+    const emailTrim = String(inviteEmail || "").trim();
+    const tenantIdVal = String(inviteTenantId || "").trim();
+    if (!emailTrim || !tenantIdVal) return;
+    setInviting(true);
+    try {
+      const tempPassword = Math.random().toString(36).slice(-12) + "Aa1!";
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: emailTrim,
+        password: tempPassword,
+        options: {
+          data: {
+            role: "admin",
+            tenant_id: tenantIdVal,
+          },
+        },
+      });
+      if (signUpError) throw signUpError;
+
+      if (signUpData?.user?.id) {
+        const { error: profileErr } = await supabase.from("profiles").upsert({
+          id: signUpData.user.id,
+          email: emailTrim,
+          role: "admin",
+          tenant_id: tenantIdVal,
+        });
+        if (profileErr) throw profileErr;
+      }
+
+      await supabase.auth.resetPasswordForEmail(emailTrim, {
+        redirectTo: "https://haisokanri.vercel.app/reset-password",
+      });
+
+      alert(
+        `${emailTrim} に招待メールを送信しました！\nメールのリンクからパスワードを設定してもらってください。`
+      );
+      setInviteEmail("");
+      setInviteTenantId("");
+    } catch (err) {
+      alert("エラー: " + (err?.message || String(err)));
+    } finally {
+      setInviting(false);
     }
-    if (!inviteTenantId) {
-      setInviteError("テナントを選択してください");
-      return;
-    }
-    setInviteError(null);
-    setInviteModalOpen(true);
   };
 
   if (!isSuper) {
@@ -5126,14 +5157,11 @@ const TenantsPage = ({ tenantId, userRole }) => {
       <Panel title="ユーザー招待" icon={<Icon size={16}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></Icon>}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", maxWidth: "640px" }}>
           <Fl label="招待先テナント">
-            <RetroSelect
-              value={inviteTenantId || ""}
-              onChange={(e) => setInviteTenantId(e.target.value || null)}
-            >
+            <RetroSelect value={inviteTenantId} onChange={(e) => setInviteTenantId(e.target.value)}>
               <option value="">選択してください</option>
               {rows.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.name} ({r.slug})
+                  {r.name}
                 </option>
               ))}
             </RetroSelect>
@@ -5142,16 +5170,18 @@ const TenantsPage = ({ tenantId, userRole }) => {
             <RetroInput
               type="email"
               value={inviteEmail}
-              onChange={(e) => { setInviteEmail(e.target.value); setInviteError(null); }}
+              onChange={(e) => setInviteEmail(e.target.value)}
               placeholder="user@example.com"
             />
           </Fl>
         </div>
-        {inviteError && (
-          <div style={{ fontSize: "12px", color: "#c62828", marginTop: "8px" }}>{inviteError}</div>
-        )}
         <div style={{ marginTop: "12px" }}>
-          <RetroBtn onClick={openInviteModal}>招待メールを送る</RetroBtn>
+          <RetroBtn
+            onClick={handleInvite}
+            style={{ opacity: inviting ? 0.75 : 1 }}
+          >
+            {inviting ? "送信中..." : "招待メールを送る"}
+          </RetroBtn>
         </div>
       </Panel>
 
@@ -5173,18 +5203,6 @@ const TenantsPage = ({ tenantId, userRole }) => {
         </Modal>
       )}
 
-      {inviteModalOpen && (
-        <Modal title="ユーザー追加の手順" icon={<Icon size={14}><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></Icon>} onClose={() => setInviteModalOpen(false)} width={520}>
-          <div style={{ fontSize: "13px", color: UI.text, lineHeight: 1.6 }}>
-            Supabaseの管理画面 → Authentication → Users → Add user でメールアドレス:{" "}
-            <strong>{String(inviteEmail || "").trim()}</strong> を追加し、profilesテーブルのtenant_idに{" "}
-            <strong>{inviteTenantId}</strong> を設定してください。
-          </div>
-          <div style={{ marginTop: "16px", display: "flex", justifyContent: "flex-end" }}>
-            <RetroBtn onClick={() => setInviteModalOpen(false)}>閉じる</RetroBtn>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 };
