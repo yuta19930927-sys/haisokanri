@@ -4937,6 +4937,258 @@ const VehiclesPage = ({ data, setData, tenantId, userRole }) => {
     </div>
   );
 };
+
+const menuVisibleForRole = (m, userRole) =>
+  m.id !== "tenants" || userRole === "super_admin";
+
+const TenantsPage = ({ tenantId, userRole }) => {
+  const isSuper = userRole === "super_admin";
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [plan, setPlan] = useState("standard");
+  const [saving, setSaving] = useState(false);
+  const [tenantFormError, setTenantFormError] = useState(null);
+  const [inviteError, setInviteError] = useState(null);
+  const [usersModalTenant, setUsersModalTenant] = useState(null);
+  const [profiles, setProfiles] = useState([]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteTenantId, setInviteTenantId] = useState(null);
+  const [inviteModalOpen, setInviteModalOpen] = useState(false);
+
+  const loadTenants = async () => {
+    setLoading(true);
+    setLoadError(null);
+    const { data, error } = await supabase
+      .from("tenants")
+      .select("id, name, slug, plan, is_active, created_at")
+      .order("created_at", { ascending: false });
+    if (error) {
+      setLoadError(error.message);
+      setRows([]);
+    } else {
+      setRows(data || []);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (!isSuper) {
+      setLoading(false);
+      return;
+    }
+    loadTenants();
+  }, [isSuper]);
+
+  const openUsersModal = async (t) => {
+    setUsersModalTenant(t);
+    setProfiles([]);
+    setProfilesLoading(true);
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, role")
+      .eq("tenant_id", t.id)
+      .order("id", { ascending: true });
+    if (error) {
+      console.warn("Failed to load profiles:", error);
+      setProfiles([]);
+    } else {
+      setProfiles(data || []);
+    }
+    setProfilesLoading(false);
+  };
+
+  const slugOk = (s) => /^[a-zA-Z0-9-]+$/.test(String(s || ""));
+
+  const saveNewTenant = async () => {
+    if (saving) return;
+    setTenantFormError(null);
+    const n = String(name || "").trim();
+    const sl = String(slug || "").trim().toLowerCase();
+    if (!n) {
+      setTenantFormError("会社名を入力してください");
+      return;
+    }
+    if (!slugOk(sl)) {
+      setTenantFormError("スラッグは英数字・ハイフンのみで入力してください");
+      return;
+    }
+    setSaving(true);
+    const { data, error } = await supabase
+      .from("tenants")
+      .insert({ name: n, slug: sl, plan, features: {}, is_active: true })
+      .select()
+      .single();
+    setSaving(false);
+    if (error) {
+      setTenantFormError(error.message || "保存に失敗しました");
+      return;
+    }
+    setName("");
+    setSlug("");
+    setPlan("standard");
+    setRows((prev) => [data, ...prev.filter((r) => r?.id !== data?.id)]);
+  };
+
+  const openInviteModal = () => {
+    const em = String(inviteEmail || "").trim();
+    if (!em) {
+      setInviteError("招待先のメールアドレスを入力してください");
+      return;
+    }
+    if (!inviteTenantId) {
+      setInviteError("テナントを選択してください");
+      return;
+    }
+    setInviteError(null);
+    setInviteModalOpen(true);
+  };
+
+  if (!isSuper) {
+    return (
+      <Panel title="テナント管理" icon={<span style={{ fontSize: "16px" }}>🏢</span>}>
+        <div style={{ fontSize: "13px", color: "#c62828", fontWeight: 700 }}>アクセス権限がありません</div>
+        <div style={{ fontSize: "12px", color: UI.textMuted, marginTop: "8px" }}>
+          この画面は super_admin のみ利用できます。
+        </div>
+      </Panel>
+    );
+  }
+
+  const tableRows = rows.map((r) => [
+    r?.name ?? "—",
+    r?.slug ?? "—",
+    r?.plan ?? "—",
+    typeof r?.is_active === "boolean" ? (r.is_active ? "有効" : "無効") : String(r?.is_active ?? "—"),
+    r?.created_at ? String(r.created_at).slice(0, 10) : "—",
+    <RetroBtn key={`u-${r?.id}`} small onClick={() => openUsersModal(r)}>
+      ユーザー一覧
+    </RetroBtn>,
+  ]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      <Panel title="テナント一覧" icon={<span style={{ fontSize: "16px" }}>🏢</span>}>
+        {loading && <div style={{ fontSize: "12px", color: UI.textMuted }}>読み込み中…</div>}
+        {loadError && (
+          <div style={{ fontSize: "12px", color: "#c62828", marginBottom: "8px" }}>{loadError}</div>
+        )}
+        {!loading && !loadError && (
+          <div style={{ maxHeight: "360px", overflow: "auto" }}>
+            <RetroTable
+              headers={["名前", "スラッグ", "プラン", "状態", "作成日", ""]}
+              rows={tableRows}
+            />
+          </div>
+        )}
+        {!loading && (
+          <div style={{ marginTop: "10px" }}>
+            <RetroBtn small onClick={loadTenants} style={{ borderColor: UI.accent, color: UI.accent }}>
+              再読込
+            </RetroBtn>
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="新規テナント追加" icon={<Icon size={16}><path d="M12 5v14M5 12h14"/></Icon>}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", maxWidth: "640px" }}>
+          <Fl label="会社名（name）">
+            <RetroInput value={name} onChange={(e) => setName(e.target.value)} placeholder="例：株式会社サンプル" />
+          </Fl>
+          <Fl label="スラッグ（slug）※英数字・ハイフンのみ">
+            <RetroInput
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+              placeholder="例：sample-corp"
+            />
+          </Fl>
+          <Fl label="プラン">
+            <RetroSelect value={plan} onChange={(e) => setPlan(e.target.value)}>
+              <option value="standard">standard</option>
+              <option value="pro">pro</option>
+              <option value="elite">elite</option>
+            </RetroSelect>
+          </Fl>
+        </div>
+        {tenantFormError && (
+          <div style={{ fontSize: "12px", color: "#c62828", marginTop: "8px" }}>{tenantFormError}</div>
+        )}
+        <div style={{ marginTop: "12px" }}>
+          <RetroBtn onClick={saveNewTenant} style={{ background: UI.accent, borderColor: UI.accent, color: "#fff", opacity: saving ? 0.7 : 1 }}>
+            {saving ? "保存中…" : "テナントを保存"}
+          </RetroBtn>
+        </div>
+      </Panel>
+
+      <Panel title="ユーザー招待" icon={<Icon size={16}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></Icon>}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", maxWidth: "640px" }}>
+          <Fl label="招待先テナント">
+            <RetroSelect
+              value={inviteTenantId || ""}
+              onChange={(e) => setInviteTenantId(e.target.value || null)}
+            >
+              <option value="">選択してください</option>
+              {rows.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name} ({r.slug})
+                </option>
+              ))}
+            </RetroSelect>
+          </Fl>
+          <Fl label="メールアドレス">
+            <RetroInput
+              type="email"
+              value={inviteEmail}
+              onChange={(e) => { setInviteEmail(e.target.value); setInviteError(null); }}
+              placeholder="user@example.com"
+            />
+          </Fl>
+        </div>
+        {inviteError && (
+          <div style={{ fontSize: "12px", color: "#c62828", marginTop: "8px" }}>{inviteError}</div>
+        )}
+        <div style={{ marginTop: "12px" }}>
+          <RetroBtn onClick={openInviteModal}>招待メールを送る</RetroBtn>
+        </div>
+      </Panel>
+
+      {usersModalTenant && (
+        <Modal
+          title={`ユーザー一覧 — ${usersModalTenant.name || ""}`}
+          icon={<Icon size={14}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></Icon>}
+          onClose={() => setUsersModalTenant(null)}
+          width={560}
+        >
+          {profilesLoading ? (
+            <div style={{ fontSize: "12px", color: UI.textMuted }}>読み込み中…</div>
+          ) : (
+            <RetroTable
+              headers={["ユーザーID", "ロール"]}
+              rows={profiles.map((p) => [p?.id ?? "—", p?.role ?? "—"])}
+            />
+          )}
+        </Modal>
+      )}
+
+      {inviteModalOpen && (
+        <Modal title="ユーザー追加の手順" icon={<Icon size={14}><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></Icon>} onClose={() => setInviteModalOpen(false)} width={520}>
+          <div style={{ fontSize: "13px", color: UI.text, lineHeight: 1.6 }}>
+            Supabaseの管理画面 → Authentication → Users → Add user でメールアドレス:{" "}
+            <strong>{String(inviteEmail || "").trim()}</strong> を追加し、profilesテーブルのtenant_idに{" "}
+            <strong>{inviteTenantId}</strong> を設定してください。
+          </div>
+          <div style={{ marginTop: "16px", display: "flex", justifyContent: "flex-end" }}>
+            <RetroBtn onClick={() => setInviteModalOpen(false)}>閉じる</RetroBtn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
 // ===== MAIN =====
 const MENU = [
   { id:"dashboard", icon:<Icon size={16}><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></Icon>, label:"ダッシュボード", section:"メイン" },
@@ -4950,6 +5202,7 @@ const MENU = [
   { id:"bank",      icon:<Icon size={16}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>, label:"口座・入金", section:"経理" },
   { id:"sales_mgmt", icon:<Icon size={16}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>, label:"売上管理", section:"経理" },
   { id:"quality_mgmt", icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績・品質管理", section:"経理" },
+  { id:"tenants", label:"テナント管理", icon:"🏢", section:"admin" },
 ];
 
 const TABLE_CONFIG = [
@@ -5310,10 +5563,16 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
 
   const badges = { dispatch:pendingCount, bank:unmatchedCount+overdueCount };
 
-  const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, drivers:DriversPage, vehicles:VehiclesPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage, sales_mgmt: SalesMgmtPage, quality_mgmt: QualityMgmtPage };
+  const pages = { dashboard:DashboardPage, calendar:CalendarPage, orders:OrdersPage, dispatch:DispatchPage, drivers:DriversPage, vehicles:VehiclesPage, customers:CustomersPage, invoices:InvoicesPage, bank:BankPage, sales_mgmt: SalesMgmtPage, quality_mgmt: QualityMgmtPage, tenants: TenantsPage };
   const PageComponent = pages[page];
 
-  const sectionOrder = ["メイン", "案件管理", "マスタ管理", "経理"];
+  const sectionOrder = [
+    { key: "メイン", label: "メイン" },
+    { key: "案件管理", label: "案件管理" },
+    { key: "マスタ管理", label: "マスタ管理" },
+    { key: "経理", label: "経理" },
+    { key: "admin", label: "管理者" },
+  ];
   return (
     <div style={{ minHeight:"100vh", background:UI.mainBg, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", color:UI.text }}>
       <div style={{ background:"#fff", borderBottom:cardBorder, height:"48px", display:"flex", alignItems:"center", padding:"0 14px", gap:"10px" }}>
@@ -5363,23 +5622,29 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               <div style={{ background:"#fff", border:cardBorder, borderRadius:"4px", padding:"6px 8px", fontSize:"12px", color:"#333", marginBottom:"6px" }}>T-LINK 本社</div>
               <div style={{ fontSize:"11px", color:"#888" }}>{now.getFullYear()}年{now.getMonth()+1}月{now.getDate()}日 {now.getHours()}:{String(now.getMinutes()).padStart(2,"0")}</div>
             </div>
-            {sectionOrder.map((section)=>(
-              <div key={section} style={{ marginBottom:"10px" }}>
-                <div style={{ fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"4px" }}>{section}</div>
-                <div style={{ display:"flex", flexDirection:"column", gap:"2px" }}>
-                  {MENU.filter((m)=>m.section===section).map((m)=>(
-                    <MenuBtn key={m.id} icon={m.icon} label={m.label} onClick={()=>setPageWithHistory(m.id)} active={page===m.id} badge={badges[m.id]||0}/>
-                  ))}
+            {sectionOrder.map((section)=>{
+              const items = MENU.filter(
+                (m) => m.section === section.key && menuVisibleForRole(m, userRole)
+              );
+              if (items.length === 0) return null;
+              return (
+                <div key={section.key} style={{ marginBottom:"10px" }}>
+                  <div style={{ fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"4px" }}>{section.label}</div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:"2px" }}>
+                    {items.map((m)=>(
+                      <MenuBtn key={m.id} icon={m.icon} label={m.label} onClick={()=>setPageWithHistory(m.id)} active={page===m.id} badge={badges[m.id]||0}/>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </aside>
         )}
 
         <main style={{ flex:1, padding:isMobile ? "10px" : "14px", overflow:"auto" }}>
           {isMobile && menuOpen && (
             <div style={{ background:UI.sidebarBg, border:`1px solid ${UI.sidebarBorder}`, borderRadius:"6px", padding:"8px", marginBottom:"10px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px" }}>
-              {MENU.map((m)=>(
+              {MENU.filter((m)=>menuVisibleForRole(m, userRole)).map((m)=>(
                 <button key={m.id} onClick={()=>{setPageWithHistory(m.id);setMenuOpen(false);}} style={{ border:cardBorder, background:page===m.id?"#e8f5f4":"#fff", borderRadius:"4px", padding:"8px", display:"flex", alignItems:"center", gap:"6px", color:"#333", fontSize:"12px", fontWeight:600 }}>
                   {m.icon}{m.label}
                 </button>
