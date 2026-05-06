@@ -5488,6 +5488,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const [tenantId, setTenantId] = useState(null);
   const [userRole, setUserRole] = useState(null);
   const [profileResolved, setProfileResolved] = useState(false);
+  const [notifications, setNotifications] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const previousDataRef = useRef(createEmptyData());
@@ -5702,7 +5703,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           </button>
           <button onClick={()=>setShowNotifications(v=>!v)} style={{ position:"relative", border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
             <Icon size={18}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 6-3 8h18c0-2-3-1-3-8"/><path d="M10 19a2 2 0 0 0 4 0"/></Icon>
-            <span style={{ position:"absolute", top:"0", right:"0", width:"7px", height:"7px", borderRadius:"50%", background:"#e63946" }} />
+            {notifications.length > 0 && (
+              <span style={{ position:"absolute", top:"0", right:"0", width:"7px", height:"7px", borderRadius:"50%", background:"#e63946" }} />
+            )}
           </button>
           {!isMobile && (
             <>
