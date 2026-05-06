@@ -67,6 +67,140 @@ const tabBtn = (active) => ({
   fontSize: "13px",
 });
 
+const ResetPasswordPage = ({ onComplete }) => {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleReset = async () => {
+    setError(null);
+    if (password !== confirm) {
+      setError("パスワードが一致しません");
+      return;
+    }
+    if (password.length < 8) {
+      setError("パスワードは8文字以上にしてください");
+      return;
+    }
+    setLoading(true);
+    const { error: updateErr } = await supabase.auth.updateUser({ password });
+    if (updateErr) {
+      setError(updateErr.message);
+    } else {
+      alert("パスワードを設定しました！ログインしてください。");
+      onComplete();
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#f5f5f5",
+        fontFamily: "'Noto Sans JP', sans-serif",
+      }}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "12px",
+          padding: "40px",
+          width: "400px",
+          maxWidth: "calc(100vw - 24px)",
+          boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
+          boxSizing: "border-box",
+        }}
+      >
+        <div
+          style={{
+            background: "#00a09a",
+            margin: "-40px -40px 24px",
+            padding: "20px 40px",
+            borderRadius: "12px 12px 0 0",
+            color: "#fff",
+            fontSize: "16px",
+            fontWeight: 700,
+          }}
+        >
+          ハコマネ - パスワード設定
+        </div>
+        <p style={{ fontSize: "13px", color: "#666", marginBottom: "20px" }}>
+          新しいパスワードを設定してください
+        </p>
+        <div style={{ marginBottom: "16px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: "#333", display: "block" }}>
+            新しいパスワード
+          </label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="8文字以上"
+            autoComplete="new-password"
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              border: "1px solid #ddd",
+              borderRadius: "6px",
+              fontSize: "14px",
+              marginTop: "4px",
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
+        <div style={{ marginBottom: "20px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: "#333", display: "block" }}>
+            パスワード確認
+          </label>
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder="もう一度入力"
+            autoComplete="new-password"
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              border: "1px solid #ddd",
+              borderRadius: "6px",
+              fontSize: "14px",
+              marginTop: "4px",
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
+        {error && (
+          <p style={{ color: "#e53935", fontSize: "12px", marginBottom: "12px" }}>{error}</p>
+        )}
+        <button
+          type="button"
+          onClick={handleReset}
+          disabled={loading}
+          style={{
+            width: "100%",
+            padding: "12px",
+            background: "#00a09a",
+            color: "#fff",
+            border: "none",
+            borderRadius: "6px",
+            fontSize: "14px",
+            fontWeight: 700,
+            cursor: loading ? "not-allowed" : "pointer",
+            fontFamily: "'Noto Sans JP', sans-serif",
+          }}
+        >
+          {loading ? "設定中..." : "パスワードを設定する"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
   const isMobile = useIsMobile();
   const [authReady, setAuthReady] = useState(false);
@@ -77,6 +211,7 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -140,7 +275,10 @@ export default function App() {
       if (!cancelled) setAuthReady(true);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY" && !cancelled) {
+        setShowResetPassword(true);
+      }
       void syncProfile(session).catch((e) => {
         console.warn("onAuthStateChange:", e);
         if (!cancelled) {
@@ -205,6 +343,17 @@ export default function App() {
       <div style={{ minHeight: "100vh", background: "#f7f8f9", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Noto Sans JP', sans-serif" }}>
         <p style={{ color: "#555" }}>認証情報を確認しています…</p>
       </div>
+    );
+  }
+
+  if (showResetPassword) {
+    return (
+      <ResetPasswordPage
+        onComplete={() => {
+          setShowResetPassword(false);
+          void supabase.auth.signOut();
+        }}
+      />
     );
   }
 
