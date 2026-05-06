@@ -5659,6 +5659,119 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     };
   }, [isLoaded, tenantId]);
 
+  useEffect(() => {
+    if (!isLoaded || !tenantId) return;
+
+    const today = new Date();
+    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    const isLastDay = today.getDate() === lastDayOfMonth;
+    if (!isLastDay) return;
+
+    const currentMonth = today.toISOString().slice(0, 7);
+    const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+
+    const customers = Array.isArray(data?.customers) ? data.customers : [];
+    const qualityRecords = Array.isArray(data?.qualityRecords) ? data.qualityRecords : [];
+    const dailyRecords = Array.isArray(data?.dailyRecords) ? data.dailyRecords : [];
+    const orders = Array.isArray(data?.orders) ? data.orders : [];
+    void orders;
+
+    const customerSales = {};
+
+    qualityRecords
+      .filter((r) => r?.date?.startsWith(currentMonth) && r?.customerId && r?.salesAmount)
+      .forEach((r) => {
+        if (!customerSales[r.customerId]) customerSales[r.customerId] = { items: [], total: 0 };
+        customerSales[r.customerId].items.push({
+          date: r.date,
+          description: `実績 ${r.date}`,
+          amount: Number(r.salesAmount),
+        });
+        customerSales[r.customerId].total += Number(r.salesAmount);
+      });
+
+    dailyRecords
+      .filter((r) => r?.date?.startsWith(currentMonth) && r?.customerId && r?.salesAmount)
+      .forEach((r) => {
+        if (!customerSales[r.customerId]) customerSales[r.customerId] = { items: [], total: 0 };
+        customerSales[r.customerId].items.push({
+          date: r.date,
+          description: r.note || `配送 ${r.date}`,
+          amount: Number(r.salesAmount),
+        });
+        customerSales[r.customerId].total += Number(r.salesAmount);
+      });
+
+    const alreadyBilled = new Set(
+      invoices
+        .filter((inv) => {
+          const p = inv?.payload || inv;
+          return p?.salesMgmtMonth === currentMonth;
+        })
+        .map((inv) => (inv?.payload || inv)?.customerId)
+    );
+
+    const unbilledCustomers = Object.keys(customerSales)
+      .filter((cId) => !alreadyBilled.has(cId) && customerSales[cId].total > 0);
+
+    if (unbilledCustomers.length === 0) return;
+
+    const newInvoices = unbilledCustomers.map((customerId) => {
+      const customer = customers.find((c) => c?.id === customerId);
+      const sales = customerSales[customerId];
+      const subtotal = sales.total;
+      const tax = Math.round(subtotal * 0.1);
+      const total = subtotal + tax;
+      const issueDate = today.toISOString().slice(0, 10);
+      const dueDate = new Date(today.getFullYear(), today.getMonth() + 2, 0)
+        .toISOString().slice(0, 10);
+
+      return {
+        id: `INV-AUTO-${currentMonth}-${customerId}`,
+        _dbId: crypto.randomUUID(),
+        customerId,
+        customerName: customer?.name || customerId,
+        issueDate,
+        dueDate,
+        amount: subtotal,
+        tax,
+        total,
+        status: "unpaid",
+        bankRef: "",
+        paidDate: null,
+        note: `${currentMonth} 月次自動請求`,
+        salesMgmtMonth: currentMonth,
+        lineItems: sales.items.map((item, i) => ({
+          id: `LI-${Date.now()}-${i}`,
+          name: item.description,
+          qty: 1,
+          unitPrice: item.amount,
+          subtotal: item.amount,
+        })),
+        sentAt: null,
+        sentTo: "",
+      };
+    });
+
+    if (newInvoices.length === 0) return;
+
+    setData((d) => ({
+      ...d,
+      invoices: [...(Array.isArray(d?.invoices) ? d.invoices : []), ...newInvoices],
+    }));
+
+    setNotifications((prev) => [
+      ...prev,
+      {
+        id: `notif-${Date.now()}`,
+        type: "invoice",
+        message: `${currentMonth} の請求書を ${newInvoices.length}件 自動生成しました。内容を確認して送付してください。`,
+        createdAt: new Date().toISOString(),
+        read: false,
+      },
+    ]);
+  }, [isLoaded, tenantId, data?.qualityRecords, data?.dailyRecords]);
+
   const pendingCount = (Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="pending").length;
   const unmatchedCount = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched").length;
   const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
@@ -5718,6 +5831,60 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           )}
         </div>
       </div>
+
+      {showNotifications && (
+        <div style={{
+          position: "absolute",
+          top: "48px",
+          right: "60px",
+          width: "320px",
+          background: "#fff",
+          border: "1px solid #e0e0e0",
+          borderRadius: "8px",
+          boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
+          zIndex: 1000,
+          maxHeight: "400px",
+          overflowY: "auto"
+        }}>
+          <div style={{ padding:"12px 16px", borderBottom:"1px solid #eee", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span style={{ fontWeight:700, fontSize:"13px" }}>通知</span>
+            {notifications.length > 0 && (
+              <button
+                onClick={() => setNotifications([])}
+                style={{ fontSize:"11px", color:"#00a09a", border:"none", background:"none", cursor:"pointer" }}
+              >
+                全て既読
+              </button>
+            )}
+          </div>
+          {notifications.length === 0 ? (
+            <div style={{ padding:"20px", textAlign:"center", color:"#999", fontSize:"12px" }}>
+              通知はありません
+            </div>
+          ) : (
+            notifications.map((n) => (
+              <div key={n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #f5f5f5", background: n.read ? "#fff" : "#f0fffe" }}>
+                <div style={{ fontSize:"12px", color:"#333", marginBottom:"4px" }}>{n.message}</div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:"8px" }}>
+                  <div style={{ fontSize:"10px", color:"#999" }}>{n.createdAt?.slice(0,10)}</div>
+                  {!n.read && (
+                    <button
+                      onClick={() =>
+                        setNotifications((prev) =>
+                          prev.map((x) => (x.id === n.id ? { ...x, read: true } : x))
+                        )
+                      }
+                      style={{ fontSize:"11px", color:"#00a09a", border:"none", background:"none", cursor:"pointer" }}
+                    >
+                      既読
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
 
       <div style={{ display:"flex", minHeight:"calc(100vh - 48px)" }}>
         {!isMobile && (
@@ -5850,39 +6017,6 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         </Modal>
       )}
 
-      {showNotifications && (
-        <Modal title="通知センター" icon={<Icon size={14}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 6-3 8h18c0-2-3-1-3-8"/><path d="M10 19a2 2 0 0 0 4 0"/></Icon>} onClose={()=>setShowNotifications(false)} width={560}>
-          {(() => {
-            const today = new Date();
-            const in30 = new Date(); in30.setDate(today.getDate() + 30);
-            const fmt = d => d.toISOString().slice(0,10);
-            const todayStr = fmt(today);
-            const in30Str = fmt(in30);
-            const alerts = [];
-            (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v=>!v?.deleted).forEach(v => {
-              if (v?.nextInspection && v.nextInspection <= in30Str) alerts.push({ color:"#cc0099", text:`【車検期限】${v?.plate||v?.id} — ${v.nextInspection}` });
-              if (v?.insuranceExpiry && v.insuranceExpiry <= in30Str) alerts.push({ color:"#9b27af", text:`【任意保険更新】${v?.plate||v?.id} — ${v.insuranceExpiry}` });
-              if (v?.liabilityExpiry && v.liabilityExpiry <= in30Str) alerts.push({ color:"#7b1fa2", text:`【自賠責更新】${v?.plate||v?.id} — ${v.liabilityExpiry}` });
-              const history = v?.inspectionHistory || [];
-              const latest = [...history].sort((a,b)=>(b.date||"").localeCompare(a.date||""))[0];
-              if (latest?.nextDate && latest.nextDate <= in30Str) alerts.push({ color:"#e65100", text:`【点検期限】${v?.plate||v?.id} — ${latest.nextDate}` });
-            });
-            (Array.isArray(data?.drivers) ? data.drivers : []).filter(d=>!d?.deleted).forEach(d => {
-              if (d?.license_expiry && d.license_expiry <= in30Str) alerts.push({ color:"#9933cc", text:`【免許更新】${d?.name||d?.id} — ${d.license_expiry}` });
-            });
-            (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched").forEach(b => {
-              alerts.push({ color:"#ff9800", text:`【未照合入金】${b?.date} ¥${(Number(b?.amount)||0).toLocaleString()} ${b?.description||""}` });
-            });
-            if (alerts.length === 0) return <div style={{ fontSize:"12px", color:"#999", textAlign:"center", padding:"20px" }}>通知はありません</div>;
-            return alerts.map((a, i) => (
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:"10px", padding:"8px 10px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff", marginBottom:"6px" }}>
-                <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:a.color, flexShrink:0 }}/>
-                <span style={{ fontSize:"12px", color:"#333" }}>{a.text}</span>
-              </div>
-            ));
-          })()}
-        </Modal>
-      )}
     </div>
   );
 }
