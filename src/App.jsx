@@ -172,7 +172,10 @@ export default function App() {
         await supabase.auth.signOut();
         throw new Error("プロフィールがありません。Supabase で profiles を作成してください。");
       }
-      if (p.role !== loginRole) {
+      const adminTabOk =
+        loginRole === "admin" && (p.role === "admin" || p.role === "super_admin");
+      const driverTabOk = loginRole === "driver" && p.role === loginRole;
+      if (!adminTabOk && !driverTabOk) {
         await supabase.auth.signOut();
         throw new Error(
           loginRole === "admin"

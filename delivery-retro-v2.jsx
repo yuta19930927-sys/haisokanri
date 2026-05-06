@@ -5605,7 +5605,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           {!isMobile && (
             <>
               <div style={{ display:"flex", alignItems:"center", gap:"6px", color:"#666", fontSize:"12px" }}>
-                <span style={{ background:"#e8f5f4", color:"#007a74", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>{authRole === "admin" ? "管理者" : authRole === "driver" ? "ドライバー" : "ユーザー"}</span>
+                <span style={{ background:"#e8f5f4", color:"#007a74", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>{authRole === "admin" || authRole === "super_admin" ? "管理者" : authRole === "driver" ? "ドライバー" : "ユーザー"}</span>
                 <span>{authEmail || "-"}</span>
               </div>
               {typeof onLogout === "function" && <RetroBtn small onClick={onLogout}>ログアウト</RetroBtn>}
