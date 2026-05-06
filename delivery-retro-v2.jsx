@@ -1649,7 +1649,7 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole }) => {
 // ===== OTHER PAGES (simplified) =====
 const OrdersPage = ({ data, setData, tenantId, userRole }) => {
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+  const [form, setForm] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", pickupTime:"", deliveryTime:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   const [search, setSearch] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState(null);
   const [orderEditMode, setOrderEditMode] = useState(false);
@@ -1672,6 +1672,26 @@ const OrdersPage = ({ data, setData, tenantId, userRole }) => {
   const statusNext = { pending:"scheduled", scheduled:"in_transit", in_transit:"delivered" };
   const statusPrev = { delivered:"in_transit", in_transit:"scheduled", scheduled:"pending" };
   const selectedOrder = orders.find((o) => o?.id === selectedOrderId) || null;
+
+  useEffect(() => {
+    if (!Array.isArray(data?.orders)) return;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const hasUpdate = data.orders.some(
+      (o) => o?.deliveryDate && o.deliveryDate < todayStr &&
+        o?.status !== "delivered" && o?.status !== "cancelled"
+    );
+    if (!hasUpdate) return;
+    setData((d) => ({
+      ...d,
+      orders: (Array.isArray(d?.orders) ? d.orders : []).map((o) => {
+        if (o?.deliveryDate && o.deliveryDate < todayStr &&
+            o?.status !== "delivered" && o?.status !== "cancelled") {
+          return { ...o, status: "delivered" };
+        }
+        return o;
+      }),
+    }));
+  }, [data?.orders, setData]);
 
   const openOrderDetail = (order) => {
     setSelectedOrderId(order?.id || null);
@@ -1712,9 +1732,31 @@ const OrdersPage = ({ data, setData, tenantId, userRole }) => {
         return { ...d, orders: nextOrders };
       }
 
+      const alreadyInSales = (Array.isArray(d?.dailyRecords) ? d.dailyRecords : [])
+        .some((r) => r?.orderId === targetOrder?.id);
+      const nextDailyRecords = alreadyInSales
+        ? (Array.isArray(d?.dailyRecords) ? d.dailyRecords : [])
+        : [
+            ...(Array.isArray(d?.dailyRecords) ? d.dailyRecords : []),
+            {
+              id: `DR-${Date.now()}`,
+              orderId: targetOrder?.id,
+              date: targetOrder?.deliveryDate,
+              driverId: targetOrder?.assignedDriverId || targetOrder?.driverId || "",
+              customerId: targetOrder?.customerId || "",
+              jobTypeId: targetOrder?.jobTypeId || "",
+              count: 1,
+              distance: targetOrder?.distance || "",
+              hours: targetOrder?.hours || "",
+              salesAmount: Number(targetOrder?.amount) || 0,
+              driverAmount: 0,
+              note: `受注 ${targetOrder?.id} より自動連携`,
+            },
+          ];
+
       const alreadyExists = currentInvoices.some((inv) => inv?.orderId === orderId);
       if (alreadyExists) {
-        return { ...d, orders: nextOrders };
+        return { ...d, orders: nextOrders, dailyRecords: nextDailyRecords };
       }
 
       const customer = currentCustomers.find((c) => c?.id === targetOrder?.customerId);
@@ -1758,6 +1800,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole }) => {
         orders: nextOrders,
         invoices: [nextInvoice, ...currentInvoices],
         events: nextEvents,
+        dailyRecords: nextDailyRecords,
       };
     });
   };
@@ -1774,9 +1817,9 @@ const OrdersPage = ({ data, setData, tenantId, userRole }) => {
   };
   const handleAdd = () => {
     const c = customers.find(x=>x.id===form.customerId);
-    const o = { id:`ORD-${String(orders.length+1).padStart(3,"0")}`, customerId:form.customerId, customerName:c?.name||"", deliveryType:form.deliveryType || "route", date:fmt(today.getDate()), deliveryDate:form.deliveryDate, from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, notes:form.notes };
+    const o = { id:`ORD-${String(orders.length+1).padStart(3,"0")}`, customerId:form.customerId, customerName:c?.name||"", deliveryType:form.deliveryType || "route", date:fmt(today.getDate()), deliveryDate:form.deliveryDate, pickupTime:form.pickupTime || "", deliveryTime:form.deliveryTime || "", from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, notes:form.notes };
     setData(d=>({ ...d, orders:[o,...(Array.isArray(d?.orders) ? d.orders : [])], events:[...(Array.isArray(d?.events) ? d.events : []),{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
-    setShowModal(false); setForm({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+    setShowModal(false); setForm({ customerId:"", deliveryType:"route", deliveryDate:"", pickupTime:"", deliveryTime:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   };
   const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
   const nextIcon = <Icon size={12}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></Icon>;
@@ -1841,6 +1884,24 @@ const OrdersPage = ({ data, setData, tenantId, userRole }) => {
               <option value="route">ルート配送</option>
               <option value="charter">チャーター便</option>
             </RetroSelect>
+          </Fl>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 12px" }}>
+          <Fl label="集荷時間">
+            <input
+              type="time"
+              value={form.pickupTime}
+              onChange={e => setForm(f => ({ ...f, pickupTime: e.target.value }))}
+              style={{ width:"100%", padding:"6px", border:"1px solid #ddd", borderRadius:"4px" }}
+            />
+          </Fl>
+          <Fl label="配達時間">
+            <input
+              type="time"
+              value={form.deliveryTime}
+              onChange={e => setForm(f => ({ ...f, deliveryTime: e.target.value }))}
+              style={{ width:"100%", padding:"6px", border:"1px solid #ddd", borderRadius:"4px" }}
+            />
           </Fl>
         </div>
         <Fl label="出発地"><RetroInput value={form.from} onChange={e=>setForm(f=>({...f,from:e.target.value}))}/></Fl>
