@@ -347,7 +347,7 @@ const EVENT_TYPE_LABEL = {
   task:"タスク", sales:"営業", bank_in:"入金", bank_out:"支出"
 };
 
-const CalendarPage = ({ data, setData, isMobile=false }) => {
+const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole }) => {
   const [calYear, setCalYear] = useState(y);
   const [calMonth, setCalMonth] = useState(mo);
   const [calMode, setCalMode] = useState("delivery");
@@ -870,7 +870,7 @@ const CalendarPage = ({ data, setData, isMobile=false }) => {
 };
 
 // ===== BANK PAGE =====
-const BankPage = ({ data, setData }) => {
+const BankPage = ({ data, setData, tenantId, userRole }) => {
   const [bankTransactions, setBankTransactions] = useState(Array.isArray(data?.bankTransactions) ? data.bankTransactions : []);
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
   const customers = Array.isArray(data?.customers) ? data.customers : [];
@@ -1543,7 +1543,7 @@ const BankPage = ({ data, setData }) => {
 };
 
 // ===== DASHBOARD =====
-const DashboardPage = ({ data, setData, setPage }) => {
+const DashboardPage = ({ data, setData, setPage, tenantId, userRole }) => {
   const events = Array.isArray(data?.events) ? data.events : [];
   const bankTransactions = Array.isArray(data?.bankTransactions) ? data.bankTransactions : [];
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
@@ -1647,7 +1647,7 @@ const DashboardPage = ({ data, setData, setPage }) => {
 };
 
 // ===== OTHER PAGES (simplified) =====
-const OrdersPage = ({ data, setData }) => {
+const OrdersPage = ({ data, setData, tenantId, userRole }) => {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
   const [search, setSearch] = useState("");
@@ -1928,7 +1928,7 @@ const OrdersPage = ({ data, setData }) => {
   );
 };
 
-const DispatchPage = ({ data, setData }) => {
+const DispatchPage = ({ data, setData, tenantId, userRole }) => {
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
   const vehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
@@ -1980,7 +1980,7 @@ const DispatchPage = ({ data, setData }) => {
   );
 };
 
-const CustomersPage = ({ data, setData }) => {
+const CustomersPage = ({ data, setData, tenantId, userRole }) => {
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const [showModal, setShowModal] = useState(false);
@@ -2196,7 +2196,7 @@ const CustomersPage = ({ data, setData }) => {
   );
 };
 
-const QualityMgmtPage = ({ data, setData }) => {
+const QualityMgmtPage = ({ data, setData, tenantId, userRole }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const qualityRecords = Array.isArray(data?.qualityRecords) ? data.qualityRecords : [];
   const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
@@ -2975,7 +2975,7 @@ const QualityMgmtPage = ({ data, setData }) => {
     </div>
   );
 };
-const SalesMgmtPage = ({ data, setData }) => {
+const SalesMgmtPage = ({ data, setData, tenantId, userRole }) => {
   const qualityRecords = Array.isArray(data?.qualityRecords) ? data.qualityRecords : [];
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
@@ -3474,7 +3474,7 @@ const SalesMgmtPage = ({ data, setData }) => {
   );
 };
 
-const InvoicesPage = ({ data, setData }) => {
+const InvoicesPage = ({ data, setData, tenantId, userRole }) => {
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
   const events = Array.isArray(data?.events) ? data.events : [];
@@ -4094,7 +4094,7 @@ const DriversHealthFormTab = ({ form, setForm }) => {
   );
 };
 
-const DriversPage = ({ data, setData }) => {
+const DriversPage = ({ data, setData, tenantId, userRole }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
   const allCustomers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
@@ -4622,7 +4622,7 @@ const DriversPage = ({ data, setData }) => {
   );
 };
 
-const VehiclesPage = ({ data, setData }) => {
+const VehiclesPage = ({ data, setData, tenantId, userRole }) => {
   const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => !v?.deleted);
   const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
   const [showModal, setShowModal] = useState(false);
@@ -4981,15 +4981,16 @@ const createEmptyData = () => ({
   qualityRecords: [],
 });
 
-const fetchDataFromSupabase = async () => {
+const fetchDataFromSupabase = async (tenantId) => {
   const nextData = createEmptyData();
 
   const results = await Promise.all(
     TABLE_CONFIG.map(async ({ key, table, single }) => {
-      const { data: rows, error } = await supabase
-        .from(table)
-        .select("id,payload")
-        .order("id", { ascending: true });
+      let q = supabase.from(table).select("id,payload").order("id", { ascending: true });
+      if (tenantId != null) {
+        q = q.eq("tenant_id", tenantId);
+      }
+      const { data: rows, error } = await q;
       return { key, rows, error, single };
     })
   );
@@ -5020,7 +5021,7 @@ const fetchDataFromSupabase = async () => {
 };
 
 /** invoices 行を Supabase upsert 用 { id, payload } に変換（行PKは uuid、payload.id は請求番号） */
-const invoiceRowToUpsert = (row) => {
+const invoiceRowToUpsert = (row, tenantId) => {
   if (!row) return null;
   let payload;
   let dbId;
@@ -5036,38 +5037,44 @@ const invoiceRowToUpsert = (row) => {
   if (!dbId) {
     dbId = crypto.randomUUID();
   }
-  return { id: dbId, payload };
+  return { id: dbId, payload, tenant_id: tenantId || null };
 };
 
-const saveDataToSupabase = async (nextData, prevData) => {
+const saveDataToSupabase = async (nextData, prevData, tenantId) => {
   const jobs = TABLE_CONFIG.map(async ({ key, table, single }) => {
     const currentRows = single
-      ? (nextData[key] ? [{ id: nextData[key]?.id || "COMPANY-001", payload: nextData[key] }] : [])
+      ? (nextData[key]
+          ? [{ id: nextData[key]?.id || "COMPANY-001", payload: nextData[key], tenant_id: tenantId || null }]
+          : [])
       : (Array.isArray(nextData[key]) ? nextData[key] : [])
-          .filter((row) => row && row.id && (key !== "invoices" || invoiceRowToUpsert(row)))
+          .filter((row) => row && row.id && (key !== "invoices" || invoiceRowToUpsert(row, tenantId)))
           .map((row) => {
-            if (key === "invoices") return invoiceRowToUpsert(row);
+            if (key === "invoices") return invoiceRowToUpsert(row, tenantId);
             if (key === "qualityRecords") return {
               id: row.id,
               payload: row,
               driverid: row.driverId || null,
-              date: row.date || null
+              date: row.date || null,
+              tenant_id: tenantId || null
             };
-            return { id: row.id, payload: row };
+            return { id: row.id, payload: row, tenant_id: tenantId || null };
           });
     const previousRows = single
-      ? (prevData[key] ? [{ id: prevData[key]?.id || "COMPANY-001", payload: prevData[key] }] : [])
+      ? (prevData[key]
+          ? [{ id: prevData[key]?.id || "COMPANY-001", payload: prevData[key], tenant_id: tenantId || null }]
+          : [])
       : (Array.isArray(prevData[key]) ? prevData[key] : [])
-          .filter((row) => row && row.id && (key !== "invoices" || invoiceRowToUpsert(row)))
+          .filter((row) => row && row.id && (key !== "invoices" || invoiceRowToUpsert(row, tenantId)))
           .map((row) => {
-            if (key === "invoices") return invoiceRowToUpsert(row);
+            if (key === "invoices") return invoiceRowToUpsert(row, tenantId);
             if (key === "qualityRecords") return {
               id: row.id,
               payload: row,
               driverid: row.driverId || null,
-              date: row.date || null
+              date: row.date || null,
+              tenant_id: tenantId || null
             };
-            return { id: row.id, payload: row };
+            return { id: row.id, payload: row, tenant_id: tenantId || null };
           });
 
     if (currentRows.length > 0) {
@@ -5123,6 +5130,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const [menuOpen, setMenuOpen] = useState(false);
   const [data, setData] = useState(initialData);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [tenantId, setTenantId] = useState(null);
+  const [userRole, setUserRole] = useState(null);
+  const [profileResolved, setProfileResolved] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const previousDataRef = useRef(createEmptyData());
@@ -5134,15 +5144,45 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const now = new Date();
 
   useEffect(() => {
+    const fetchProfile = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("tenant_id, role")
+          .eq("id", user.id)
+          .single();
+        if (profile) {
+          setTenantId(profile.tenant_id);
+          setUserRole(profile.role);
+        }
+      } finally {
+        setProfileResolved(true);
+      }
+    };
+    fetchProfile();
+  }, []);
+
+  useEffect(() => {
     latestDataRef.current = data;
   }, [data]);
 
   useEffect(() => {
+    if (!profileResolved) return;
+
+    if (tenantId == null) {
+      setIsLoaded(true);
+      previousDataRef.current = cloneData(initialData);
+      latestDataRef.current = initialData;
+      return;
+    }
+
     let alive = true;
 
     const load = async () => {
       try {
-        const remoteData = await fetchDataFromSupabase();
+        const remoteData = await fetchDataFromSupabase(tenantId);
         const hasRemoteData = TABLE_CONFIG.some(({ key, single }) =>
           single ? !!remoteData[key] : (remoteData[key] || []).length > 0
         );
@@ -5155,7 +5195,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           previousDataRef.current = cloneData(merged);
           latestDataRef.current = merged;
         } else {
-          await saveDataToSupabase(initialData, createEmptyData());
+          await saveDataToSupabase(initialData, createEmptyData(), tenantId);
           setData(initialData);
           previousDataRef.current = cloneData(initialData);
           latestDataRef.current = initialData;
@@ -5176,7 +5216,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     return () => {
       alive = false;
     };
-  }, []);
+  }, [profileResolved, tenantId]);
 
   useEffect(() => {
     window.history.replaceState({ appPage: "dashboard" }, "", window.location.href);
@@ -5219,7 +5259,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   };
 
   useEffect(() => {
-    if (!isLoaded) return;
+    if (!isLoaded || tenantId == null) return;
 
     const gen = ++saveGenerationRef.current;
     const snapshot = cloneData(data);
@@ -5227,7 +5267,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     saveChainRef.current = saveChainRef.current.then(async () => {
       if (saveGenerationRef.current !== gen) return;
       try {
-        await saveDataToSupabase(snapshot, previousDataRef.current);
+        await saveDataToSupabase(snapshot, previousDataRef.current, tenantId);
         if (saveGenerationRef.current === gen) {
           previousDataRef.current = cloneData(snapshot);
         }
@@ -5237,16 +5277,16 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     });
 
     return () => {};
-  }, [data, isLoaded]);
+  }, [data, isLoaded, tenantId]);
 
   useEffect(() => {
-    if (!isLoaded) return;
+    if (!isLoaded || tenantId == null) return;
 
     const flush = () => {
       const snapshot = cloneData(latestDataRef.current);
       saveChainRef.current = saveChainRef.current.then(async () => {
         try {
-          await saveDataToSupabase(snapshot, previousDataRef.current);
+          await saveDataToSupabase(snapshot, previousDataRef.current, tenantId);
           previousDataRef.current = cloneData(snapshot);
         } catch (error) {
           console.warn("Failed to flush save to Supabase:", error);
@@ -5261,7 +5301,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     return () => {
       window.removeEventListener("pagehide", onPageHide);
     };
-  }, [isLoaded]);
+  }, [isLoaded, tenantId]);
 
   const pendingCount = (Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="pending").length;
   const unmatchedCount = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched").length;
@@ -5355,7 +5395,14 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               データを読み込んでいます...
             </div>
           ) : (
-            <PageComponent data={data} setData={setData} setPage={setPageWithHistory} isMobile={isMobile}/>
+            <PageComponent
+              data={data}
+              setData={setData}
+              setPage={setPageWithHistory}
+              isMobile={isMobile}
+              tenantId={tenantId}
+              userRole={userRole}
+            />
           )}
         </main>
       </div>
