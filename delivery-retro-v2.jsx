@@ -5033,46 +5033,45 @@ const TenantsPage = ({ tenantId, userRole }) => {
   };
 
   const handleInvite = async () => {
+    if (!inviteEmail.trim() || !inviteTenantId) return;
     if (inviting) return;
-    const emailTrim = String(inviteEmail || "").trim();
-    const tenantIdVal = String(inviteTenantId || "").trim();
-    if (!emailTrim || !tenantIdVal) return;
     setInviting(true);
     try {
       const tempPassword = Math.random().toString(36).slice(-12) + "Aa1!";
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: emailTrim,
+        email: inviteEmail.trim(),
         password: tempPassword,
         options: {
           data: {
             role: "admin",
-            tenant_id: tenantIdVal,
+            tenant_id: inviteTenantId,
           },
         },
       });
       if (signUpError) throw signUpError;
 
       if (signUpData?.user?.id) {
-        const { error: profileErr } = await supabase.from("profiles").upsert({
-          id: signUpData.user.id,
-          email: emailTrim,
-          role: "admin",
-          tenant_id: tenantIdVal,
-        });
-        if (profileErr) throw profileErr;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const { error: profileError } = await supabase
+          .from("profiles")
+          .update({
+            role: "admin",
+            tenant_id: inviteTenantId,
+          })
+          .eq("id", signUpData.user.id);
+        if (profileError) console.warn("profile update:", profileError.message);
       }
 
-      await supabase.auth.resetPasswordForEmail(emailTrim, {
-        redirectTo: "https://haisokanri.vercel.app/reset-password",
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(inviteEmail.trim(), {
+        redirectTo: "https://haisokanri.vercel.app",
       });
+      if (resetError) throw resetError;
 
-      alert(
-        `${emailTrim} に招待メールを送信しました！\nメールのリンクからパスワードを設定してもらってください。`
-      );
+      alert(`${inviteEmail} に招待メールを送信しました！\nメールのリンクからパスワードを設定してもらってください。`);
       setInviteEmail("");
       setInviteTenantId("");
     } catch (err) {
-      alert("エラー: " + (err?.message || String(err)));
+      alert("エラー: " + err.message);
     } finally {
       setInviting(false);
     }
