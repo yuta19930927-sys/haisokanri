@@ -5664,8 +5664,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
 
     const today = new Date();
     const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-    const isLastDay = today.getDate() === lastDayOfMonth;
-    if (!isLastDay) return;
+    const isLastDay = true; // テスト用：常にtrue
+    // if (!isLastDay) return; // テスト用にコメントアウト
 
     const currentMonth = today.toISOString().slice(0, 7);
     const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
