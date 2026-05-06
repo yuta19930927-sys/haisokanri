@@ -2210,6 +2210,7 @@ const QualityMgmtPage = ({ data, setData }) => {
   const [editingCell, setEditingCell] = useState(null);
   const [editingField, setEditingField] = useState(null);
   const [cellValue, setCellValue] = useState("");
+  const suppressBlurSaveRef = useRef(false);
 
   const dekaStyles = ["100以下","140","160","180","200","220","240","260"];
   const selectedDriver = drivers.find(d => d.id === selectedDriverId) || null;
@@ -2223,7 +2224,7 @@ const QualityMgmtPage = ({ data, setData }) => {
   const getRecord = (driverId, date, jobTypeId) =>
     qualityRecords.find(r => r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId) || null;
 
-  const saveCell = (driverId, date, jobTypeId, field, value, customerId, salesAmount, driverAmount) => {
+  const saveCell = (driverId, date, jobTypeId, field, value, customerId, salesAmount, driverAmount, opts) => {
     console.log("saveCell called", { driverId, date, jobTypeId, field, value, customerId, salesAmount, driverAmount });
     setData(d => {
       const current = Array.isArray(d?.qualityRecords) ? d.qualityRecords : [];
@@ -2252,9 +2253,11 @@ const QualityMgmtPage = ({ data, setData }) => {
         driverAmount: driverAmount || null
       }]};
     });
-    setEditingCell(null);
-    setEditingField(null);
-    setCellValue("");
+    if (!opts?.skipClear) {
+      setEditingCell(null);
+      setEditingField(null);
+      setCellValue("");
+    }
   };
 
   const months = Array.from({ length: 4 }, (_, i) => {
@@ -2314,6 +2317,67 @@ const QualityMgmtPage = ({ data, setData }) => {
     const driverUnitPrice = Number(route?.driverUnitPrice||0);
     const fields = ["持出個数","配完個数","誤配","クレーム","時間帯不履行","備考"];
     const recs = qualityRecords.filter(r => r.driverId === selectedDriverId && r.jobTypeId === selectedJobTypeId && r.date?.startsWith(selectedMonth));
+    const runChibiSave = (dateStr, f, val, skipClear) => {
+      saveCell(
+        selectedDriverId, dateStr, selectedJobTypeId, f, val,
+        route?.customerId || null,
+        f === "配完個数" ? (Number(val)||0) * Number(route?.unitPrice||0) : null,
+        f === "配完個数" ? (Number(val)||0) * Number(route?.driverPrice||route?.driverUnitPrice||0) : null,
+        skipClear ? { skipClear: true } : undefined
+      );
+    };
+    const chibiCellNav = (e, day, f, rec) => {
+      const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
+      const fi = fields.indexOf(f);
+      if (fi < 0) return;
+      if (e.key === "Enter") {
+        suppressBlurSaveRef.current = true;
+        runChibiSave(dateStr, f, cellValue, false);
+        return;
+      }
+      if (e.key === "Escape") {
+        suppressBlurSaveRef.current = true;
+        setEditingCell(null);
+        setEditingField(null);
+        setCellValue("");
+        return;
+      }
+      const wantPrev = (e.key === "Tab" && e.shiftKey) || e.key === "ArrowLeft";
+      const wantNext = (e.key === "Tab" && !e.shiftKey) || e.key === "ArrowRight";
+      const wantDown = e.key === "ArrowDown";
+      const wantUp = e.key === "ArrowUp";
+      if (!(wantPrev || wantNext || wantDown || wantUp)) return;
+      e.preventDefault();
+      let nextDay = day;
+      let nextFi = fi;
+      if (wantNext) {
+        if (fi < fields.length - 1) nextFi = fi + 1;
+        else if (day < daysInMonth) { nextDay = day + 1; nextFi = 0; }
+        else return;
+      } else if (wantPrev) {
+        if (fi > 0) nextFi = fi - 1;
+        else if (day > 1) { nextDay = day - 1; nextFi = fields.length - 1; }
+        else return;
+      } else if (wantDown) {
+        if (day >= daysInMonth) return;
+        nextDay = day + 1;
+      } else if (wantUp) {
+        if (day <= 1) return;
+        nextDay = day - 1;
+      }
+      const nextDateStr = `${selectedMonth}-${String(nextDay).padStart(2,"0")}`;
+      const nextField = fields[nextFi];
+      const mergedThis = { ...(rec || {}), [f]: cellValue };
+      const nextRec = nextDay === day
+        ? mergedThis
+        : (qualityRecords.find(r => r.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
+      suppressBlurSaveRef.current = true;
+      runChibiSave(dateStr, f, cellValue, true);
+      setEditingCell(`${selectedDriverId}-${nextDateStr}-${selectedJobTypeId}`);
+      setEditingField(nextField);
+      const raw = nextRec?.[nextField];
+      setCellValue(raw === null || raw === undefined ? "" : String(raw));
+    };
     return (
       <div style={{ overflowX:"auto" }}>
         <table style={{ borderCollapse:"collapse", fontSize:"12px", fontFamily:"'Noto Sans JP', sans-serif", width:"100%" }}>
@@ -2345,26 +2409,14 @@ const QualityMgmtPage = ({ data, setData }) => {
                         onClick={() => { setEditingCell(`${selectedDriverId}-${dateStr}-${selectedJobTypeId}`); setEditingField(f); setCellValue(rec?.[f]??""); }}>
                         {isThisEditing ? (
                           <input value={cellValue} onChange={e=>setCellValue(e.target.value)}
-                            onBlur={()=>saveCell(
-                              selectedDriverId,
-                              dateStr,
-                              selectedJobTypeId,
-                              f,
-                              cellValue,
-                              route?.customerId || null,
-                              f === "配完個数" ? (Number(cellValue)||0) * Number(route?.unitPrice||0) : null,
-                              f === "配完個数" ? (Number(cellValue)||0) * Number(route?.driverPrice||route?.driverUnitPrice||0) : null
-                            )}
-                            onKeyDown={e=>{ if(e.key==="Enter")saveCell(
-                              selectedDriverId,
-                              dateStr,
-                              selectedJobTypeId,
-                              f,
-                              cellValue,
-                              route?.customerId || null,
-                              f === "配完個数" ? (Number(cellValue)||0) * Number(route?.unitPrice||0) : null,
-                              f === "配完個数" ? (Number(cellValue)||0) * Number(route?.driverPrice||route?.driverUnitPrice||0) : null
-                            ); if(e.key==="Escape"){setEditingCell(null);setEditingField(null);} }}
+                            onBlur={() => {
+                              if (suppressBlurSaveRef.current) {
+                                suppressBlurSaveRef.current = false;
+                                return;
+                              }
+                              runChibiSave(dateStr, f, cellValue, false);
+                            }}
+                            onKeyDown={e=>chibiCellNav(e, day, f, rec)}
                             style={{ width:f==="備考"?"120px":"60px", fontSize:"12px", border:"1px solid #00a09a", borderRadius:"2px", padding:"4px 6px", textAlign:f==="備考"?"left":"center" }} autoFocus/>
                         ) : (
                           <span style={{ display:"block", padding:"4px 6px", color:(f==="誤配"||f==="クレーム")&&Number(rec?.[f])>0?"#e63946":f==="時間帯不履行"&&Number(rec?.[f])>0?"#ff9800":"#333" }}>{rec?.[f]??""}</span>
@@ -2402,6 +2454,75 @@ const QualityMgmtPage = ({ data, setData }) => {
     const dekaRates = route?.dekaRates || dekaStyles.map(s=>({size:s,unitPrice:"",driverUnitPrice:""}));
     const recs = qualityRecords.filter(r => r.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r.date?.startsWith(selectedMonth));
     const allFields = ["持出個数", ...dekaStyles.map(s=>`deka_${s}`), "誤配","クレーム","備考"];
+    const dekaSaveExtras = (recRow, fKey, val) => {
+      const totalSales = dekaStyles.reduce((s, size) => {
+        const rate = dekaRates.find(dr => dr.size === size);
+        const nextQty = fKey === `deka_${size}` ? Number(val||0) : Number(recRow?.[`deka_${size}`]||0);
+        return s + nextQty * (Number(rate?.unitPrice)||0);
+      }, 0);
+      const totalDriver = dekaStyles.reduce((s, size) => {
+        const rate = dekaRates.find(dr => dr.size === size);
+        const nextQty = fKey === `deka_${size}` ? Number(val||0) : Number(recRow?.[`deka_${size}`]||0);
+        return s + nextQty * (Number(rate?.driverPrice||rate?.driverUnitPrice||0));
+      }, 0);
+      return [route?.customerId || null, totalSales, totalDriver];
+    };
+    const runDekaSave = (dateStr, fKey, val, recRow, skipClear) => {
+      const [cid, ts, td] = dekaSaveExtras(recRow, fKey, val);
+      saveCell(selectedDriverId, dateStr, selectedJobTypeId, fKey, val, cid, ts, td, skipClear ? { skipClear: true } : undefined);
+    };
+    const dekaCellNav = (e, day, f, rec) => {
+      const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
+      const fi = allFields.indexOf(f);
+      if (fi < 0) return;
+      if (e.key === "Enter") {
+        suppressBlurSaveRef.current = true;
+        runDekaSave(dateStr, f, cellValue, rec, false);
+        return;
+      }
+      if (e.key === "Escape") {
+        suppressBlurSaveRef.current = true;
+        setEditingCell(null);
+        setEditingField(null);
+        setCellValue("");
+        return;
+      }
+      const wantPrev = (e.key === "Tab" && e.shiftKey) || e.key === "ArrowLeft";
+      const wantNext = (e.key === "Tab" && !e.shiftKey) || e.key === "ArrowRight";
+      const wantDown = e.key === "ArrowDown";
+      const wantUp = e.key === "ArrowUp";
+      if (!(wantPrev || wantNext || wantDown || wantUp)) return;
+      e.preventDefault();
+      let nextDay = day;
+      let nextFi = fi;
+      if (wantNext) {
+        if (fi < allFields.length - 1) nextFi = fi + 1;
+        else if (day < daysInMonth) { nextDay = day + 1; nextFi = 0; }
+        else return;
+      } else if (wantPrev) {
+        if (fi > 0) nextFi = fi - 1;
+        else if (day > 1) { nextDay = day - 1; nextFi = allFields.length - 1; }
+        else return;
+      } else if (wantDown) {
+        if (day >= daysInMonth) return;
+        nextDay = day + 1;
+      } else if (wantUp) {
+        if (day <= 1) return;
+        nextDay = day - 1;
+      }
+      const nextDateStr = `${selectedMonth}-${String(nextDay).padStart(2,"0")}`;
+      const nextField = allFields[nextFi];
+      const mergedThis = { ...(rec || {}), [f]: cellValue };
+      const nextRec = nextDay === day
+        ? mergedThis
+        : (qualityRecords.find(r => r.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
+      suppressBlurSaveRef.current = true;
+      runDekaSave(dateStr, f, cellValue, rec, true);
+      setEditingCell(`${selectedDriverId}-${nextDateStr}-${selectedJobTypeId}`);
+      setEditingField(nextField);
+      const raw = nextRec?.[nextField];
+      setCellValue(raw === null || raw === undefined ? "" : String(raw));
+    };
     return (
       <div style={{ overflowX:"auto" }}>
         <table style={{ borderCollapse:"collapse", fontSize:"11px", fontFamily:"'Noto Sans JP', sans-serif", minWidth:"900px" }}>
@@ -2438,23 +2559,19 @@ const QualityMgmtPage = ({ data, setData }) => {
                   <td style={{ padding:"6px 10px", fontWeight:700, color: dow===0?"#e63946":dow===6?"#2196f3":"#333", borderRight:"1px solid #e8e8e8", background: isWeekend?"#f0f7ff":"#fafbfc" }}>{month}/{day}({dowLabel})</td>
                   {allFields.map(f => {
                     const isThisEditing = editingCell===`${selectedDriverId}-${dateStr}-${selectedJobTypeId}` && editingField===f;
-                    const totalSales = dekaStyles.reduce((s, size) => {
-                      const rate = dekaRates.find(dr => dr.size === size);
-                      const nextQty = f === `deka_${size}` ? Number(cellValue||0) : Number(rec?.[`deka_${size}`]||0);
-                      return s + nextQty * (Number(rate?.unitPrice)||0);
-                    }, 0);
-                    const totalDriver = dekaStyles.reduce((s, size) => {
-                      const rate = dekaRates.find(dr => dr.size === size);
-                      const nextQty = f === `deka_${size}` ? Number(cellValue||0) : Number(rec?.[`deka_${size}`]||0);
-                      return s + nextQty * (Number(rate?.driverPrice||rate?.driverUnitPrice||0));
-                    }, 0);
                     return (
                       <td key={f} style={{ padding:"2px", textAlign:"center", borderRight:"1px solid #e8e8e8", cursor:"pointer" }}
                         onClick={() => { setEditingCell(`${selectedDriverId}-${dateStr}-${selectedJobTypeId}`); setEditingField(f); setCellValue(rec?.[f]??""); }}>
                         {isThisEditing ? (
                           <input value={cellValue} onChange={e=>setCellValue(e.target.value)}
-                            onBlur={()=>saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue,route?.customerId || null,totalSales,totalDriver)}
-                            onKeyDown={e=>{ if(e.key==="Enter")saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue,route?.customerId || null,totalSales,totalDriver); if(e.key==="Escape"){setEditingCell(null);setEditingField(null);} }}
+                            onBlur={() => {
+                              if (suppressBlurSaveRef.current) {
+                                suppressBlurSaveRef.current = false;
+                                return;
+                              }
+                              runDekaSave(dateStr, f, cellValue, rec, false);
+                            }}
+                            onKeyDown={e=>dekaCellNav(e, day, f, rec)}
                             style={{ width:f==="備考"?"100px":"50px", fontSize:"11px", border:"1px solid #00a09a", borderRadius:"2px", padding:"2px 4px", textAlign:"center" }} autoFocus/>
                         ) : (
                           <span style={{ display:"block", padding:"3px 4px" }}>{rec?.[f]??""}</span>
@@ -2502,6 +2619,61 @@ const QualityMgmtPage = ({ data, setData }) => {
     const recs = qualityRecords.filter(r => r.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r.date?.startsWith(selectedMonth));
     const totalSales = recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0);
     const totalDriver = recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0);
+    const runRouteSave = (dateStr, fKey, val, skipClear) => {
+      saveCell(selectedDriverId, dateStr, selectedJobTypeId, fKey, val, undefined, undefined, undefined, skipClear ? { skipClear: true } : undefined);
+    };
+    const routeCellNav = (e, day, f, rec) => {
+      const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
+      const fi = fields.indexOf(f);
+      if (fi < 0) return;
+      if (e.key === "Enter") {
+        suppressBlurSaveRef.current = true;
+        runRouteSave(dateStr, f, cellValue, false);
+        return;
+      }
+      if (e.key === "Escape") {
+        suppressBlurSaveRef.current = true;
+        setEditingCell(null);
+        setEditingField(null);
+        setCellValue("");
+        return;
+      }
+      const wantPrev = (e.key === "Tab" && e.shiftKey) || e.key === "ArrowLeft";
+      const wantNext = (e.key === "Tab" && !e.shiftKey) || e.key === "ArrowRight";
+      const wantDown = e.key === "ArrowDown";
+      const wantUp = e.key === "ArrowUp";
+      if (!(wantPrev || wantNext || wantDown || wantUp)) return;
+      e.preventDefault();
+      let nextDay = day;
+      let nextFi = fi;
+      if (wantNext) {
+        if (fi < fields.length - 1) nextFi = fi + 1;
+        else if (day < daysInMonth) { nextDay = day + 1; nextFi = 0; }
+        else return;
+      } else if (wantPrev) {
+        if (fi > 0) nextFi = fi - 1;
+        else if (day > 1) { nextDay = day - 1; nextFi = fields.length - 1; }
+        else return;
+      } else if (wantDown) {
+        if (day >= daysInMonth) return;
+        nextDay = day + 1;
+      } else if (wantUp) {
+        if (day <= 1) return;
+        nextDay = day - 1;
+      }
+      const nextDateStr = `${selectedMonth}-${String(nextDay).padStart(2,"0")}`;
+      const nextField = fields[nextFi];
+      const mergedThis = { ...(rec || {}), [f]: cellValue };
+      const nextRec = nextDay === day
+        ? mergedThis
+        : (qualityRecords.find(r => r.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
+      suppressBlurSaveRef.current = true;
+      runRouteSave(dateStr, f, cellValue, true);
+      setEditingCell(`${selectedDriverId}-${nextDateStr}-${selectedJobTypeId}`);
+      setEditingField(nextField);
+      const raw = nextRec?.[nextField];
+      setCellValue(raw === null || raw === undefined ? "" : String(raw));
+    };
     return (
       <div style={{ overflowX:"auto" }}>
         <table style={{ borderCollapse:"collapse", fontSize:"12px", fontFamily:"'Noto Sans JP', sans-serif", width:"100%" }}>
@@ -2533,8 +2705,14 @@ const QualityMgmtPage = ({ data, setData }) => {
                         onClick={() => { setEditingCell(`${selectedDriverId}-${dateStr}-${selectedJobTypeId}`); setEditingField(f); setCellValue(rec?.[f]??""); }}>
                         {isThisEditing ? (
                           <input value={cellValue} onChange={e=>setCellValue(e.target.value)}
-                            onBlur={()=>saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue)}
-                            onKeyDown={e=>{ if(e.key==="Enter")saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue); if(e.key==="Escape"){setEditingCell(null);setEditingField(null);} }}
+                            onBlur={() => {
+                              if (suppressBlurSaveRef.current) {
+                                suppressBlurSaveRef.current = false;
+                                return;
+                              }
+                              runRouteSave(dateStr, f, cellValue, false);
+                            }}
+                            onKeyDown={e=>routeCellNav(e, day, f, rec)}
                             style={{ width:f==="備考"?"120px":"80px", fontSize:"12px", border:"1px solid #00a09a", borderRadius:"2px", padding:"4px 6px", textAlign:"center" }} autoFocus/>
                         ) : (
                           <span style={{ display:"block", padding:"4px 6px", color:(f==="salesAmount"||f==="driverAmount")&&rec?.[f]?"#007a74":"#333" }}>
@@ -2567,6 +2745,61 @@ const QualityMgmtPage = ({ data, setData }) => {
     const totalSales = recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0);
     const totalDriver = recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0);
     const totalCount = recs.reduce((s,r)=>s+(Number(r.count)||0),0);
+    const runCharterSave = (dateStr, fKey, val, skipClear) => {
+      saveCell(selectedDriverId, dateStr, selectedJobTypeId, fKey, val, undefined, undefined, undefined, skipClear ? { skipClear: true } : undefined);
+    };
+    const charterCellNav = (e, day, f, rec) => {
+      const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
+      const fi = fields.indexOf(f);
+      if (fi < 0) return;
+      if (e.key === "Enter") {
+        suppressBlurSaveRef.current = true;
+        runCharterSave(dateStr, f, cellValue, false);
+        return;
+      }
+      if (e.key === "Escape") {
+        suppressBlurSaveRef.current = true;
+        setEditingCell(null);
+        setEditingField(null);
+        setCellValue("");
+        return;
+      }
+      const wantPrev = (e.key === "Tab" && e.shiftKey) || e.key === "ArrowLeft";
+      const wantNext = (e.key === "Tab" && !e.shiftKey) || e.key === "ArrowRight";
+      const wantDown = e.key === "ArrowDown";
+      const wantUp = e.key === "ArrowUp";
+      if (!(wantPrev || wantNext || wantDown || wantUp)) return;
+      e.preventDefault();
+      let nextDay = day;
+      let nextFi = fi;
+      if (wantNext) {
+        if (fi < fields.length - 1) nextFi = fi + 1;
+        else if (day < daysInMonth) { nextDay = day + 1; nextFi = 0; }
+        else return;
+      } else if (wantPrev) {
+        if (fi > 0) nextFi = fi - 1;
+        else if (day > 1) { nextDay = day - 1; nextFi = fields.length - 1; }
+        else return;
+      } else if (wantDown) {
+        if (day >= daysInMonth) return;
+        nextDay = day + 1;
+      } else if (wantUp) {
+        if (day <= 1) return;
+        nextDay = day - 1;
+      }
+      const nextDateStr = `${selectedMonth}-${String(nextDay).padStart(2,"0")}`;
+      const nextField = fields[nextFi];
+      const mergedThis = { ...(rec || {}), [f]: cellValue };
+      const nextRec = nextDay === day
+        ? mergedThis
+        : (qualityRecords.find(r => r.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
+      suppressBlurSaveRef.current = true;
+      runCharterSave(dateStr, f, cellValue, true);
+      setEditingCell(`${selectedDriverId}-${nextDateStr}-${selectedJobTypeId}`);
+      setEditingField(nextField);
+      const raw = nextRec?.[nextField];
+      setCellValue(raw === null || raw === undefined ? "" : String(raw));
+    };
     return (
       <div style={{ overflowX:"auto" }}>
         <table style={{ borderCollapse:"collapse", fontSize:"12px", fontFamily:"'Noto Sans JP', sans-serif", width:"100%" }}>
@@ -2597,8 +2830,14 @@ const QualityMgmtPage = ({ data, setData }) => {
                         onClick={() => { setEditingCell(`${selectedDriverId}-${dateStr}-${selectedJobTypeId}`); setEditingField(f); setCellValue(rec?.[f]??""); }}>
                         {isThisEditing ? (
                           <input value={cellValue} onChange={e=>setCellValue(e.target.value)}
-                            onBlur={()=>saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue)}
-                            onKeyDown={e=>{ if(e.key==="Enter")saveCell(selectedDriverId,dateStr,selectedJobTypeId,f,cellValue); if(e.key==="Escape"){setEditingCell(null);setEditingField(null);} }}
+                            onBlur={() => {
+                              if (suppressBlurSaveRef.current) {
+                                suppressBlurSaveRef.current = false;
+                                return;
+                              }
+                              runCharterSave(dateStr, f, cellValue, false);
+                            }}
+                            onKeyDown={e=>charterCellNav(e, day, f, rec)}
                             style={{ width:f==="備考"?"120px":"80px", fontSize:"12px", border:"1px solid #00a09a", borderRadius:"2px", padding:"4px 6px", textAlign:"center" }} autoFocus/>
                         ) : (
                           <span style={{ display:"block", padding:"4px 6px", color:(f==="salesAmount"||f==="driverAmount")&&rec?.[f]?"#007a74":"#333" }}>
