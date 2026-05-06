@@ -422,18 +422,49 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole }) => 
         color: event?.color || EVENT_TYPE_COLOR[event?.type] || "#999",
         raw: event,
       }));
-    const invoiceItems = invoices
-      .filter((inv) => normalizeDateString(inv?.dueDate) === targetDate)
-      .map((inv) => ({
-        id: `invoice-${inv?.id || Math.random()}`,
-        source: "invoice",
-        sourceId: inv?.id,
-        date: targetDate,
-        type: "payment_receive",
-        title: `入金期日：${inv?.customerName || ""}`,
-        color: EVENT_TYPE_COLOR.payment_receive,
-        raw: inv,
-      }));
+    const invoiceMap = {};
+    (Array.isArray(data?.invoices) ? data.invoices : [])
+      .filter((inv) => {
+        const p = inv?.payload != null && typeof inv.payload === "object" ? inv.payload : inv;
+        if (!p) return false;
+        if (p.deleted || inv?.deleted) return false;
+        return true;
+      })
+      .forEach((inv) => {
+        const p = inv?.payload != null && typeof inv.payload === "object" ? inv.payload : inv;
+        const dueNorm = normalizeDateString(p?.dueDate);
+        const key = `${p?.customerId}_${dueNorm}`;
+        if (!invoiceMap[key]) {
+          invoiceMap[key] = {
+            id: `inv-group-${key}`,
+            date: dueNorm,
+            type: "payment_receive",
+            title: `入金期日：${p?.customerName || p?.customerId || ""}`,
+            amount: 0,
+            count: 0,
+            firstInvId: p?.id || inv?.id,
+            firstInv: inv,
+          };
+        }
+        invoiceMap[key].amount += Number(p?.total || p?.amount || 0);
+        invoiceMap[key].count += 1;
+      });
+    const invoiceItems = Object.values(invoiceMap)
+      .filter((item) => normalizeDateString(item.date) === targetDate)
+      .map((item) => {
+        const namePart = item.title.replace(/^入金期日：/, "");
+        const titleSuffix = item.count > 1 ? `（${item.count}件 合計¥${item.amount.toLocaleString()}）` : "";
+        return {
+          id: item.id,
+          source: "invoice",
+          sourceId: item.firstInvId,
+          date: targetDate,
+          type: "payment_receive",
+          title: `入金期日：${namePart}${titleSuffix}`,
+          color: EVENT_TYPE_COLOR.payment_receive,
+          raw: item.firstInv,
+        };
+      });
     const payableItems = payables
       .filter((payable) => normalizeDateString(payable?.dueDate) === targetDate)
       .map((payable) => ({
@@ -1807,17 +1838,28 @@ const OrdersPage = ({ data, setData, tenantId, userRole }) => {
         paidDate:null,
         note:"",
       };
-      const nextEvents = [
-        ...(Array.isArray(d?.events) ? d.events : []),
-        {
-          id:`EV-INV${Date.now()}`,
-          date: dueDate,
-          type:"payment_due",
-          title:`入金期日：${nextInvoice.customerName}`,
-          color:"#660099",
-          invoiceId: nextInvoice.id,
-        },
-      ];
+      const customerName = nextInvoice.customerName;
+      const customerId = nextInvoice.customerId;
+      const baseEv = Array.isArray(d?.events) ? d.events : [];
+      const alreadyHasEvent = baseEv.some((ev) =>
+        ev?.type === "payment_due" &&
+        ev?.date === dueDate &&
+        (ev?.title?.includes(customerName) || ev?.customerId === customerId)
+      );
+      const nextEvents = alreadyHasEvent
+        ? baseEv
+        : [
+            ...baseEv,
+            {
+              id:`EV-INV${Date.now()}`,
+              date: dueDate,
+              type:"payment_due",
+              title:`入金期日：${nextInvoice.customerName}`,
+              color:"#660099",
+              invoiceId: nextInvoice.id,
+              customerId,
+            },
+          ];
 
       return {
         ...d,
@@ -3407,17 +3449,28 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole }) => {
                             salesMgmtMonth: selectedMonth,
                             _dbId: crypto.randomUUID(),
                           };
-                          setData(d => ({
-                            ...d,
-                            invoices: [...(Array.isArray(d?.invoices) ? d.invoices : []), newInv],
-                            events: [...(Array.isArray(d?.events) ? d.events : []), {
-                              id: `EV-INV${Date.now()}`,
-                              date: dueDate,
-                              type: "payment_due",
-                              title: `入金期日：${customer?.name||""}`,
-                              color: "#660099",
-                            }],
-                          }));
+                          setData(d => {
+                            const customerName = customer?.name || "";
+                            const customerId = customer?.id || "";
+                            const baseEv = Array.isArray(d?.events) ? d.events : [];
+                            const alreadyHasEvent = baseEv.some((ev) =>
+                              ev?.type === "payment_due" &&
+                              ev?.date === dueDate &&
+                              (ev?.title?.includes(customerName) || ev?.customerId === customerId)
+                            );
+                            return {
+                              ...d,
+                              invoices: [...(Array.isArray(d?.invoices) ? d.invoices : []), newInv],
+                              events: alreadyHasEvent ? baseEv : [...baseEv, {
+                                id: `EV-INV${Date.now()}`,
+                                date: dueDate,
+                                type: "payment_due",
+                                title: `入金期日：${customer?.name||""}`,
+                                color: "#660099",
+                                customerId,
+                              }],
+                            };
+                          });
                           window.alert(`${customer?.name} の請求書を生成しました！\n請求管理ページで確認できます。`);
                         }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
                           請求書を生成
@@ -3618,7 +3671,28 @@ const InvoicesPage = ({ data, setData, tenantId, userRole }) => {
       sentAt:null,
       sentTo:"",
     };
-    setData(d=>({...d, invoices:[inv,...(Array.isArray(d?.invoices) ? d.invoices : [])], events:[...(Array.isArray(d?.events) ? d.events : events),{id:`EV-INV${Date.now()}`,date:dueDate,type:"payment_due",title:`${inv.id} 入金期日：${o?.customerName||""}`,color:"#660099"}] }));
+    setData((d) => {
+      const customerName = o?.customerName || "";
+      const customerId = o?.customerId || "";
+      const baseEv = Array.isArray(d?.events) ? d.events : [];
+      const alreadyHasEvent = baseEv.some((ev) =>
+        ev?.type === "payment_due" &&
+        ev?.date === dueDate &&
+        (ev?.title?.includes(customerName) || ev?.customerId === customerId)
+      );
+      return {
+        ...d,
+        invoices: [inv, ...(Array.isArray(d?.invoices) ? d.invoices : [])],
+        events: alreadyHasEvent ? baseEv : [...baseEv, {
+          id: `EV-INV${Date.now()}`,
+          date: dueDate,
+          type: "payment_due",
+          title: `${inv.id} 入金期日：${o?.customerName||""}`,
+          color: "#660099",
+          customerId,
+        }],
+      };
+    });
   };
 
   const openInvoiceModal = (inv) => {
@@ -5336,6 +5410,17 @@ const createEmptyData = () => ({
   qualityRecords: [],
 });
 
+const cleanEvents = (events) => {
+  const seen = new Set();
+  return (Array.isArray(events) ? events : []).filter((ev) => {
+    if (ev?.type !== "payment_due") return true;
+    const key = `${ev.date}_${ev.title}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 const fetchDataFromSupabase = async (tenantId) => {
   const nextData = createEmptyData();
 
@@ -5370,6 +5455,10 @@ const fetchDataFromSupabase = async (tenantId) => {
     }
     const payloads = (result.rows || []).map((row) => row.payload).filter(Boolean);
     nextData[result.key] = payloads;
+  }
+
+  if (Array.isArray(nextData.events)) {
+    nextData.events = cleanEvents(nextData.events);
   }
 
   return nextData;
