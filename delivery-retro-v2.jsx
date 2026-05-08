@@ -5909,9 +5909,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             src="/hakomane-logo.png"
             alt="ハコマネ"
             style={{
-              height: "36px",
+              height: "52px",
               width: "auto",
-              mixBlendMode: "multiply",
+              mixBlendMode: "darken",
               flexShrink: 0
             }}
           />
