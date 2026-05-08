@@ -5904,21 +5904,19 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
           </button>
         )}
-        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:"2px", padding:"0", flexShrink:0 }}>
           <img
             src="/hakomane-logo.png"
             alt="ハコマネ"
             style={{
-              height: "56px",
+              height: "72px",
               width: "auto",
               objectFit: "contain",
+              marginBottom: "0px",
               flexShrink: 0
             }}
           />
-          <div style={{ fontSize:"14px", fontWeight:700, color:"#00a09a", lineHeight: 1.1 }}>
-            ハコマネ
-          </div>
-          <div style={{ fontSize:"9px", color:"#999", whiteSpace:"nowrap", lineHeight: 1, marginTop: "1px" }}>
+          <div style={{ fontSize:"9px", color:"#999", whiteSpace:"nowrap", lineHeight: 1, marginTop: "0px" }}>
             Delivery Management System
           </div>
         </div>
