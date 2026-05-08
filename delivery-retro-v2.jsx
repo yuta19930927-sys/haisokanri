@@ -5915,7 +5915,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               flexShrink: 0
             }}
           />
-          <div style={{ fontSize:"10px", color:"#999", marginTop:"2px", whiteSpace:"nowrap" }}>
+          <div style={{ fontSize:"9px", color:"#999", whiteSpace:"nowrap", lineHeight: 1, marginTop: "-8px" }}>
             Delivery Management System
           </div>
         </div>
