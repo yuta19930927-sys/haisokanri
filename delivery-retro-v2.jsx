@@ -5898,7 +5898,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   ];
   return (
     <div style={{ minHeight:"100vh", background:UI.mainBg, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", color:UI.text }}>
-      <div style={{ background:"#fff", borderBottom:cardBorder, height:"130px", display:"flex", alignItems:"center", padding:"0 14px", gap:"10px" }}>
+      <div style={{ background:"#fff", borderBottom:cardBorder, height:"64px", display:"flex", alignItems:"center", padding:"0 14px", gap:"10px" }}>
         {isMobile && (
           <button onClick={()=>setMenuOpen(v=>!v)} style={{ border:cardBorder, background:"#fff", borderRadius:"4px", width:"32px", height:"32px", display:"grid", placeItems:"center", color:"#666" }}>
             <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
@@ -5909,14 +5909,13 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             src="/hakomane-logo.png"
             alt="ハコマネ"
             style={{
-              height: "120px",
+              height: "52px",
               width: "auto",
               mixBlendMode: "darken",
               flexShrink: 0
             }}
           />
           <div style={{ display:"flex", flexDirection:"column", justifyContent:"center" }}>
-            <div style={{ fontSize:"18px", fontWeight:700, color:"#00a09a" }}>ハコマネ</div>
             <div style={{ fontSize:"11px", color:"#999" }}>Delivery Management System</div>
           </div>
         </div>
