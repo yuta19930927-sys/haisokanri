@@ -5919,6 +5919,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           <div style={{ fontSize:"9px", color:"#999", whiteSpace:"nowrap", lineHeight: 1, marginTop: "0px" }}>
             Delivery Management System
           </div>
+          <div style={{ fontSize: "10px", color: "#6b7280", letterSpacing: "0.05em", textAlign: "center" }}>
+            Delivery Management System
+          </div>
         </div>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
           <button onClick={()=>setShowSettings(v=>!v)} style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
