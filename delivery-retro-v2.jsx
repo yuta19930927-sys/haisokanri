@@ -5904,12 +5904,12 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
           </button>
         )}
-        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:"2px", padding:"0", flexShrink:0 }}>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:"2px", paddingTop:"8px", paddingBottom:"8px", flexShrink:0 }}>
           <img
             src="/hakomane-logo.png"
             alt="ハコマネ"
             style={{
-              height: "72px",
+              height: "88px",
               width: "auto",
               objectFit: "contain",
               marginBottom: "0px",
