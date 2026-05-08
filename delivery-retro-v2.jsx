@@ -5905,15 +5905,17 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           </button>
         )}
         <div style={{ display:"flex", alignItems:"center", gap:"10px", flexShrink:0 }}>
-          <svg viewBox="0 0 40 40" width="36" height="36" fill="none" aria-hidden style={{ flexShrink:0 }}>
-            <rect width="40" height="40" rx="8" fill="#00a09a"/>
-            <rect x="8" y="14" width="16" height="14" rx="2" stroke="white" strokeWidth="2" fill="none"/>
-            <path d="M8 19h16" stroke="white" strokeWidth="2"/>
-            <path d="M24 22 Q30 16 34 20 Q38 24 32 28 Q28 30 26 26" stroke="white" strokeWidth="2.2" strokeLinecap="round" fill="none"/>
-            <path d="M22 24 Q16 30 20 34 Q24 38 28 32" stroke="white" strokeWidth="2.2" strokeLinecap="round" fill="none"/>
-          </svg>
+          <img
+            src="/hakomane-logo.png"
+            alt="ハコマネ"
+            style={{
+              height: "36px",
+              width: "auto",
+              mixBlendMode: "multiply",
+              flexShrink: 0
+            }}
+          />
           <div style={{ display:"flex", flexDirection:"column", lineHeight:1.15, justifyContent:"center" }}>
-            <div style={{ fontSize:"15px", color:"#00a09a", fontWeight:700 }}>ハコマネ</div>
             <div style={{ fontSize:"10px", color:"#999", fontWeight:500 }}>Delivery Management System</div>
           </div>
         </div>

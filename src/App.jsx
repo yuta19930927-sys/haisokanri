@@ -363,8 +363,19 @@ export default function App() {
     return (
       <div style={{ minHeight: "100vh", background: "#f7f8f9", display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? "8px" : "16px", fontFamily: "'Noto Sans JP', sans-serif", fontSize: "13px", fontWeight: 400 }}>
         <div style={{ ...loginBox, maxWidth: isMobile ? "100%" : "380px", padding: isMobile ? "14px" : "20px" }}>
-          <div style={{ background: "#00a09a", margin: isMobile ? "-14px -14px 12px -14px" : "-20px -20px 16px -20px", padding: "8px 12px", color: "#fff", fontWeight: 700, fontSize: isMobile ? "12px" : "13px", borderTopLeftRadius: "6px", borderTopRightRadius: "6px" }}>
-            T-LINK 配送管理システム
+          <div style={{ background: "#00a09a", margin: isMobile ? "-14px -14px 12px -14px" : "-20px -20px 16px -20px", padding: "16px 24px", display: "flex", alignItems: "center", gap: "12px", borderTopLeftRadius: "6px", borderTopRightRadius: "6px" }}>
+            <img
+              src="/hakomane-logo.png"
+              alt="ハコマネ"
+              style={{
+                height: "40px",
+                width: "auto",
+                mixBlendMode: "multiply",
+                background: "white",
+                borderRadius: "8px",
+                padding: "4px"
+              }}
+            />
           </div>
           <div style={{ marginBottom: "12px", color: "#555", fontSize: "12px", fontWeight: 500 }}>
             配送管理システム - ログイン
