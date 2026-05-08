@@ -5912,6 +5912,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               height: "88px",
               width: "auto",
               objectFit: "contain",
+              marginTop: "8px",
               marginBottom: "4px",
               flexShrink: 0
             }}
@@ -5922,6 +5923,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             textAlign: "center",
             margin: "0",
             marginTop: "-4px",
+            marginBottom: "8px",
             padding: "0",
             whiteSpace: "nowrap",
             overflow: "visible",
