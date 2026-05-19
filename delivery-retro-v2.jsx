@@ -5904,37 +5904,18 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
           </button>
         )}
-        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:"2px", paddingTop:"8px", paddingBottom:"8px", flexShrink:0 }}>
+        <div style={{ paddingTop: "12px", paddingBottom: "8px", flexShrink: 0 }}>
           <img
             src="/hakomane-logo.png"
-            alt="ハコマネ"
+            alt="Logo"
             style={{
-              height: "88px",
-              width: "auto",
+              width: "160px",
+              height: "auto",
               objectFit: "contain",
-              marginTop: "8px",
-              marginBottom: "4px",
-              flexShrink: 0
+              display: "block",
+              margin: "0 auto",
             }}
           />
-          <p style={{
-            fontSize: "9px",
-            color: "#6b7280",
-            textAlign: "center",
-            margin: "0",
-            marginTop: "-4px",
-            marginBottom: "8px",
-            padding: "0",
-            whiteSpace: "nowrap",
-            overflow: "visible",
-            lineHeight: "1.2"
-          }}>Delivery Management System</p>
-          <div style={{ fontSize:"9px", color:"#999", whiteSpace:"nowrap", lineHeight: 1, marginTop: "0px" }}>
-            Delivery Management System
-          </div>
-          <div style={{ fontSize: "10px", color: "#6b7280", letterSpacing: "0.05em", textAlign: "center" }}>
-            Delivery Management System
-          </div>
         </div>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
           <button onClick={()=>setShowSettings(v=>!v)} style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
