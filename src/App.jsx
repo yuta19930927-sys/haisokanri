@@ -362,7 +362,7 @@ export default function App() {
   if (!authed) {
     return (
       <div style={{ minHeight: "100vh", background: "#f7f8f9", display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? "8px" : "16px", fontFamily: "'Noto Sans JP', sans-serif", fontSize: "13px", fontWeight: 400 }}>
-        <div style={{ ...loginBox, maxWidth: isMobile ? "100%" : "380px", padding: isMobile ? "14px" : "20px" }}>
+        <div style={{ ...loginBox, maxWidth: isMobile ? "100%" : "380px", padding: isMobile ? "8px" : "12px" }}>
           <div style={{ background: "#00a09a", margin: isMobile ? "-14px -14px 12px -14px" : "-20px -20px 16px -20px", padding: "16px 24px", display: "flex", alignItems: "center", gap: "12px", borderTopLeftRadius: "6px", borderTopRightRadius: "6px" }}>
             <img
               src="/hakomane-logo.png"
