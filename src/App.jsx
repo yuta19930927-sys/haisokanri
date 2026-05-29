@@ -370,7 +370,7 @@ export default function App() {
               style={{
                 height: "120px",
                 width: "auto",
-                mixBlendMode: "multiply",
+               
                 background: "white",
                 borderRadius: "8px",
                 padding: "4px"
