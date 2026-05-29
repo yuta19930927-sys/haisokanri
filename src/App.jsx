@@ -368,7 +368,7 @@ export default function App() {
               src="/hakomane-logo.png"
               alt="ハコマネ"
               style={{
-                height: "40px",
+                height: "120px",
                 width: "auto",
                 mixBlendMode: "multiply",
                 background: "white",
