@@ -5904,7 +5904,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
           </button>
         )}
-        <div style={{ paddingTop: "12px", paddingBottom: "8px", flexShrink: 0 }}>
+        <div style={{ padding: "24px 16px", flexShrink: 0, display: "flex", justifyContent: "center", width: "100%" }}>
           <img
             src="/hakomane-logo.png"
             alt="Logo"
