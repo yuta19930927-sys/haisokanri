@@ -371,7 +371,7 @@ export default function App() {
                 height: "120px",
                 width: "auto",
                
-                background: "white",
+                
                 borderRadius: "8px",
                 padding: "4px"
               }}
