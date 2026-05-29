@@ -5913,7 +5913,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               height: "auto",
               objectFit: "contain",
               display: "block",
-              margin: "0 auto",
+              margin: "0",
             }}
           />
         </div>
