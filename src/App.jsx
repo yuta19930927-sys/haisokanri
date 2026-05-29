@@ -372,7 +372,7 @@ export default function App() {
                 width: "auto",
                
                 
-                borderRadius: "8px",
+                padding: "4px"
                 padding: "4px"
               }}
             />
