@@ -378,17 +378,18 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole }) => 
   const [editingItem, setEditingItem] = useState(null);
   const [editEvent, setEditEvent] = useState({ id:"", date:"", type:"task", title:"", note:"" });
   const [editOrder, setEditOrder] = useState({ id:"", customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"", status:"pending" });
+  const [addFormError, setAddFormError] = useState("");
 
   const firstDay = new Date(calYear, calMonth, 1).getDay();
   const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
   const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
-  const orders = Array.isArray(data?.orders) ? data.orders : [];
+  const orders = (Array.isArray(data?.orders) ? data.orders : []).filter((o) => !o?.deleted);
   const events = Array.isArray(data?.events) ? data.events : [];
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
   const payables = Array.isArray(data?.payables) ? data.payables : [];
   const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
   const vehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
-  const customers = Array.isArray(data?.customers) ? data.customers : [];
+  const customers = (Array.isArray(data?.customers) ? data.customers : []).filter((c) => !c?.deleted);
 
   const BUSINESS_OPTIONS = ["task", "sales", "payment_due", "payment_receive"];
   const BUSINESS_LEGEND = [
@@ -556,9 +557,18 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole }) => 
 
   const selectedItems = selectedDate ? getItemsForDate(selectedDate) : [];
 
+  const generateNextOrderId = (orderList) => {
+    const maxNum = orderList.reduce((max, order) => {
+      const match = String(order?.id || "").match(/^ORD-(\d+)$/);
+      return match ? Math.max(max, parseInt(match[1], 10)) : max;
+    }, 0);
+    return `ORD-${String(maxNum + 1).padStart(3, "0")}`;
+  };
+
   const openAddModal = (dateStr) => {
     const targetDate = normalizeDateString(dateStr || todayStr);
     setAddDate(targetDate);
+    setAddFormError("");
     if (calMode === "delivery") {
       setNewOrder({ customerId:"", deliveryType:"route", deliveryDate:targetDate, from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
     } else {
@@ -569,39 +579,76 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole }) => 
 
   const saveNewItem = () => {
     if (calMode === "delivery") {
-      if (!newOrder.customerId || !newOrder.deliveryDate) return;
+      if (customers.length === 0) {
+        setAddFormError("顧客が登録されていません。顧客管理から先に登録してください。");
+        return;
+      }
+      if (!newOrder.customerId) {
+        setAddFormError("顧客を選択してください。");
+        return;
+      }
+      if (!newOrder.deliveryDate) {
+        setAddFormError("配達日を入力してください。");
+        return;
+      }
       const customer = customers.find((c) => c?.id === newOrder.customerId);
+      if (!customer) {
+        setAddFormError("選択した顧客が見つかりません。");
+        return;
+      }
+      const deliveryDate = normalizeDateString(newOrder.deliveryDate);
+      const nextOrderId = generateNextOrderId(orders);
       const nextOrder = {
-        id:`ORD-${String(orders.length+1).padStart(3,"0")}`,
-        customerId:newOrder.customerId,
-        customerName:customer?.name || "",
-        deliveryType:newOrder.deliveryType || "route",
-        date:fmt(today.getDate()),
-        deliveryDate:normalizeDateString(newOrder.deliveryDate),
-        from:newOrder.from,
-        to:newOrder.to,
-        cargo:newOrder.cargo,
-        weight:newOrder.weight,
-        status:"pending",
-        driverId:null,
-        vehicleId:null,
-        amount:parseInt(newOrder.amount, 10) || 0,
-        notes:newOrder.notes,
+        id: nextOrderId,
+        customerId: newOrder.customerId,
+        customerName: customer.name || "",
+        deliveryType: newOrder.deliveryType || "route",
+        date: fmt(today.getDate()),
+        deliveryDate,
+        from: newOrder.from,
+        to: newOrder.to,
+        cargo: newOrder.cargo,
+        weight: newOrder.weight,
+        status: "pending",
+        driverId: null,
+        vehicleId: null,
+        amount: parseInt(newOrder.amount, 10) || 0,
+        notes: newOrder.notes,
       };
-      setData((d) => ({ ...d, orders:[nextOrder, ...(Array.isArray(d?.orders) ? d.orders : [])] }));
+      const deliveryEvent = {
+        id: `EV-O${Date.now()}`,
+        date: deliveryDate,
+        type: "delivery",
+        title: `${nextOrderId} 配達予定 ${customer.name || ""}`,
+        color: "#0000cc",
+        orderId: nextOrderId,
+      };
+      setData((d) => ({
+        ...d,
+        orders: [nextOrder, ...(Array.isArray(d?.orders) ? d.orders : [])],
+        events: [...(Array.isArray(d?.events) ? d.events : []), deliveryEvent],
+      }));
     } else {
-      if (!newEvent.title || !addDate) return;
+      if (!addDate) {
+        setAddFormError("日付を入力してください。");
+        return;
+      }
+      if (!newEvent.title?.trim()) {
+        setAddFormError("タイトルを入力してください。");
+        return;
+      }
       const safeEvents = Array.isArray(data?.events) ? data.events : [];
       const nextEvent = {
         id:`EV-${String(safeEvents.length+1).padStart(3,"0")}`,
         date:normalizeDateString(addDate),
         type:newEvent.type,
-        title:newEvent.title,
+        title:newEvent.title.trim(),
         color:EVENT_TYPE_COLOR[newEvent.type]||"#999",
         note:newEvent.note,
       };
       setData((d) => ({ ...d, events:[...(Array.isArray(d?.events) ? d.events : []), nextEvent] }));
     }
+    setAddFormError("");
     setShowAddModal(false);
   };
 
@@ -851,6 +898,11 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole }) => 
               <Fl label="タイトル"><RetroInput value={newEvent.title} onChange={e=>setNewEvent(v=>({...v,title:e.target.value}))} placeholder="例：営業訪問、支払対応"/></Fl>
               <Fl label="メモ"><RetroTextarea value={newEvent.note} onChange={e=>setNewEvent(v=>({...v,note:e.target.value}))}/></Fl>
             </>
+          )}
+          {addFormError && (
+            <div style={{ marginTop:"10px", padding:"8px 10px", background:"#ffebee", border:"1px solid #e63946", borderRadius:"4px", fontSize:"12px", color:"#c62828" }}>
+              {addFormError}
+            </div>
           )}
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"10px" }}>
             <RetroBtn onClick={()=>setShowAddModal(false)}>キャンセル</RetroBtn>
