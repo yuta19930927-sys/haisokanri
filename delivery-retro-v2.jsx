@@ -4008,8 +4008,16 @@ const InvoicesPage = ({ data, setData, tenantId, userRole }) => {
   };
 
   const openMailer = () => {
-    const url = `mailto:${encodeURIComponent(mailDraft.to)}?subject=${encodeURIComponent(mailDraft.subject)}&body=${encodeURIComponent(mailDraft.body)}`;
-    window.location.href = url;
+    if (!invoiceDraft) return;
+    const customer = customers.find((c) => c?.id === invoiceDraft.customerId);
+    const customerEmail = encodeURIComponent(mailDraft.to || customer?.email || "");
+    const customerName = invoiceDraft.customerName || customer?.name || "";
+    const subject = encodeURIComponent(`【請求書送付】${invoiceDraft.id} ${customerName}`);
+    const body = encodeURIComponent(
+      `いつもお世話になっております。\nT-LINKの坪倉と申します。\n\n請求書をお送りします。\n\n請求書番号: ${invoiceDraft.id}\n発行日: ${invoiceDraft.issueDate}\n支払期限: ${invoiceDraft.dueDate}\n合計: ¥${(Number(invoiceDraft.total) || 0).toLocaleString()}\n\nご確認よろしくお願いいたします。`
+    );
+    const mailtoUrl = `https://mail.google.com/mail/?view=cm&to=${customerEmail}&su=${subject}&body=${body}`;
+    window.open(mailtoUrl, "_blank");
   };
 
   const recordSent = () => {
