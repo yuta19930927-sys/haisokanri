@@ -199,11 +199,12 @@ const initialData = {
   ],
   companyInfo: {
     id: "COMPANY-001",
-    name: "配送管理株式会社",
-    address: "東京都千代田区1-1-1",
-    phone: "03-0000-0000",
-    email: "info@example.com",
-    bankInfo: "みずほ銀行 東京支店 普通 1234567 ハイソウカンリ（カ",
+    name: "T-LINK",
+    tagline: "LOGISTICS & DELIVERY SOLUTIONS",
+    address: "京都府京都市右京区梅津尻溝町65 グレイスランザン402",
+    phone: "090-9052-4517",
+    email: "yuta.19930927@gmail.com",
+    bankInfo: "三井住友銀行 784 普通 1140140 ツボクラユウタ",
     stampImage: "",
   },
   jobTypes: [
@@ -3835,17 +3836,17 @@ const InvoicesPage = ({ data, setData, tenantId, userRole }) => {
   const buildInvoiceHtml = (inv) => {
     const customer = customers.find((c) => c?.id === inv?.customerId);
     const fallbackCompany = {
-      name: "ハコマネ",
+      name: "T-LINK",
       tagline: "LOGISTICS & DELIVERY SOLUTIONS",
-      address: "住所未設定",
-      phone: "電話未設定",
-      email: "メール未設定",
+      address: "京都府京都市右京区梅津尻溝町65 グレイスランザン402",
+      phone: "090-9052-4517",
+      email: "yuta.19930927@gmail.com",
       bankInfo: {
-        bankName: "－",
-        branch: "－",
-        accountType: "－",
-        accountNumber: "－",
-        accountName: "－",
+        bankName: "三井住友銀行",
+        branch: "784",
+        accountType: "普通",
+        accountNumber: "1140140",
+        accountName: "ツボクラユウタ",
       },
       stampImage: "",
     };
