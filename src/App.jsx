@@ -363,12 +363,12 @@ export default function App() {
     return (
       <div style={{ minHeight: "100vh", background: "#f7f8f9", display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? "8px" : "16px", fontFamily: "'Noto Sans JP', sans-serif", fontSize: "13px", fontWeight: 400 }}>
         <div style={{ ...loginBox, maxWidth: isMobile ? "100%" : "380px", padding: "4px" }}>
-          <div style={{ background: "#00a09a", margin: "-4px -4px 12px -4px", padding: "12px 16px 8px", borderTopLeftRadius: "6px", borderTopRightRadius: "6px", display: "flex", justifyContent: "flex-start", alignItems: "center" }}>
+          <div style={{ background: "#00a09a", margin: "-4px -4px 12px -4px", padding: "8px 16px 4px", borderTopLeftRadius: "6px", borderTopRightRadius: "6px", display: "flex", justifyContent: "flex-start", alignItems: "center" }}>
             <img
               src="/hakomane-logo.png"
               alt="ハコマネ"
               style={{
-                height: "120px",
+                height: "60px",
                 width: "auto",
               }}
             />
