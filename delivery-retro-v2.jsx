@@ -6742,7 +6742,7 @@ const MenuBtn = ({ icon, label, onClick, active, badge }) => {
 };
 
 // ===== ハコマネ LOGO (SVG版・拡大縮小してもボケない/歪まない) =====
-const HakomaneLogo = ({ height = 44 }) => {
+export const HakomaneLogo = ({ height = 44 }) => {
   const width = Math.round(height * (320 / 76));
   return (
     <svg width={width} height={height} viewBox="0 0 320 76" xmlns="http://www.w3.org/2000/svg" style={{ display: "block" }}>
