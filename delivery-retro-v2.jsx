@@ -6741,6 +6741,53 @@ const MenuBtn = ({ icon, label, onClick, active, badge }) => {
   );
 };
 
+// ===== ハコマネ LOGO (SVG版・拡大縮小してもボケない/歪まない) =====
+const HakomaneLogo = ({ height = 44 }) => {
+  const width = Math.round(height * (320 / 76));
+  return (
+    <svg width={width} height={height} viewBox="0 0 320 76" xmlns="http://www.w3.org/2000/svg" style={{ display: "block" }}>
+      <defs>
+        <linearGradient id="hkm-badgeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#00c2ba" />
+          <stop offset="100%" stopColor="#00655f" />
+        </linearGradient>
+        <linearGradient id="hkm-topFace" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#8ce8e1" />
+          <stop offset="100%" stopColor="#4dd0c9" />
+        </linearGradient>
+        <linearGradient id="hkm-leftFace" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#00b3ab" />
+          <stop offset="100%" stopColor="#008780" />
+        </linearGradient>
+        <linearGradient id="hkm-rightFace" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#006b65" />
+          <stop offset="100%" stopColor="#004d49" />
+        </linearGradient>
+        <filter id="hkm-badgeShadow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="3" stdDeviation="4" floodColor="#00332f" floodOpacity="0.28" />
+        </filter>
+      </defs>
+
+      <rect x="4" y="8" width="60" height="60" rx="16" fill="url(#hkm-badgeGrad)" filter="url(#hkm-badgeShadow)" />
+
+      <g transform="translate(19, 21)">
+        <polygon points="15,0 30,7.5 15,15 0,7.5" fill="url(#hkm-topFace)" />
+        <polygon points="0,7.5 0,22.5 15,30 15,15" fill="url(#hkm-leftFace)" />
+        <polygon points="30,7.5 30,22.5 15,30 15,15" fill="url(#hkm-rightFace)" />
+        <line x1="15" y1="15" x2="15" y2="30" stroke="#00332f" strokeWidth="0.6" opacity="0.4" />
+        <line x1="7.5" y1="3.7" x2="7.5" y2="18.7" stroke="#ffffff" strokeWidth="0.6" opacity="0.35" />
+      </g>
+
+      <circle cx="60" cy="14" r="7" fill="#ff6b4a" stroke="#ffffff" strokeWidth="2" />
+      <circle cx="60" cy="14" r="2.2" fill="#ffffff" />
+
+      <text x="80" y="38" fontFamily="'Noto Sans JP', 'Hiragino Sans', sans-serif" fontWeight="800" fontSize="28" letterSpacing="0.2" fill="#1a1a1a">ハコマネ</text>
+      <rect x="81" y="45" width="26" height="2" rx="1" fill="#00a09a" />
+      <text x="81" y="58" fontFamily="'Noto Sans JP', 'Hiragino Sans', sans-serif" fontWeight="600" fontSize="9.5" letterSpacing="1.6" fill="#7a8a89">DELIVERY MANAGEMENT SYSTEM</text>
+    </svg>
+  );
+};
+
 export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile: mobileProp }) {
   const isMobileLocal = useIsMobile();
   const isMobile = typeof mobileProp === "boolean" ? mobileProp : isMobileLocal;
@@ -7194,18 +7241,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
           </button>
         )}
-        <div style={{ paddingTop: "12px", paddingBottom: "8px", flexShrink: 0 }}>
-          <img
-            src="/hakomane-logo.png"
-            alt="Logo"
-            style={{
-              width: "280px" ,
-              height: "auto",
-              objectFit: "contain",
-              display: "block",
-              margin: "0",
-            }}
-          />
+        <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+          <HakomaneLogo height={44} />
         </div>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
           <button onClick={()=>setShowSettings(v=>!v)} style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
