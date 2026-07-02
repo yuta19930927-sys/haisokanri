@@ -362,11 +362,9 @@ export default function App() {
   if (!authed) {
     return (
       <div style={{ minHeight: "100vh", background: "#f7f8f9", display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? "8px" : "16px", fontFamily: "'Noto Sans JP', sans-serif", fontSize: "13px", fontWeight: 400 }}>
-        <div style={{ ...loginBox, maxWidth: isMobile ? "100%" : "380px", padding: "4px" }}>
-          <div style={{ background: "#00a09a", margin: "-4px -4px 12px -4px", padding: "14px 16px", borderTopLeftRadius: "6px", borderTopRightRadius: "6px", display: "flex", justifyContent: "flex-start", alignItems: "center" }}>
-            <div style={{ background: "#fff", borderRadius: "10px", padding: "6px 10px", display: "inline-flex" }}>
-              <HakomaneLogo height={40} />
-            </div>
+        <div style={{ ...loginBox, maxWidth: isMobile ? "100%" : "380px" }}>
+          <div style={{ display: "flex", justifyContent: "flex-start", alignItems: "center", marginBottom: "16px" }}>
+            <HakomaneLogo height={44} />
           </div>
           <div style={{ marginBottom: "12px", color: "#555", fontSize: "12px", fontWeight: 500 }}>
             配送管理システム - ログイン
