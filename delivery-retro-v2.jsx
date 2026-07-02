@@ -693,14 +693,14 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
         source: "vehicle", sourceId: vehicle?.id, date: targetDate, type: "task",
         title: `【任意保険更新】${vehicle?.plate || ""}`, color: "#9b27af", raw: vehicle,
       }));
-    const vehicleLiabilityItems = vehicles2
+    const vehicleLiabilityItems = vehicles
       .filter((vehicle) => normalizeDateString(vehicle?.liabilityExpiry) === targetDate)
       .map((vehicle) => ({
         id: `vliability-${vehicle?.id || Math.random()}`,
         source: "vehicle", sourceId: vehicle?.id, date: targetDate, type: "task",
         title: `【自賠責更新】${vehicle?.plate || ""}`, color: "#7b1fa2", raw: vehicle,
       }));
-    const vehicleNextInspectionItems = vehicles2
+    const vehicleNextInspectionItems = vehicles
       .filter((vehicle) => {
         const history = vehicle?.inspectionHistory || [];
         const latest = [...history].sort((a,b)=>(b.date||"").localeCompare(a.date||""))[0];
