@@ -704,6 +704,9 @@ const EVENT_TYPE_LABEL = {
   task:"タスク", sales:"営業", bank_in:"入金", bank_out:"支出"
 };
 
+/** 配送種別のラベル。route/charter に加えて、単発の依頼（スポット）を追加。 */
+const DELIVERY_TYPE_LABEL = { route:"ルート配送", charter:"チャーター便", spot:"スポット" };
+
 const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authEmail }) => {
   const [calYear, setCalYear] = useState(() => getNow().getFullYear());
   const [calMonth, setCalMonth] = useState(() => getNow().getMonth());
@@ -713,10 +716,10 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
   const [showEditModal, setShowEditModal] = useState(false);
   const [addDate, setAddDate] = useState("");
   const [newEvent, setNewEvent] = useState({ title:"", type:"task", note:"" });
-  const [newOrder, setNewOrder] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"" });
+  const [newOrder, setNewOrder] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", driverPayAmount:"", notes:"" });
   const [editingItem, setEditingItem] = useState(null);
   const [editEvent, setEditEvent] = useState({ id:"", date:"", type:"task", title:"", note:"" });
-  const [editOrder, setEditOrder] = useState({ id:"", customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", notes:"", status:"pending" });
+  const [editOrder, setEditOrder] = useState({ id:"", customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", driverPayAmount:"", notes:"", status:"pending" });
   const [addFormError, setAddFormError] = useState("");
 
   const firstDay = new Date(calYear, calMonth, 1).getDay();
@@ -971,6 +974,10 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
         driverId: null,
         vehicleId: null,
         amount: parseInt(newOrder.amount, 10) || 0,
+        // ドライバー（特に業務委託）へ支払う報酬額。ここが未設定のままだと、
+        // 配送完了時に自動生成される実績データの報酬額がゼロのまま残り、
+        // 「仕事は完了したのにいくら払うか分からない」という事故につながる。
+        driverPayAmount: newOrder.driverPayAmount !== "" && newOrder.driverPayAmount != null ? (parseInt(newOrder.driverPayAmount, 10) || 0) : null,
         notes: newOrder.notes,
       };
       const deliveryEvent = {
@@ -1026,6 +1033,7 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
         cargo: order?.cargo || "",
         weight: order?.weight || "",
         amount: String(order?.amount ?? ""),
+        driverPayAmount: order?.driverPayAmount != null ? String(order.driverPayAmount) : "",
         notes: order?.notes || "",
         status: order?.status || "pending",
       });
@@ -1062,6 +1070,7 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
                 cargo: editOrder.cargo,
                 weight: editOrder.weight,
                 amount: parseInt(editOrder.amount, 10) || 0,
+                driverPayAmount: editOrder.driverPayAmount !== "" && editOrder.driverPayAmount != null ? (parseInt(editOrder.driverPayAmount, 10) || 0) : null,
                 notes: editOrder.notes,
                 status: editOrder.status,
               }
@@ -1201,7 +1210,7 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
                   <div key={item.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 10px", border:"1px solid #e8e8e8", borderLeft:`4px solid ${item.color}`, borderRadius:"4px", background:"#fff", cursor: isDriverView ? "default" : "pointer", marginBottom:"6px" }} onClick={() => { if (!isDriverView) openEditModal(item); }}>
                     <div style={{ flex:1, fontSize:"12px" }}>
                       <span style={{ background:item.color, color:"#fff", padding:"2px 6px", fontSize:"10px", marginRight:"6px", borderRadius:"2px" }}>
-                        {item.source === "order" ? item.deliveryType === "charter" ? "チャーター便" : "ルート配送" : item.source === "driver" ? "免許更新" : item.source === "vehicle" ? "車検" : EVENT_TYPE_LABEL[item.type] || item.type}
+                        {item.source === "order" ? (DELIVERY_TYPE_LABEL[item.deliveryType] || "ルート配送") : item.source === "driver" ? "免許更新" : item.source === "vehicle" ? "車検" : EVENT_TYPE_LABEL[item.type] || item.type}
                       </span>
                       {item.title}
                       {item.source === "order" && !isDriverView && <div style={{ marginTop:"2px", fontSize:"10px", color:"#666" }}>ドライバー：{item.subtitle || "未配車"}</div>}
@@ -1239,6 +1248,7 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
                 <RetroSelect value={newOrder.deliveryType} onChange={(e)=>setNewOrder((v)=>({...v, deliveryType:e.target.value}))}>
                   <option value="route">ルート配送</option>
                   <option value="charter">チャーター便</option>
+                  <option value="spot">スポット</option>
                 </RetroSelect>
               </Fl>
               <Fl label="配達日"><RetroInput type="date" value={newOrder.deliveryDate} onChange={(e)=>setNewOrder((v)=>({...v, deliveryDate:e.target.value}))}/></Fl>
@@ -1249,6 +1259,9 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
                 <Fl label="重量"><RetroInput value={newOrder.weight} onChange={(e)=>setNewOrder((v)=>({...v, weight:e.target.value}))}/></Fl>
               </div>
               <Fl label="金額"><RetroInput type="number" min="0" value={newOrder.amount} onChange={(e)=>setNewOrder((v)=>({...v, amount:e.target.value}))}/></Fl>
+              <Fl label="ドライバー報酬額（業務委託の支払額）">
+                <RetroInput type="number" min="0" value={newOrder.driverPayAmount} onChange={(e)=>setNewOrder((v)=>({...v, driverPayAmount:e.target.value}))} placeholder="未設定の場合、配送完了時に報酬額0円で記録されます"/>
+              </Fl>
               <Fl label="備考"><RetroTextarea value={newOrder.notes} onChange={(e)=>setNewOrder((v)=>({...v, notes:e.target.value}))}/></Fl>
             </>
           ) : (
@@ -1289,6 +1302,7 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
                 <RetroSelect value={editOrder.deliveryType} onChange={(e)=>setEditOrder((v)=>({...v, deliveryType:e.target.value}))}>
                   <option value="route">ルート配送</option>
                   <option value="charter">チャーター便</option>
+                  <option value="spot">スポット</option>
                 </RetroSelect>
               </Fl>
               <Fl label="配達日"><RetroInput type="date" value={editOrder.deliveryDate} onChange={(e)=>setEditOrder((v)=>({...v, deliveryDate:e.target.value}))}/></Fl>
@@ -1299,6 +1313,9 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
                 <Fl label="重量"><RetroInput value={editOrder.weight} onChange={(e)=>setEditOrder((v)=>({...v, weight:e.target.value}))}/></Fl>
               </div>
               <Fl label="金額"><RetroInput type="number" min="0" value={editOrder.amount} onChange={(e)=>setEditOrder((v)=>({...v, amount:e.target.value}))}/></Fl>
+              <Fl label="ドライバー報酬額（業務委託の支払額）">
+                <RetroInput type="number" min="0" value={editOrder.driverPayAmount} onChange={(e)=>setEditOrder((v)=>({...v, driverPayAmount:e.target.value}))} placeholder="未設定の場合、配送完了時に報酬額0円で記録されます"/>
+              </Fl>
               <Fl label="備考"><RetroTextarea value={editOrder.notes} onChange={(e)=>setEditOrder((v)=>({...v, notes:e.target.value}))}/></Fl>
             </>
           ) : editingItem.source === "event" ? (
@@ -1759,12 +1776,22 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         )
       );
 
+      // 【重要】ここまでの処理で、請求書のステータス（未払い→入金済み）は
+      // 直接Supabaseには書き込めているが、画面が見ている data.invoices（ローカルの状態）
+      // を更新していなかったため、消込を確定させても画面上は「未払い」のままに
+      // 見えてしまっていた（実際に検証で見つかった不具合）。
+      // bank_transactions だけでなく invoices 側もあわせて更新する。
       setData((d) => ({
         ...d,
         bankTransactions: (Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).map((row) =>
           row?.id === bankTxId
             ? { ...row, status: "matched", match_status: "matched", matched_invoice_id: invoiceDbId, matched_at: nowIso, matched_by: userId }
             : row
+        ),
+        invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
+          (inv?._dbId ?? inv?.id) === invoiceDbId || inv?.id === invBusinessId
+            ? { ...inv, ...invPayloadNext, _dbId: invoiceDbId }
+            : inv
         ),
       }));
 
@@ -2564,7 +2591,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     setData((d) => ({
       ...d,
       orders: (Array.isArray(d?.orders) ? d.orders : []).map((order) =>
-        order?.id === orderDraft.id ? { ...order, ...orderDraft, amount: Number(orderDraft?.amount) || 0 } : order
+        order?.id === orderDraft.id ? { ...order, ...orderDraft, amount: Number(orderDraft?.amount) || 0, driverPayAmount: orderDraft?.driverPayAmount !== "" && orderDraft?.driverPayAmount != null ? (Number(orderDraft.driverPayAmount) || 0) : null } : order
       ),
     }));
     setOrderEditMode(false);
@@ -2573,6 +2600,20 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const goNextStatus = (orderId, currentStatus) => {
     const next = statusNext[currentStatus];
     if (!next) return;
+    // 【重要】配送完了にすると実績データが自動生成され、その時点の
+    // ドライバー報酬額がそのまま確定してしまう。未設定のまま進めると
+    // 気づかないうちに報酬0円で記録されてしまうため、ここで一度確認する。
+    if (next === "delivered") {
+      const targetOrderForCheck = orders.find((x) => x?.id === orderId);
+      if (targetOrderForCheck && targetOrderForCheck.driverPayAmount == null) {
+        const proceed = window.confirm(
+          "この受注には「ドライバー報酬額」が設定されていません。\n" +
+          "このまま配送完了にすると、実績データに報酬額0円で記録されます。\n\n" +
+          "このまま進めますか？（キャンセルして先に報酬額を設定することをおすすめします）"
+        );
+        if (!proceed) return;
+      }
+    }
     setData((d) => {
       const currentOrders = Array.isArray(d?.orders) ? d.orders : [];
       const currentInvoices = Array.isArray(d?.invoices) ? d.invoices : [];
@@ -2603,8 +2644,13 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               distance: targetOrder?.distance || "",
               hours: targetOrder?.hours || "",
               salesAmount: Number(targetOrder?.amount) || 0,
-              driverAmount: 0,
-              note: `受注 ${targetOrder?.id} より自動連携`,
+              // 【重要】以前はここが常に 0 固定になっており、受注から配送完了させても
+              // 業務委託ドライバーへの報酬額が一切反映されない、という重大な欠陥があった。
+              // 受注作成・編集時に入力した「ドライバー報酬額」をそのまま引き継ぐ。
+              driverAmount: Number(targetOrder?.driverPayAmount) || 0,
+              note: targetOrder?.driverPayAmount == null
+                ? `受注 ${targetOrder?.id} より自動連携（⚠️ドライバー報酬額が未設定のため0円で記録）`
+                : `受注 ${targetOrder?.id} より自動連携`,
             },
           ];
 
@@ -2774,6 +2820,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             <RetroSelect value={form.deliveryType} onChange={e=>setForm(f=>({...f,deliveryType:e.target.value}))}>
               <option value="route">ルート配送</option>
               <option value="charter">チャーター便</option>
+              <option value="spot">スポット</option>
             </RetroSelect>
           </Fl>
         </div>
@@ -2827,6 +2874,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                   <RetroSelect value={orderDraft?.deliveryType || "route"} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), deliveryType:e.target.value }))}>
                     <option value="route">ルート配送</option>
                     <option value="charter">チャーター便</option>
+                    <option value="spot">スポット</option>
                   </RetroSelect>
                 </Fl>
                 <Fl label="状態">
@@ -2844,6 +2892,9 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 <Fl label="荷物"><RetroInput value={orderDraft?.cargo || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), cargo:e.target.value }))}/></Fl>
                 <Fl label="重量"><RetroInput value={orderDraft?.weight || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), weight:e.target.value }))}/></Fl>
                 <Fl label="金額"><RetroInput type="number" min="0" value={orderDraft?.amount ?? ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), amount:e.target.value }))}/></Fl>
+                <Fl label="ドライバー報酬額（業務委託の支払額）">
+                  <RetroInput type="number" min="0" value={orderDraft?.driverPayAmount ?? ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), driverPayAmount:e.target.value }))} placeholder="未設定の場合、配送完了時に報酬額0円で記録されます"/>
+                </Fl>
               </div>
               <Fl label="備考"><RetroTextarea value={orderDraft?.notes || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), notes:e.target.value }))}/></Fl>
               <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
@@ -2856,13 +2907,19 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               <Panel>
                 <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
                   <div>顧客</div><div>{selectedOrder?.customerName || ""}</div>
-                  <div>配送種別</div><div>{selectedOrder?.deliveryType === "charter" ? "チャーター便" : "ルート配送"}</div>
+                  <div>配送種別</div><div>{DELIVERY_TYPE_LABEL[selectedOrder?.deliveryType] || "ルート配送"}</div>
                   <div>配達日</div><div>{selectedOrder?.deliveryDate || ""}</div>
                   <div>出発地</div><div>{selectedOrder?.from || ""}</div>
                   <div>配送先</div><div>{selectedOrder?.to || ""}</div>
                   <div>荷物</div><div>{selectedOrder?.cargo || ""}</div>
                   <div>重量</div><div>{selectedOrder?.weight || ""}</div>
                   <div>金額</div><div>¥{(Number(selectedOrder?.amount)||0).toLocaleString()}</div>
+                  <div>ドライバー報酬額</div>
+                  <div>
+                    {selectedOrder?.driverPayAmount != null
+                      ? `¥${Number(selectedOrder.driverPayAmount).toLocaleString()}`
+                      : <span style={{ color:"#e65100", fontWeight:700 }}>未設定（配送完了時に0円で記録されます）</span>}
+                  </div>
                   <div>備考</div><div>{selectedOrder?.notes || "—"}</div>
                   <div>状態</div><div><StatusPill s={selectedOrder?.status}/></div>
                 </div>
@@ -2925,29 +2982,36 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => !v?.deleted);
   const [sel, setSel] = useState(null);
-  const [aD, setAD] = useState(""); const [aV, setAV] = useState("");
+  const [aD, setAD] = useState(""); const [aV, setAV] = useState(""); const [aPay, setAPay] = useState("");
   // 配車済みの受注を選んで、ドライバー・車両を変更したり配車自体を取り消せるようにする。
   // 以前は配車を確定すると配車管理ページから二度と変更できなかったため、
   // 「担当ドライバーが急に休んだので別の人に変更したい」という
   // よくある現場のケースに対応できていなかった。
   const [reassignId, setReassignId] = useState(null);
-  const [rD, setRD] = useState(""); const [rV, setRV] = useState("");
+  const [rD, setRD] = useState(""); const [rV, setRV] = useState(""); const [rPay, setRPay] = useState("");
   const pending = orders.filter(o=>o?.status==="pending");
   const scheduled = orders.filter(o=>o?.status==="scheduled");
   const doAssign = () => {
     if(!sel||!aD||!aV) return;
-    setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(o=>o?.id===sel?{...o,driverId:aD,vehicleId:aV,status:"scheduled"}:o)}));
-    setSel(null); setAD(""); setAV("");
+    setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(o=>o?.id===sel?{...o,driverId:aD,vehicleId:aV,status:"scheduled",
+      // 配車確定時にドライバー報酬額を入力していれば、ここで受注に反映する。
+      // 未入力ならこの受注が元々持っていた値（未設定なら未設定のまま）を維持する。
+      ...(aPay !== "" ? { driverPayAmount: parseInt(aPay, 10) || 0 } : {})
+    }:o)}));
+    setSel(null); setAD(""); setAV(""); setAPay("");
   };
   const openReassign = (order) => {
     setReassignId(order?.id === reassignId ? null : order?.id);
     setRD(order?.driverId || "");
     setRV(order?.vehicleId || "");
+    setRPay(order?.driverPayAmount != null ? String(order.driverPayAmount) : "");
   };
   const doReassign = () => {
     if (!reassignId || !rD || !rV) return;
-    setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(o=>o?.id===reassignId?{...o,driverId:rD,vehicleId:rV}:o)}));
-    setReassignId(null); setRD(""); setRV("");
+    setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(o=>o?.id===reassignId?{...o,driverId:rD,vehicleId:rV,
+      ...(rPay !== "" ? { driverPayAmount: parseInt(rPay, 10) || 0 } : {})
+    }:o)}));
+    setReassignId(null); setRD(""); setRV(""); setRPay("");
   };
   const cancelAssignment = () => {
     if (!reassignId) return;
@@ -2964,7 +3028,7 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       <div style={{ flex:1 }}>
         <Panel title={`未配車（${pending.length}件）`} icon={warnIcon}>
           {pending.map(o=>(
-            <div key={o?.id||`pending-${Math.random()}`} onClick={()=>setSel(o?.id===sel?null:o?.id)} style={{ border:cardBorder, background:sel===o?.id?"#e8f5f4":"#fff", padding:"8px 10px", marginBottom:"6px", cursor:"pointer", borderRadius:"6px" }}>
+            <div key={o?.id||`pending-${Math.random()}`} onClick={()=>{ const nextSel = o?.id===sel?null:o?.id; setSel(nextSel); setAPay(nextSel ? (o?.driverPayAmount != null ? String(o.driverPayAmount) : "") : ""); }} style={{ border:cardBorder, background:sel===o?.id?"#e8f5f4":"#fff", padding:"8px 10px", marginBottom:"6px", cursor:"pointer", borderRadius:"6px" }}>
               <div style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>{o?.id||"—"} — {o?.customerName||""}</div>
               <div style={{ fontSize:"12px", color:"#666" }}>{o?.cargo||""}{o?.weight ? `（${o.weight}）` : ""}配達日：{o?.deliveryDate||""}</div>
             </div>
@@ -2989,6 +3053,9 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             const warning = isInspectionExpired ? "⚠車検切れ " : (isInsuranceExpired ? "⚠保険切れ " : "");
             return <option key={v?.id||`vehicle-${Math.random()}`} value={v?.id||""}>{warning}{v?.plate||""}</option>;
           })}</RetroSelect></Fl>
+          <Fl label="ドライバー報酬額（業務委託の支払額）">
+            <RetroInput type="number" min="0" value={aPay} onChange={e=>setAPay(e.target.value)} placeholder="未設定の場合、配送完了時に報酬額0円で記録されます"/>
+          </Fl>
           <RetroBtn onClick={doAssign} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{truckIcon}配車確定</RetroBtn>
         </Panel>}
       </div>
@@ -3009,6 +3076,9 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                     {!dr && o?.driverId && <span style={{ background:"#fff3e0", color:"#e65100", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{userIcon}担当ドライバー削除済み</span>}
                     {vh&&<span style={{ background:"#e8f5e9", color:"#2e7d32", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{truckIcon}{vh?.plate||""}</span>}
                     {!vh && o?.vehicleId && <span style={{ background:"#fff3e0", color:"#e65100", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{truckIcon}使用車両削除済み</span>}
+                    {/* 報酬額が未設定のまま配送完了させると実績が0円で記録されてしまうため、
+                        配車済み一覧の時点で気づけるよう、ここでも警告バッジを出す。 */}
+                    {o?.driverPayAmount == null && <span style={{ background:"#ffebee", color:"#c62828", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{warnIcon}報酬額未設定</span>}
                   </div>
                 </div>
                 {reassignId===o?.id && (
@@ -3034,6 +3104,9 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                           return <option key={v?.id} value={v?.id}>{warning}{v?.plate||""}</option>;
                         })}
                       </RetroSelect>
+                    </Fl>
+                    <Fl label="ドライバー報酬額（業務委託の支払額）">
+                      <RetroInput type="number" min="0" value={rPay} onChange={e=>setRPay(e.target.value)} placeholder="未設定の場合、配送完了時に報酬額0円で記録されます"/>
                     </Fl>
                     <div style={{ display:"flex", gap:"6px" }}>
                       <RetroBtn onClick={doReassign} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{truckIcon}変更を保存</RetroBtn>
@@ -8566,7 +8639,13 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           <span style={{fontSize:"11px",color:"#999"}}>{inv?.note||"—"}</span>,
           inv?.status!=="paid"
             ? (customers.find((c) => c?.id === inv?.customerId)?.email
-                ? <RetroBtn small onClick={()=>sendReminderMail(inv)} style={{ background:(inv?.dueDate||"")<getTodayLocalStr() ? "#e63946" : "#fff", borderColor:"#e63946", color:(inv?.dueDate||"")<getTodayLocalStr() ? "#fff" : "#e63946" }}>督促</RetroBtn>
+                ? <RetroBtn small onClick={()=>sendReminderMail(inv)} style={{ background:(inv?.dueDate||"")<getTodayLocalStr() ? "#e63946" : "#fff", borderColor:"#e63946", color:(inv?.dueDate||"")<getTodayLocalStr() ? "#fff" : "#e63946" }}>
+                    {/* 「督促」は本来、支払期日を過ぎた請求に対して使う言葉。
+                        期日前の請求にも同じラベルを出すと、送る前から
+                        「もう滞納扱いなのか」という誤解を与えてしまう。
+                        期日前は「支払い案内」、期日超過後だけ「督促」と表示を分ける。 */}
+                    {(inv?.dueDate||"")<getTodayLocalStr() ? "督促" : "支払い案内"}
+                  </RetroBtn>
                 : <span style={{fontSize:"10px",color:"#999"}} title="顧客にメールアドレスが登録されていません">メール未登録</span>)
             : <span style={{fontSize:"10px",color:"#ccc"}}>—</span>
         ])}
@@ -8778,7 +8857,7 @@ const DriversAccidentFormTab = ({ form, setForm, isMobile, tenantId }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#e63946" }}>{rec.date} 【{rec.type}】</span>
-              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, accidentLogs: (prev.accidentLogs || []).filter(x => x.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => { if (!window.confirm("この記録を削除しますか？")) return; setForm(prev => ({ ...prev, accidentLogs: (prev.accidentLogs || []).filter(x => x.id !== rec.id) })); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -8823,7 +8902,7 @@ const DriversAccidentFormTab = ({ form, setForm, isMobile, tenantId }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#e65100" }}>{rec.date}</span>
-              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, internalLogs: (prev.internalLogs || []).filter(x => x.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => { if (!window.confirm("この記録を削除しますか？")) return; setForm(prev => ({ ...prev, internalLogs: (prev.internalLogs || []).filter(x => x.id !== rec.id) })); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -9909,7 +9988,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     if (error) console.error('vehicle_inspections insert error:', error);
     setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" });
   };
-  const removeInspection = (id) => { setForm(f => ({ ...f, inspectionHistory: (f.inspectionHistory||[]).filter(x => x.id !== id) })); };
+  const removeInspection = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, inspectionHistory: (f.inspectionHistory||[]).filter(x => x.id !== id) })); };
   const addAccident = async () => {
     if (!newAccident.datetime) return;
     setForm(f => ({ ...f, accidentHistory: [...(f.accidentHistory||[]), { ...newAccident, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }] }));
@@ -9928,7 +10007,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     if (error) console.error('vehicle_incidents(accident) insert error:', error);
     setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" });
   };
-  const removeAccident = (id) => { setForm(f => ({ ...f, accidentHistory: (f.accidentHistory||[]).filter(x => x.id !== id) })); };
+  const removeAccident = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, accidentHistory: (f.accidentHistory||[]).filter(x => x.id !== id) })); };
   const addViolation = async () => {
     if (!newViolation.date) return;
     setForm(f => ({ ...f, violationHistory: [...(f.violationHistory||[]), { ...newViolation, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }] }));
@@ -9949,7 +10028,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     if (error) console.error('vehicle_incidents(violation) insert error:', error);
     setNewViolation({ date:"", content:"", penalty:"" });
   };
-  const removeViolation = (id) => { setForm(f => ({ ...f, violationHistory: (f.violationHistory||[]).filter(x => x.id !== id) })); };
+  const removeViolation = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, violationHistory: (f.violationHistory||[]).filter(x => x.id !== id) })); };
   const vehicleIcon = <Icon size={14}><rect x="3" y="9" width="18" height="7" rx="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>;
   const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
   const trashIcon = <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></Icon>;
@@ -10644,7 +10723,6 @@ const MENU = [
   { id:"sales_mgmt", icon:<Icon size={16}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>, label:"売上管理", section:"経理" },
   { id:"payout", icon:<Icon size={16}><path d="M12 12v8"/><path d="M8 4l4 6 4-6"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="17" y2="16"/></Icon>, label:"報酬・振込", section:"経理" },
   { id:"quality_mgmt", icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績・品質管理", section:"経理" },
-  { id:"change_history", icon:<Icon size={16}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l4 2"/></Icon>, label:"変更履歴", section:"経理" },
   { id:"tenants", label:"テナント管理", icon:"🏢", section:"admin" },
 ];
 
@@ -10966,6 +11044,11 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const [notifications, setNotifications] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  // システムアラートを「今のセッションだけ」非表示にするためのID一覧。
+  // 次回ログイン時にはリセットされる（＝実際に直っていなければまた表示される）。
+  // これにより「もう分かっているのでずっと出続けるのは邪魔」という要望に応えつつ、
+  // 「対応せず放置される」という元々の安全設計も両立させる。
+  const [dismissedAlertIds, setDismissedAlertIds] = useState(() => new Set());
   const [saveErrorBanner, setSaveErrorBanner] = useState(null);
   const previousDataRef = useRef(createEmptyData());
   const latestDataRef = useRef(initialData);
@@ -11425,8 +11508,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   // ドライバー本人には他人の情報を見せないため、管理側の役割のときだけ計算する。
   const systemAlerts = useMemo(() => {
     if (userRole === "driver") return [];
-    return buildSystemAlerts(data, Number(data?.companyInfo?.expiryAlertDays) || 30);
-  }, [data, userRole]);
+    return buildSystemAlerts(data, Number(data?.companyInfo?.expiryAlertDays) || 30).filter((a) => !dismissedAlertIds.has(a.id));
+  }, [data, userRole, dismissedAlertIds]);
   const dangerAlertCount = systemAlerts.filter(a => a.level === "danger").length;
 
   const badges = { dispatch:pendingCount, bank:unmatchedCount+overdueCount, drivers:driversExpiringCount, vehicles:vehiclesExpiringCount };
@@ -11537,14 +11620,23 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         }}>
           <div style={{ padding:"12px 16px", borderBottom:"1px solid #eee", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:"13px" }}>通知</span>
-            {notifications.length > 0 && (
+            <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+              {notifications.length > 0 && (
+                <button
+                  onClick={() => setNotifications([])}
+                  style={{ fontSize:"11px", color:"#00a09a", border:"none", background:"none", cursor:"pointer" }}
+                >
+                  全て既読
+                </button>
+              )}
               <button
-                onClick={() => setNotifications([])}
-                style={{ fontSize:"11px", color:"#00a09a", border:"none", background:"none", cursor:"pointer" }}
+                onClick={() => setShowNotifications(false)}
+                aria-label="通知を閉じる"
+                style={{ border:"none", background:"none", color:"#999", cursor:"pointer", fontSize:"16px", lineHeight:1, padding:"2px" }}
               >
-                全て既読
+                ✕
               </button>
-            )}
+            </div>
           </div>
 
           {/* ===== 第4弾：システムアラート（車検・保険・契約・インボイス・報酬確定漏れ・未入力実績）=====
@@ -11566,14 +11658,26 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                     style={{
                       padding:"10px 16px", borderBottom:"1px solid #f5f5f5",
                       borderLeft:`3px solid ${c.border}`, background:c.bg, cursor: a.page ? "pointer" : "default",
+                      display:"flex", justifyContent:"space-between", gap:"8px",
                     }}
                   >
-                    <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"3px" }}>
-                      <span style={{ fontSize:"9px", fontWeight:700, color:"#fff", background:c.tag, borderRadius:"3px", padding:"1px 5px" }}>
-                        {a.category}
-                      </span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"3px" }}>
+                        <span style={{ fontSize:"9px", fontWeight:700, color:"#fff", background:c.tag, borderRadius:"3px", padding:"1px 5px" }}>
+                          {a.category}
+                        </span>
+                      </div>
+                      <div style={{ fontSize:"12px", color:c.text, lineHeight:1.5 }}>{a.message}</div>
                     </div>
-                    <div style={{ fontSize:"12px", color:c.text, lineHeight:1.5 }}>{a.message}</div>
+                    {/* この警告を今のセッション中だけ非表示にする。
+                        次回ログイン時、実際に直っていなければまた表示される。 */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDismissedAlertIds((prev) => new Set(prev).add(a.id)); }}
+                      aria-label="この警告を非表示にする"
+                      style={{ border:"none", background:"none", color:"#999", cursor:"pointer", fontSize:"14px", lineHeight:1, padding:"2px", flexShrink:0 }}
+                    >
+                      ✕
+                    </button>
                   </div>
                 );
               })}
@@ -11755,6 +11859,14 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               );
             })}
           </div>
+          {(userRole === "office" || userRole === "admin" || userRole === "super_admin") && (
+            <div style={{ borderTop:"2px solid #e8e8e8", marginTop:"16px", paddingTop:"16px" }}>
+              <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px" }}>変更履歴</div>
+              <RetroBtn small onClick={()=>{ setShowSettings(false); setPage("change_history"); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
+                変更履歴を見る
+              </RetroBtn>
+            </div>
+          )}
         </Modal>
       )}
 
