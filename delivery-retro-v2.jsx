@@ -5551,6 +5551,34 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
   };
 
   /**
+   * 報酬明細をメールで送付する。
+   * 【重要】mailtoリンクの仕組み上、PDFファイルをメールに自動添付することは
+   * できない。そのため、①明細を新しいタブで開く（そこからドライバー自身が
+   * 保存・PDF化・添付できる）→②同時に、要点（支給合計・控除・振込予定額）
+   * を本文に入れたメール下書きを開く、という2段階の流れにしている。
+   */
+  const sendPayoutMail = (payout) => {
+    const driver = drivers.find((d) => d?.id === payout.driverId);
+    if (!driver?.email) {
+      window.alert(`${driver?.name || "このドライバー"} にはメールアドレスが登録されていません。`);
+      return;
+    }
+    openStatement(payout);
+    const subject = `【${companyInfo?.name || "配送管理会社"}】${month} 報酬明細のお知らせ`;
+    const body =
+      `${driver.name} 様\n\n` +
+      `お世話になっております。${month}分の報酬明細がまとまりましたのでお知らせいたします。\n\n` +
+      `支給合計：${yen(payout.grossPay)}\n` +
+      `控除合計：${yen(payout.totalDeduction)}\n` +
+      `振込予定額：${payout.isNegative ? yen(0) : yen(payout.netPay)}\n` +
+      (payout.isNegative ? `\n※今月は控除額が支給額を上回っているため、振込予定額は0円です。差額は今後の支給分から順次調整されます。\n` : "") +
+      `\n詳しい内訳は、別タブで開いた明細PDFをご確認ください。\n\n` +
+      `${companyInfo?.name || ""}`;
+    const mailtoUrl = `mailto:${encodeURIComponent(driver.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.open(mailtoUrl, "_blank");
+  };
+
+  /**
    * 明細書の一括発行。
    * 稼働があった（振込対象の）ドライバー全員分を1つのタブにまとめて開く。
    * ポップアップを何十枚も開くとブラウザにブロックされたり、
@@ -5677,6 +5705,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
 
   const yenIcon = <Icon size={14}><path d="M12 12v8M8 4l4 6 4-6M7 12h10M7 16h10"/></Icon>;
   const pdfIcon = <Icon size={12}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></Icon>;
+  const mailIcon2 = <Icon size={12}><rect x="3" y="5" width="18" height="14" rx="2"/><polyline points="3,7 12,13 21,7"/></Icon>;
   const csvIcon = <Icon size={12}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></Icon>;
   const historyIcon = <Icon size={12}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l4 2"/></Icon>;
 
@@ -5873,7 +5902,8 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
                 </td>
                 <td style={{ padding:"8px 10px", whiteSpace:"nowrap" }}>
                   <RetroBtn small onClick={() => setDetailDriverId(p.driverId)} style={{ marginRight:"4px" }}>内訳</RetroBtn>
-                  <RetroBtn small onClick={() => openStatement(p)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{pdfIcon}明細PDF</RetroBtn>
+                  <RetroBtn small onClick={() => openStatement(p)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff", marginRight:"4px" }}>{pdfIcon}明細PDF</RetroBtn>
+                  <RetroBtn small onClick={() => sendPayoutMail(p)} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>{mailIcon2}メール送付</RetroBtn>
                 </td>
               </tr>
             ))}
@@ -8628,7 +8658,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   );
 };
 
-const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
+const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCompanySettings, onAutoOpenHandled }) => {
   const orders = (Array.isArray(data?.orders) ? data.orders : []).filter(o => !o?.deleted);
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const allInvoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
@@ -8647,6 +8677,9 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [selectedDriverInvoiceId, setSelectedDriverInvoiceId] = useState(null);
   const [batchMonth, setBatchMonth] = useState(() => getTodayLocalStr().slice(0, 7));
   const [batchResultMsg, setBatchResultMsg] = useState("");
+  // 一括発行した直後、続けてテンポよく送信できるよう、発行したばかりの
+  // 請求書を一時的に保持しておく（メール送信は1件ずつしかできない仕組みのため）。
+  const [pendingSendInvoices, setPendingSendInvoices] = useState([]);
   // 取引先ごとの請求履歴を一覧で見られるようにする。
   const [showCustomerHistory, setShowCustomerHistory] = useState(false);
   const [historyCustomerId, setHistoryCustomerId] = useState("");
@@ -8671,7 +8704,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       (o?.deliveryDate || "").slice(0, 7) === targetMonth &&
       !o?.invoicedInvoiceId // 既に何らかの請求書（個別・一括問わず）に含まれていないもの
     );
-    if (targetOrders.length === 0) return 0;
+    if (targetOrders.length === 0) return [];
 
     const byCustomer = new Map();
     targetOrders.forEach((o) => {
@@ -8739,7 +8772,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       }
     });
 
-    if (newInvoices.length === 0) return 0;
+    if (newInvoices.length === 0) return [];
 
     setData((d) => ({
       ...d,
@@ -8749,7 +8782,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         orderIdToInvoiceId.has(o?.id) ? { ...o, invoicedInvoiceId: orderIdToInvoiceId.get(o.id) } : o
       ),
     }));
-    return newInvoices.length;
+    return newInvoices;
   };
 
   /**
@@ -8809,6 +8842,14 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showMailModal, setShowMailModal] = useState(false);
   const [showCompanyModal, setShowCompanyModal] = useState(false);
+  // 設定（ネジマーク）の「会社情報設定」から遷移してきた場合、
+  // 自動的にこのモーダルを開く。開いたら合図をリセットする。
+  useEffect(() => {
+    if (autoOpenCompanySettings) {
+      setShowCompanyModal(true);
+      onAutoOpenHandled?.();
+    }
+  }, [autoOpenCompanySettings]);
   const [showCompanyHistory, setShowCompanyHistory] = useState(false);
   const [companyDraft, setCompanyDraft] = useState({
     id: companyInfo?.id || "COMPANY-001",
@@ -9454,14 +9495,44 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             // 二重に処理される危険がある。処理中は再度押せないようにする。
             if (isGeneratingBatch) return;
             setIsGeneratingBatch(true);
-            const count = generateCustomerInvoicesForMonth(batchMonth);
-            setBatchResultMsg(count > 0 ? `${batchMonth} 分の請求書を ${count}件 発行しました。` : `${batchMonth} 分の、まだ請求書化されていない配送完了実績が見つかりませんでした。`);
+            const created = generateCustomerInvoicesForMonth(batchMonth);
+            setBatchResultMsg(created.length > 0 ? `${batchMonth} 分の請求書を ${created.length}件 発行しました。下の一覧から、続けて送信できます。` : `${batchMonth} 分の、まだ請求書化されていない配送完了実績が見つかりませんでした。`);
+            setPendingSendInvoices(created);
             setIsGeneratingBatch(false);
           }} disabled={isGeneratingBatch} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
             {isGeneratingBatch ? "発行中..." : "この月のぶんを一括発行"}
           </RetroBtn>
         </div>
         {batchResultMsg && <p style={{ fontSize:"12px", color:"#00695c", marginTop:"8px" }}>{batchResultMsg}</p>}
+        {pendingSendInvoices.length > 0 && (
+          <div style={{ marginTop:"12px", borderTop:"1px solid #eee", paddingTop:"10px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"8px" }}>
+              <span style={{ fontSize:"12px", fontWeight:700, color:"#555" }}>発行した請求書（{pendingSendInvoices.length}件）</span>
+              <RetroBtn small onClick={()=>setPendingSendInvoices([])} style={{ background:"#fff", color:"#999", borderColor:"#ccc" }}>この一覧を閉じる</RetroBtn>
+            </div>
+            <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
+              {pendingSendInvoices.map((inv) => {
+                const cust = customers.find((c) => c?.id === inv.customerId);
+                const hasEmail = !!cust?.email;
+                return (
+                  <div key={inv.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", border:cardBorder, borderRadius:"6px", padding:"8px 12px" }}>
+                    <div>
+                      <span style={{ fontWeight:700, fontSize:"12px" }}>{inv.customerName}</span>
+                      <span style={{ fontSize:"11px", color:"#888", marginLeft:"8px" }}>¥{inv.total.toLocaleString()}</span>
+                    </div>
+                    {hasEmail ? (
+                      <RetroBtn small onClick={()=>sendReminderMail(inv)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+                        {mailIcon}送信する
+                      </RetroBtn>
+                    ) : (
+                      <span style={{ fontSize:"10px", color:"#999" }}>メール未登録</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </Panel>
       <Panel title="取引先ごとの請求履歴">
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:"8px", marginBottom: showCustomerHistory ? "10px" : "0" }}>
@@ -9512,12 +9583,9 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           </>
         )}
       </Panel>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:"8px" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-          <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>検索</span>
-          <RetroInput value={invoiceSearch} onChange={e=>setInvoiceSearch(e.target.value)} placeholder="請求書番号・顧客名・備考で検索" style={{ width: isMobile ? "200px" : "260px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
-        </div>
-        <RetroBtn onClick={()=>setShowCompanyModal(true)} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>{companyIcon}会社情報設定</RetroBtn>
+      <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"8px" }}>
+        <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>検索</span>
+        <RetroInput value={invoiceSearch} onChange={e=>setInvoiceSearch(e.target.value)} placeholder="請求書番号・顧客名・備考で検索" style={{ width: isMobile ? "200px" : "260px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"8px" }}>
         {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#7b1fa2"],["入金済","¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#4caf50"],["未回収","¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#e63946"]].map(([l,v,c])=>(
@@ -12107,6 +12175,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const [profileResolved, setProfileResolved] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
+  // 設定（ネジマーク）から「会社情報設定」を選んだ時、請求管理ページに
+  // 移動した上で、そのページ内のモーダルを自動的に開くための合図。
+  const [autoOpenCompanySettings, setAutoOpenCompanySettings] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   // システムアラートを「今のセッションだけ」非表示にするためのID一覧。
   // 次回ログイン時にはリセットされる（＝実際に直っていなければまた表示される）。
@@ -12369,173 +12440,22 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     };
   }, [isLoaded, tenantId]);
 
+  // 【重要】以前はここで、アプリを開くたびに自動的に過去月の未請求分を
+  // 検出して請求書を作成していた（ボタン操作なしで、バックグラウンドで
+  // 勝手に動く仕組みだった）。
+  //
+  // その後、「顧客請求書の一括発行」ボタン（office側が対象月を選んで
+  // 明示的に実行する仕組み）を新設したが、この2つが互いの存在を知らずに
+  // 同じ実績・受注を別々の判定条件で二重に請求書化してしまい、
+  // 同じ取引先に対して請求書が重複して発行される事故が実際に発生した。
+  //
+  // ユーザーが「いつ・どの月の分を請求するか」を自分の意思で選べることを
+  // 優先し、無断で請求書が増えていくこの自動生成は無効化した。
+  // 月次の請求は、必ず「顧客請求書の一括発行」ボタンから行う。
   useEffect(() => {
-    if (!isLoaded || !tenantId) return;
+    return;
+  }, [isLoaded, tenantId]);
 
-    // 当月だけでなく、請求し忘れている前月以前の月も拾えるようにする。
-    // クライアント側の処理は「アプリを開いたとき」にしか走らないため、
-    // 月末ぴったりにアプリを開かなくても、開いたタイミングで未請求分を検出できるようにする。
-    // toISOString() はUTC基準になるため、日本時間の深夜0時〜9時の間は
-    // 前日（月初なら前月）の日付になってしまう。特に月初の深夜帯にアプリを開くと、
-    // まだ確定していない前月分を誤って「確定済みの月」と判定するリスクがあるため、
-    // ローカル時刻基準の文字列を使う。
-    const todayDateStr = getTodayLocalStr();
-    const currentMonthKey = todayDateStr.slice(0, 7);
-
-    const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter((inv) => !inv?.deleted);
-    const customers = Array.isArray(data?.customers) ? data.customers : [];
-    const qualityRecords = Array.isArray(data?.qualityRecords) ? data.qualityRecords : [];
-    const dailyRecords = Array.isArray(data?.dailyRecords) ? data.dailyRecords : [];
-    const orders = Array.isArray(data?.orders) ? data.orders : [];
-    void orders;
-
-    // 「今月分」は月が完全に終わるまで確定させない（締め後に実績が追加される可能性があるため）。
-    // 集計対象は「過去の確定済みの月（今月より前）」のうち、まだ請求が作られていない月。
-    const salesByMonth = {}; // { "2026-05": { [customerId]: { items: [], total: 0 } } }
-
-    const addToMonth = (monthKey, customerId, item) => {
-      if (!salesByMonth[monthKey]) salesByMonth[monthKey] = {};
-      if (!salesByMonth[monthKey][customerId]) salesByMonth[monthKey][customerId] = { items: [], total: 0 };
-      salesByMonth[monthKey][customerId].items.push(item);
-      salesByMonth[monthKey][customerId].total += Number(item.amount) || 0;
-    };
-
-    // 受注完了時に自動生成された個別請求書（orderId を持つもの）も合わせて確認する。
-    // 以前は salesMgmtMonth タグの有無だけで「既に請求済みか」を判定していたため、
-    // 個別請求書が存在する受注の実績がこのチェックに引っかからず、
-    // 翌月以降にこのuseEffectが走った際に同じ実績がもう一度 INV-AUTO として
-    // 請求書化されてしまう（二重請求）バグがあった。
-    const billedOrderIds = new Set(
-      invoices
-        .map((inv) => {
-          const p = inv?.payload || inv;
-          return p?.orderId;
-        })
-        .filter(Boolean)
-    );
-
-    // 消費税を「税抜の合計にまとめて10%をかける」のではなく、実際に発行される
-    // 請求書と同じ「1件（1実績）ごとに税込み計算してから合算する」方式に
-    // 統一するため、各実績が非課税の仕事種別かどうかをここで判定して付与する。
-    const jobTypesForTax = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
-    const isTaxableRecord = (r) => {
-      const jt = jobTypesForTax.find(j => j?.id === r?.jobTypeId);
-      return jt?.taxable !== false;
-    };
-
-    qualityRecords
-      .filter((r) => r?.date && r.date.slice(0, 7) < currentMonthKey && r?.customerId && r?.salesAmount)
-      .filter((r) => !r?.orderId || !billedOrderIds.has(r.orderId))
-      .forEach((r) => {
-        const monthKey = r.date.slice(0, 7);
-        addToMonth(monthKey, r.customerId, {
-          date: r.date,
-          description: `実績 ${r.date}`,
-          amount: Number(r.salesAmount),
-          taxable: isTaxableRecord(r),
-        });
-      });
-
-    dailyRecords
-      .filter((r) => r?.date && r.date.slice(0, 7) < currentMonthKey && r?.customerId && r?.salesAmount)
-      .filter((r) => !r?.orderId || !billedOrderIds.has(r.orderId))
-      .forEach((r) => {
-        const monthKey = r.date.slice(0, 7);
-        addToMonth(monthKey, r.customerId, {
-          date: r.date,
-          description: r.note || `配送 ${r.date}`,
-          amount: Number(r.salesAmount),
-          taxable: isTaxableRecord(r),
-        });
-      });
-
-    const alreadyBilledKey = new Set(
-      invoices
-        .filter((inv) => {
-          const p = inv?.payload || inv;
-          return !!p?.salesMgmtMonth && !!p?.customerId;
-        })
-        .map((inv) => {
-          const p = inv?.payload || inv;
-          return `${p.salesMgmtMonth}_${p.customerId}`;
-        })
-    );
-
-    const newInvoices = [];
-    Object.keys(salesByMonth).forEach((monthKey) => {
-      const customerSales = salesByMonth[monthKey];
-      Object.keys(customerSales).forEach((customerId) => {
-        const key = `${monthKey}_${customerId}`;
-        if (alreadyBilledKey.has(key)) return;
-        const sales = customerSales[customerId];
-        if (!(sales.total > 0)) return;
-        const customer = customers.find((c) => c?.id === customerId);
-        const subtotal = sales.total;
-        // 消費税は「税抜の合計にまとめて10%をかける」方式ではなく、実際に発行される
-        // 個別請求書と同じ「1件ごとに税込み計算してから合算する」方式に統一する。
-        // これが食い違っていると、月をまたいで自動生成される請求書の消費税額が、
-        // 同じ実績から個別に発行していた場合と1円単位でズレてしまう。
-        const total = sales.items.reduce((sum, item) => {
-          const amount = Number(item.amount) || 0;
-          const tax = item.taxable !== false ? calcTax(amount) : 0;
-          return sum + amount + tax;
-        }, 0);
-        const tax = total - subtotal;
-        const issueDate = todayDateStr;
-        const [y, m] = monthKey.split("-").map(Number);
-        // new Date(...).toISOString().slice(0,10) は一度UTCに変換されるため、
-        // 日本時間では月末日の前日にズレてしまうバグがあった（支払期日が1日早くなる）。
-        // formatDate はローカル時刻のまま文字列化するため、ズレが起きない。
-        const dueDate = formatDate(new Date(y, m + 1, 0));
-
-        newInvoices.push({
-          id: `INV-AUTO-${monthKey}-${customerId}`,
-          _dbId: crypto.randomUUID(),
-          customerId,
-          customerName: customer?.name || customerId,
-          issueDate,
-          dueDate,
-          amount: subtotal,
-          tax,
-          total,
-          status: "unpaid",
-          bankRef: "",
-          paidDate: null,
-          note: `${monthKey} 月次自動請求`,
-          salesMgmtMonth: monthKey,
-          lineItems: sales.items.map((item, i) => ({
-            id: `LI-${Date.now()}-${i}`,
-            name: item.description,
-            qty: 1,
-            unitPrice: item.amount,
-            subtotal: item.amount,
-          })),
-          sentAt: null,
-          sentTo: "",
-        });
-      });
-    });
-
-    if (newInvoices.length === 0) return;
-
-    setData((d) => ({
-      ...d,
-      invoices: [...(Array.isArray(d?.invoices) ? d.invoices : []), ...newInvoices],
-    }));
-
-    const billedMonths = [...new Set(newInvoices.map((inv) => inv.salesMgmtMonth))].sort().join("・");
-
-    setNotifications((prev) => [
-      ...prev,
-      {
-        id: `notif-${Date.now()}`,
-        type: "invoice",
-        message: `${billedMonths} の請求書を ${newInvoices.length}件 自動生成しました。内容を確認して送付してください。`,
-        createdAt: new Date().toISOString(),
-        read: false,
-      },
-    ]);
-  }, [isLoaded, tenantId, data?.qualityRecords, data?.dailyRecords]);
 
   const pendingCount = (Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="pending").length;
   const unmatchedCount = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched").length;
@@ -12788,7 +12708,14 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           <aside style={{ width:"210px", borderRight:`1px solid ${UI.sidebarBorder}`, background:UI.sidebarBg, padding:"10px", boxSizing:"border-box", flexShrink:0 }}>
             <div style={{ background:UI.sidebarHeader, border:`1px solid ${UI.sidebarBorder}`, borderRadius:"6px", padding:"8px", marginBottom:"10px" }}>
               <div style={{ fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"6px" }}>組織</div>
-              <div style={{ background:"#fff", border:cardBorder, borderRadius:"4px", padding:"6px 8px", fontSize:"12px", color:"#333", marginBottom:"6px" }}>{data?.companyInfo?.name || "（会社名未設定）"}</div>
+              <div
+                onClick={()=>{ setPageWithHistory("invoices"); setAutoOpenCompanySettings(true); }}
+                title="クリックして会社情報を編集"
+                style={{ background:"#fff", border:cardBorder, borderRadius:"4px", padding:"6px 8px", fontSize:"12px", color:"#333", marginBottom:"6px", cursor:"pointer" }}
+              >
+                {data?.companyInfo?.name || "（会社名未設定）"}
+                <span style={{ color:"#00a09a", fontSize:"10px", marginLeft:"6px" }}>編集 ›</span>
+              </div>
               <div style={{ fontSize:"11px", color:"#888" }}>{now.getFullYear()}年{now.getMonth()+1}月{now.getDate()}日 {now.getHours()}:{String(now.getMinutes()).padStart(2,"0")}</div>
             </div>
             {sectionOrder.map((section)=>{
@@ -12852,6 +12779,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                   tenantId={tenantId}
                   userRole={userRole}
                   authEmail={authEmail}
+                  autoOpenCompanySettings={autoOpenCompanySettings}
+                  onAutoOpenHandled={() => setAutoOpenCompanySettings(false)}
                 />
               </PageErrorBoundary>
             );
@@ -12870,6 +12799,22 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
 
       {showSettings && (
         <Modal title="設定・管理" icon={<Icon size={14}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></Icon>} onClose={()=>setShowSettings(false)} width={640}>
+          {/* 会社情報設定（会社名・住所・銀行口座・締め日など）は、
+              以前は請求管理ページの中にあり分かりにくかったため、
+              ここに移動した。銀行口座等の機微な情報を含むため、
+              請求書と同じく配車担当には見せない。 */}
+          {userRole !== "dispatcher" && (
+            <div style={{ marginBottom:"16px", paddingBottom:"16px", borderBottom:"2px solid #e8e8e8" }}>
+              <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px" }}>会社情報設定</div>
+              <RetroBtn small onClick={()=>{
+                setShowSettings(false);
+                setPageWithHistory("invoices");
+                setAutoOpenCompanySettings(true);
+              }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
+                会社名・住所・銀行口座などを編集する
+              </RetroBtn>
+            </div>
+          )}
           {/* 【重要】請求書（金額・入金状況を含む）は、配車担当には見せない
               既存の方針に合わせ、この設定画面の「削除済みデータの復元」
               「CSVダウンロード」からも invoices を除外する。
