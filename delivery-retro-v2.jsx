@@ -2295,7 +2295,7 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 };
 
 // ===== DASHBOARD =====
-const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile }) => {
+const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, requestOpenOrder }) => {
   const events = Array.isArray(data?.events) ? data.events : [];
   const bankTransactions = Array.isArray(data?.bankTransactions) ? data.bankTransactions : [];
   const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
@@ -2399,10 +2399,15 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile })
         <Panel title={`本日の予定（${todayStr}）`} icon={<Icon size={14}><rect x="3" y="4" width="18" height="18"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></Icon>}>
           {todayEvents.length===0&&<div style={{ fontSize:"12px", color:"#999", padding:"8px" }}>本日の予定はありません</div>}
           {todayEvents.map(ev=>(
-            <div key={ev.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 4px", borderBottom:"1px solid #f0f0f0" }}>
+            <div
+              key={ev.id}
+              onClick={() => { if (ev.source === "order" && ev.sourceId) requestOpenOrder?.(ev.sourceId); }}
+              style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 4px", borderBottom:"1px solid #f0f0f0", cursor: (ev.source === "order" && ev.sourceId) ? "pointer" : "default" }}
+            >
               <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:ev.color }}/>
               <span style={{ fontSize:"12px", flex:1 }}>{ev.title}</span>
               <span style={{ background:"#f5f7f8", color:"#666", fontSize:"10px", padding:"2px 6px", borderRadius:"999px" }}>{EVENT_TYPE_LABEL[ev.type]||ev.type}</span>
+              {ev.source === "order" && ev.sourceId && <span style={{ color:"#00a09a", fontSize:"10px" }}>詳細 ›</span>}
             </div>
           ))}
         </Panel>
@@ -2504,10 +2509,15 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile })
             ? todayEvents.filter(ev => !["payment_due","payment_receive","bank_in","bank_out"].includes(ev.type))
             : todayEvents
           ).map(ev=>(
-            <div key={ev.id} style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 4px", borderBottom:"1px solid #f0f0f0" }}>
+            <div
+              key={ev.id}
+              onClick={() => { if (ev.source === "order" && ev.sourceId) requestOpenOrder?.(ev.sourceId); }}
+              style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 4px", borderBottom:"1px solid #f0f0f0", cursor: (ev.source === "order" && ev.sourceId) ? "pointer" : "default" }}
+            >
               <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:ev.color }}/>
               <span style={{ fontSize:"12px", flex:1 }}>{ev.title}</span>
               <span style={{ background:"#f5f7f8", color:"#666", fontSize:"10px", padding:"2px 6px", borderRadius:"999px" }}>{EVENT_TYPE_LABEL[ev.type]||ev.type}</span>
+              {ev.source === "order" && ev.sourceId && <span style={{ color:"#00a09a", fontSize:"10px" }}>詳細 ›</span>}
             </div>
           ))}
           {userRole !== "dispatcher" && todayBanks.map(b=>(
@@ -2574,11 +2584,19 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile })
 };
 
 // ===== OTHER PAGES (simplified) =====
-const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
+const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrderId, onOrderAutoOpenHandled }) => {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", pickupTime:"", deliveryTime:"", from:"", to:"", cargo:"", weight:"", amount:"", driverPayAmount:"", notes:"" });
   const [search, setSearch] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState(null);
+  // ダッシュボードの「本日の予定」から、特定の受注の詳細をワンクリックで
+  // 開けるようにするための合図。開いたら合図をリセットする。
+  useEffect(() => {
+    if (autoOpenOrderId) {
+      setSelectedOrderId(autoOpenOrderId);
+      onOrderAutoOpenHandled?.();
+    }
+  }, [autoOpenOrderId]);
   const [orderEditMode, setOrderEditMode] = useState(false);
   const [showOrderHistory, setShowOrderHistory] = useState(false);
   const [orderDraft, setOrderDraft] = useState(null);
@@ -12216,6 +12234,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   // 設定（ネジマーク）から「会社情報設定」を選んだ時、請求管理ページに
   // 移動した上で、そのページ内のモーダルを自動的に開くための合図。
   const [autoOpenCompanySettings, setAutoOpenCompanySettings] = useState(false);
+  // ダッシュボードの「本日の予定」から、受注の詳細画面へ直接移動するための合図。
+  const [autoOpenOrderId, setAutoOpenOrderId] = useState(null);
   const [showNotifications, setShowNotifications] = useState(false);
   // システムアラートを「今のセッションだけ」非表示にするためのID一覧。
   // 次回ログイン時にはリセットされる（＝実際に直っていなければまた表示される）。
@@ -12819,6 +12839,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                   authEmail={authEmail}
                   autoOpenCompanySettings={autoOpenCompanySettings}
                   onAutoOpenHandled={() => setAutoOpenCompanySettings(false)}
+                  autoOpenOrderId={autoOpenOrderId}
+                  onOrderAutoOpenHandled={() => setAutoOpenOrderId(null)}
+                  requestOpenOrder={(orderId) => { setAutoOpenOrderId(orderId); setPageWithHistory("orders"); }}
                 />
               </PageErrorBoundary>
             );
