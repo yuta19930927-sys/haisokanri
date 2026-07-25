@@ -12037,6 +12037,19 @@ const saveDataToSupabase = async (nextData, prevData, tenantId) => {
 
   const failedTables = [];
 
+  // 【重要】1回のupsertリクエストに、同じidの行が2つ以上含まれていると、
+  // PostgreSQL側で「ON CONFLICT DO UPDATE command cannot affect row a
+  // second time」というエラーになり、そのテーブル全体の保存が失敗する
+  // （実際に orders で発生した重大な不具合）。
+  // 何らかの理由でローカルの配列に同じidが重複して紛れ込んでいても、
+  // 保存自体は必ず成功するよう、送信直前に「同じidは最後の1件だけ残す」
+  // 形で確実に重複除去する。
+  const dedupeById = (rows) => {
+    const map = new Map();
+    rows.forEach((row) => { if (row?.id) map.set(row.id, row); });
+    return [...map.values()];
+  };
+
   const jobs = TABLE_CONFIG.map(async ({ key, table, single }) => {
     // 【重要】以前はテーブルごとの保存処理内で throw していたため、
     // 例えば change_history のような1つのテーブルの保存が何らかの理由で
@@ -12082,7 +12095,7 @@ const saveDataToSupabase = async (nextData, prevData, tenantId) => {
             });
 
       if (currentRows.length > 0) {
-        const upsertRows = currentRows;
+        const upsertRows = dedupeById(currentRows);
         if (upsertRows.length > 0) {
           const { error } = await supabase
             .from(table)
