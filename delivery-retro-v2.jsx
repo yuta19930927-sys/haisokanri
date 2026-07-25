@@ -2317,6 +2317,25 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile })
     if (isNaN(target.getTime())) return null;
     return Math.round((target - todayDateObj) / (1000 * 60 * 60 * 24));
   };
+  // ===== 本日の定期便・稼働確認状況 =====
+  // ダッシュボードでひと目で「今日、確認すべき定期便がどれだけ残っているか」
+  // 分かるようにする。押すと定期便管理画面に直接移動できる。
+  const recurringAssignments = (Array.isArray(data?.recurringAssignments) ? data.recurringAssignments : []).filter(r => !r?.deleted);
+  const recurringConfirmations = Array.isArray(data?.recurringConfirmations) ? data.recurringConfirmations : [];
+  const dailyRecordsForRecurring = Array.isArray(data?.dailyRecords) ? data.dailyRecords : [];
+  const todayWeekdayNum = todayDateObj.getDay();
+  const todayDueRecurring = recurringAssignments.filter(r =>
+    r?.active !== false && Array.isArray(r?.daysOfWeek) && r.daysOfWeek.includes(todayWeekdayNum)
+  );
+  const todayConfirmedCount = todayDueRecurring.filter(r =>
+    recurringConfirmations.some(c => c?.recurringId === r?.id && c?.date === todayStr) ||
+    dailyRecordsForRecurring.some(dr => dr?.recurringId === r?.id && dr?.date === todayStr)
+  ).length;
+  const todayUnconfirmedCount = todayDueRecurring.length - todayConfirmedCount;
+  // ===== 実績承認待ちの件数 =====
+  // ハコログからドライバーが提出した実績のうち、まだ承認されていないものの件数。
+  // ダッシュボードで気づいてすぐ実績承認画面に移動できるようにする。
+  const pendingApprovalCount = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(isPendingRecord).length;
   const upcomingLicenseExpirations = drivers
     .map(d => ({ d, days: daysUntil(d?.license_expiry) }))
     .filter(x => x.days !== null && x.days >= 0 && x.days <= expiryAlertDays)
@@ -2429,6 +2448,49 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile })
         ))}
       </div>
 
+      {/* 【重要】定期便管理そのものが配車担当には非表示のため、
+          そこへのショートカットであるこのウィジェットも同様に隠す。 */}
+      {userRole !== "dispatcher" && todayDueRecurring.length > 0 && (
+        <div
+          onClick={()=>setPage("recurring")}
+          style={{
+            background: todayUnconfirmedCount > 0 ? "#fff8e1" : "#e8f5e9",
+            border: `1px solid ${todayUnconfirmedCount > 0 ? "#ffe082" : "#a5d6a7"}`,
+            borderRadius: "6px", padding: "12px 16px", cursor: "pointer",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontSize:"12px", fontWeight:700, color:"#555" }}>本日の定期便・稼働確認</div>
+            <div style={{ fontSize:"11px", color:"#888", marginTop:"2px" }}>
+              対象 {todayDueRecurring.length}件のうち、確認済み {todayConfirmedCount}件
+            </div>
+          </div>
+          <div style={{ textAlign:"right" }}>
+            {todayUnconfirmedCount > 0 ? (
+              <span style={{ fontSize:"20px", fontWeight:700, color:"#e65100" }}>残り {todayUnconfirmedCount}台 未確認 ›</span>
+            ) : (
+              <span style={{ fontSize:"14px", fontWeight:700, color:"#2e7d32" }}>✓ 全て確認済み ›</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 実績承認待ちの件数。押すと実績承認画面に直接移動する。 */}
+      {pendingApprovalCount > 0 && (
+        <div
+          onClick={()=>setPage("approval")}
+          style={{
+            background: "#fff3e0", border: "1px solid #ffcc80",
+            borderRadius: "6px", padding: "12px 16px", cursor: "pointer",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+          }}
+        >
+          <div style={{ fontSize:"12px", fontWeight:700, color:"#555" }}>実績承認待ち</div>
+          <span style={{ fontSize:"20px", fontWeight:700, color:"#e65100" }}>{pendingApprovalCount}件 未承認 ›</span>
+        </div>
+      )}
+
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))", gap:"12px" }}>
         <Panel title={`本日の予定（${todayStr}）`} icon={<Icon size={14}><rect x="3" y="4" width="18" height="18"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></Icon>}>
           {/* 【重要】配車担当には、入金・支払・資金繰りに関する情報を見せない
@@ -2531,127 +2593,25 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   // データ読み込み中（data が未定義）の描画では useEffect が呼ばれず、データ読み込み後の
   // 描画では呼ばれる、という不整合が発生し、「このページの表示中にエラーが発生しました」
   // という画面クラッシュを引き起こす可能性があった。
+  // 【重要】以前はここで、配達日を過ぎても完了操作されていない受注を、
+  // 事務員の操作なしに自動的に「完了」へ変えてしまっていた（アプリを
+  // 開くたびにバックグラウンドで動く仕組みだった）。
+  //
+  // これにより、以下のような深刻な問題が起きていた：
+  // ・配車確定しただけの受注（まだ実際には仕事が終わっていない）でも、
+  //   配達日さえ過ぎれば強制的に「完了」扱いになってしまう
+  // ・その際、ドライバー報酬額は driverPayAmount を無視して常に0円で記録
+  // ・さらに、受注1件ごとに個別の請求書を自動発行する古い方式のままで、
+  //   「顧客請求書の一括発行」機能とは別に、二重に請求書が作られる
+  //   原因にもなっていた（以前見つけた重複請求と同じ根本原因）。
+  //
+  // 配送が実際に完了したかどうかは、必ず事務員が「次へ」ボタンや
+  // 「配送完了にする」ボタンで明示的に確認してから進めるべきであり、
+  // 日付だけを見て自動的に完了扱いにするべきではない。そのため、
+  // この自動完了処理は無効化した。
   useEffect(() => {
-    if (!Array.isArray(data?.orders)) return;
-    const todayStr = getTodayLocalStr();
-    const hasUpdate = data.orders.some(
-      (o) => o?.deliveryDate && o.deliveryDate < todayStr &&
-        o?.status !== "delivered" && o?.status !== "cancelled"
-    );
-    if (!hasUpdate) return;
-    setData((d) => {
-      const currentOrders = Array.isArray(d?.orders) ? d.orders : [];
-      const currentInvoices = Array.isArray(d?.invoices) ? d.invoices : [];
-      const currentCustomers = Array.isArray(d?.customers) ? d.customers : [];
-      const currentDailyRecords = Array.isArray(d?.dailyRecords) ? d.dailyRecords : [];
-      const currentEvents = Array.isArray(d?.events) ? d.events : [];
-
-      // 配達日を過ぎても完了操作されていない受注を自動的に「完了」へ移す。
-      // 以前はステータスだけ書き換えて dailyRecords を追加していたが、
-      // goNextStatus（手動で「完了」にする操作）と異なり請求書を生成していなかったため、
-      // 自動完了された受注は請求書が発行されないまま放置されるバグがあった。
-      // ここでは goNextStatus と同じロジック（実績登録＋請求書発行）をまとめて適用する。
-      const targetOrders = currentOrders.filter(
-        (o) => o?.deliveryDate && o.deliveryDate < todayStr &&
-          o?.status !== "delivered" && o?.status !== "cancelled"
-      );
-
-      const nextOrders = currentOrders.map((o) =>
-        targetOrders.some((t) => t?.id === o?.id) ? { ...o, status: "delivered" } : o
-      );
-
-      let nextDailyRecords = currentDailyRecords;
-      let nextInvoices = currentInvoices;
-      let nextEvents = currentEvents;
-
-      targetOrders.forEach((targetOrder) => {
-        const alreadyInSales = nextDailyRecords.some((r) => r?.orderId === targetOrder?.id);
-        if (!alreadyInSales) {
-          nextDailyRecords = [
-            ...nextDailyRecords,
-            {
-              id: `DR-${Date.now()}-${targetOrder.id}`,
-              orderId: targetOrder?.id,
-              date: targetOrder?.deliveryDate,
-              driverId: targetOrder?.assignedDriverId || targetOrder?.driverId || "",
-              customerId: targetOrder?.customerId || "",
-              jobTypeId: targetOrder?.jobTypeId || "",
-              count: 1,
-              distance: targetOrder?.distance || "",
-              hours: targetOrder?.hours || "",
-              salesAmount: Number(targetOrder?.amount) || 0,
-              driverAmount: 0,
-              note: `受注 ${targetOrder?.id} より自動連携（配達日経過による自動完了）`,
-            },
-          ];
-        }
-
-        const alreadyHasInvoice = nextInvoices.some((inv) => inv?.orderId === targetOrder?.id && !inv?.deleted);
-        if (alreadyHasInvoice) return;
-
-        const customer = currentCustomers.find((c) => c?.id === targetOrder?.customerId);
-        // 受注に金額が明示的に入力されている場合（0円も含む）はそれを優先する。
-        // 以前は `Number(targetOrder?.amount) || Number(customer?.unitPrice) || 0` だったため、
-        // 無償配送など意図的に0円にした受注が、顧客の標準単価で上書きされてしまうバグがあった。
-        const baseAmount = targetOrder?.amount !== "" && targetOrder?.amount != null
-          ? (Number(targetOrder.amount) || 0)
-          : (Number(customer?.unitPrice) || 0);
-        const tax = calcTax(baseAmount);
-        const issueDate = targetOrder?.deliveryDate || formatDate(new Date());
-        const dueDate = calcDueDateByTerms(
-          issueDate,
-          customer?.closingDay ?? 31,
-          customer?.paymentSite || "翌月末払い"
-        );
-        const nextInvoice = {
-          id: generateUniqueBusinessId(nextInvoices, "INV"),
-          orderId: targetOrder?.id,
-          customerId: targetOrder?.customerId,
-          customerName: targetOrder?.customerName || customer?.name || "",
-          issueDate,
-          dueDate,
-          amount: baseAmount,
-          tax,
-          total: baseAmount + tax,
-          status: "unpaid",
-          bankRef: "",
-          paidDate: null,
-          note: "",
-        };
-        nextInvoices = [nextInvoice, ...nextInvoices];
-
-        const customerName = nextInvoice.customerName;
-        const customerId = nextInvoice.customerId;
-        const alreadyHasEvent = nextEvents.some((ev) =>
-          ev?.type === "payment_due" &&
-          ev?.date === dueDate &&
-          (ev?.title?.includes(customerName) || ev?.customerId === customerId)
-        );
-        if (!alreadyHasEvent) {
-          nextEvents = [
-            ...nextEvents,
-            {
-              id: `EV-INV${Date.now()}-${targetOrder.id}`,
-              date: dueDate,
-              type: "payment_due",
-              title: `入金期日：${nextInvoice.customerName}`,
-              color: "#660099",
-              invoiceId: nextInvoice.id,
-              customerId,
-            },
-          ];
-        }
-      });
-
-      return {
-        ...d,
-        orders: nextOrders,
-        dailyRecords: nextDailyRecords,
-        invoices: nextInvoices,
-        events: nextEvents,
-      };
-    });
-  }, [data?.orders, setData]);
+    return;
+  }, []);
 
   if (!data) {
     return (
@@ -2816,7 +2776,15 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 <td style={{ padding:"8px 10px" }}>{o?.cargo||""}{o?.weight ? `（${o.weight}）` : ""}</td>
                 <td style={{ padding:"8px 10px" }}>{o?.deliveryDate||""}</td>
                 <td style={{ padding:"8px 10px" }}>¥{(Number(o?.amount)||0).toLocaleString()}</td>
-                <td style={{ padding:"8px 10px" }}><StatusPill s={o?.status}/></td>
+                <td style={{ padding:"8px 10px" }}>
+                  <StatusPill s={o?.status}/>
+                  {/* 配車済みでも、まだ「完了」ではないことが分かりにくいという指摘があったため、
+                      本日が配達日の場合は「本日稼働」の目印を追加で表示する
+                      （ステータスの値自体は変えず、あくまで見た目のヒント）。 */}
+                  {o?.status === "scheduled" && o?.deliveryDate === getTodayLocalStr() && (
+                    <span style={{ marginLeft:"4px", fontSize:"10px", background:"#fff3e0", color:"#e65100", border:"1px solid #ffcc80", borderRadius:"999px", padding:"1px 6px" }}>本日稼働</span>
+                  )}
+                </td>
                 <td style={{ padding:"8px 10px", whiteSpace:"nowrap" }}>
                   <div style={{ display:"flex", gap:"4px" }}>
                     {statusPrev[o?.status] && (
@@ -6756,6 +6724,18 @@ const buildSystemAlerts = (data, alertDays = 30) => {
     pushExpiry(v?.liabilityExpiry,  `【自賠責】${name}`,     "vehicles", "保険期限");
     pushExpiry(v?.leaseEnd,         `【リース満了】${name}`, "vehicles", "契約更新");
 
+    // --- 12ヶ月ごとの定期点検リマインダー ---
+    // 「②定期点検」タブの記録から、次回点検日を判定する。
+    // 直近の点検記録に「次回点検日」が明記されていればそれを使い、
+    // 未記入の場合は「前回点検日＋365日」を目安の期限日とみなす
+    // （車検・安全指導と同じ、既存の pushExpiry の仕組みをそのまま使う）。
+    const inspectionLogs = Array.isArray(v?.inspectionHistory) ? v.inspectionHistory : [];
+    if (inspectionLogs.length > 0) {
+      const latest = [...inspectionLogs].sort((a, b) => String(b?.date || "").localeCompare(String(a?.date || "")))[0];
+      const nextDueDate = latest?.nextDate || (latest?.date ? addDays(latest.date, 365) : null);
+      pushExpiry(nextDueDate, `【定期点検】${name}`, "vehicles", "定期点検");
+    }
+
     // オイル交換（走行距離ベース。日付ではないので個別に判定する）
     const interval = n(v?.oilChangeIntervalKm) || 5000;
     if (v?.oilChangeMileage && v?.mileage) {
@@ -8872,7 +8852,11 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     if (!d) return "未設定";
     return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
   };
-  const deliveredNoInv = orders.filter(o=>o?.status==="delivered"&&!invoices.find(i=>i?.orderId===o?.id));
+  // 【重要】以前は inv.orderId だけで判定していたため、月次一括発行（明細で
+  // 複数の受注をまとめる形式で、個々の inv.orderId は持たない）で請求済みに
+  // なった受注が、ここでは「まだ未請求」として誤って表示され続けてしまう
+  // 不具合があった。受注自身が持つ invoicedInvoiceId もあわせて確認する。
+  const deliveredNoInv = orders.filter(o=>o?.status==="delivered" && !o?.invoicedInvoiceId && !invoices.find(i=>i?.orderId===o?.id));
   const createInv = (o) => {
     const tax=calcTax(o?.amount);
     const customer = customers.find((c) => c?.id === o?.customerId);
@@ -9963,35 +9947,6 @@ const DriversHealthFormTab = ({ form, setForm, isMobile }) => {
           </div>
         ))}
       </div>
-
-      {/* ===== 法定の安全教育・指導のリマインド機能 =====
-          年1回の安全指導・65歳以上の適性診断＋指導・事故惹起者への特別指導は、
-          それぞれ実施期限・対象者が異なるため、通知（お知らせ）画面で
-          自動的に「誰に何が必要か」を判定してリマインドする。
-          ここでは、その判定に使う「最後にいつ実施したか」を記録する。 */}
-      <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginTop:"16px", marginBottom:"6px", borderTop:"2px solid #e8e8e8", paddingTop:"12px" }}>
-        法定安全教育・指導の実施記録（リマインド対象）
-      </div>
-      <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#fafbfc" }}>
-        <Fl label="年次安全指導（全ドライバー対象・年1回）">
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
-            <RetroInput type="date" value={form.lastSafetyGuidanceDate} onChange={e=>setForm(v=>({...v,lastSafetyGuidanceDate:e.target.value}))}/>
-            <RetroInput value={form.lastSafetyGuidanceContent} onChange={e=>setForm(v=>({...v,lastSafetyGuidanceContent:e.target.value}))} placeholder="指導内容（任意）"/>
-          </div>
-        </Fl>
-        <Fl label="高齢者適性診断・指導（65歳以上が対象）" style={{ marginTop:"8px" }}>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
-            <RetroInput type="date" value={form.lastElderlyDiagnosisDate} onChange={e=>setForm(v=>({...v,lastElderlyDiagnosisDate:e.target.value}))}/>
-            <RetroInput value={form.lastElderlyDiagnosisOrg} onChange={e=>setForm(v=>({...v,lastElderlyDiagnosisOrg:e.target.value}))} placeholder="実施機関（任意）"/>
-          </div>
-        </Fl>
-        <Fl label="事故惹起者特別指導（重大事故を起こした場合のみ対象）" style={{ marginTop:"8px" }}>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
-            <RetroInput type="date" value={form.lastSpecialGuidanceDate} onChange={e=>setForm(v=>({...v,lastSpecialGuidanceDate:e.target.value}))}/>
-            <RetroInput value={form.lastSpecialGuidanceContent} onChange={e=>setForm(v=>({...v,lastSpecialGuidanceContent:e.target.value}))} placeholder="指導内容（任意）"/>
-          </div>
-        </Fl>
-      </div>
     </>
   );
 };
@@ -10006,6 +9961,9 @@ const DriversHealthFormTab = ({ form, setForm, isMobile }) => {
 const createEmptyDriverForm = () => ({
   name:"", furigana:"", birthdate:"", address:"", phone:"", email:"",
   contractType:"業務委託", contractStart:"", contractEnd:"",
+  // 令和7年4月1日からの「貨物軽自動車運転者等台帳」の法定記載事項。
+  // 契約開始日とは別に、実際に運行業務に初めて従事した日を記録する。
+  firstServiceDate:"",
   license:"大型", licenseNumber:"", licenseType:"", licenseAcquired:"",
   license_expiry:"", licenseCondition:"",
   licenseFrontCopy:false, licenseBackCopy:false, licenseCheckDate:"",
@@ -10234,6 +10192,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             </RetroSelect>
           </Fl>
           <Fl label="契約開始日"><RetroInput type="date" value={form.contractStart||""} onChange={e=>setForm(v=>({...v,contractStart:e.target.value}))}/></Fl>
+          <Fl label="初めて運行の業務に従事した年月日（台帳の法定記載事項）"><RetroInput type="date" value={form.firstServiceDate||""} onChange={e=>setForm(v=>({...v,firstServiceDate:e.target.value}))}/></Fl>
           <Fl label="契約終了日"><RetroInput type="date" value={form.contractEnd||""} onChange={e=>setForm(v=>({...v,contractEnd:e.target.value}))}/></Fl>
         </div>
         <Fl label="状態">
@@ -10287,6 +10246,36 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           <CheckRow label="原本保管済" checked={form.diagnosisOriginal} onChange={v=>setForm(p=>({...p,diagnosisOriginal:v}))}/>
           <CheckRow label="データ保存済" checked={form.diagnosisData} onChange={v=>setForm(p=>({...p,diagnosisData:v}))}/>
         </Fl>
+
+        {/* ===== 法定の安全教育・指導のリマインド機能 =====
+            年1回の安全指導・65歳以上の適性診断＋指導・事故惹起者への特別指導は、
+            それぞれ実施期限・対象者が異なるため、通知（お知らせ）画面で
+            自動的に「誰に何が必要か」を判定してリマインドする。
+            ここでは、その判定に使う「最後にいつ実施したか」を記録する。
+            適性診断と内容が近いため、このタブにまとめている。 */}
+        <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginTop:"16px", marginBottom:"6px", borderTop:"2px solid #e8e8e8", paddingTop:"12px" }}>
+          法定安全教育・指導の実施記録（リマインド対象）
+        </div>
+        <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#fafbfc" }}>
+          <Fl label="年次安全指導（全ドライバー対象・年1回）">
+            <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
+              <RetroInput type="date" value={form.lastSafetyGuidanceDate} onChange={e=>setForm(v=>({...v,lastSafetyGuidanceDate:e.target.value}))}/>
+              <RetroInput value={form.lastSafetyGuidanceContent} onChange={e=>setForm(v=>({...v,lastSafetyGuidanceContent:e.target.value}))} placeholder="指導内容（任意）"/>
+            </div>
+          </Fl>
+          <Fl label="高齢者適性診断・指導（65歳以上が対象）" style={{ marginTop:"8px" }}>
+            <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
+              <RetroInput type="date" value={form.lastElderlyDiagnosisDate} onChange={e=>setForm(v=>({...v,lastElderlyDiagnosisDate:e.target.value}))}/>
+              <RetroInput value={form.lastElderlyDiagnosisOrg} onChange={e=>setForm(v=>({...v,lastElderlyDiagnosisOrg:e.target.value}))} placeholder="実施機関（任意）"/>
+            </div>
+          </Fl>
+          <Fl label="事故惹起者特別指導（重大事故を起こした場合のみ対象）" style={{ marginTop:"8px" }}>
+            <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
+              <RetroInput type="date" value={form.lastSpecialGuidanceDate} onChange={e=>setForm(v=>({...v,lastSpecialGuidanceDate:e.target.value}))}/>
+              <RetroInput value={form.lastSpecialGuidanceContent} onChange={e=>setForm(v=>({...v,lastSpecialGuidanceContent:e.target.value}))} placeholder="指導内容（任意）"/>
+            </div>
+          </Fl>
+        </div>
       </>
     );
     if (tab === "accident") return <DriversAccidentFormTab form={form} setForm={setForm} isMobile={isMobile} tenantId={tenantId} />;
@@ -10980,7 +10969,9 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
  */
 const createEmptyVehicleForm = () => ({
   plate:"", type:"", maker:"", year:"", maxLoad:"", vehicleWeight:"", grossWeight:"",
-  nextInspection:"", inspectionHistory:[],
+  // 車検を実際に受けた日。次回車検期限（nextInspection）だけでなく、
+  // 直近いつ受けたかも記録できるようにする。
+  lastInspectionDate:"", nextInspection:"", inspectionHistory:[],
   accidentHistory:[], violationHistory:[],
   insuranceExpiry:"", liabilityExpiry:"", vehicleInsurance:"", roadServicePhone:"",
   assignedDriverId:"", status:"available", notes:"",
@@ -10999,7 +10990,10 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [activeTab, setActiveTab] = useState("basic");
   const [form, setForm] = useState(createEmptyVehicleForm);
   const [newInspection, setNewInspection] = useState({ date:"", shop:"", content:"", issue:"", nextDate:"" });
-  const [newAccident, setNewAccident] = useState({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" });
+  // 【重要】国土交通大臣への事故報告・事故記録簿の法定記載事項
+  // （乗務員氏名・事故の概要（損害の程度を含む）・原因・再発防止対策）が
+  // 抜けていたため追加。
+  const [newAccident, setNewAccident] = useState({ datetime:"", place:"", driverId:"", opponent:"", summary:"", cause:"", preventiveMeasures:"", repairStatus:"", insuranceUsed:false, note:"" });
   const [newViolation, setNewViolation] = useState({ date:"", content:"", penalty:"" });
   const selectedVehicle = vehicles.find(v => v?.id === selectedVehicleId) || null;
   const openAdd = () => { setEditingId(null); setForm(createEmptyVehicleForm()); setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" }); setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" }); setNewViolation({ date:"", content:"", penalty:"" }); setActiveTab("basic"); setShowModal(true); };
@@ -11078,6 +11072,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const addAccident = async () => {
     if (!newAccident.datetime) return;
     setForm(f => ({ ...f, accidentHistory: [...(f.accidentHistory||[]), { ...newAccident, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }] }));
+    const driverName = drivers.find(d => d?.id === newAccident.driverId)?.name || "";
     const { error } = await supabase
       .from('vehicle_incidents')
       .insert({
@@ -11087,11 +11082,19 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         description: newAccident.place || null,
         counterparty: newAccident.opponent || null,
         amount: null,
-        memo: [newAccident.repairStatus ? `修理:${newAccident.repairStatus}` : null, newAccident.insuranceUsed ? "保険対応あり" : "保険対応なし", newAccident.note || null].filter(Boolean).join(" / ") || null,
+        memo: [
+          driverName ? `乗務員:${driverName}` : null,
+          newAccident.summary ? `概要:${newAccident.summary}` : null,
+          newAccident.cause ? `原因:${newAccident.cause}` : null,
+          newAccident.preventiveMeasures ? `再発防止対策:${newAccident.preventiveMeasures}` : null,
+          newAccident.repairStatus ? `修理:${newAccident.repairStatus}` : null,
+          newAccident.insuranceUsed ? "保険対応あり" : "保険対応なし",
+          newAccident.note || null,
+        ].filter(Boolean).join(" / ") || null,
         tenant_id: tenantId
       });
     if (error) console.error('vehicle_incidents(accident) insert error:', error);
-    setNewAccident({ datetime:"", place:"", opponent:"", repairStatus:"", insuranceUsed:false, note:"" });
+    setNewAccident({ datetime:"", place:"", driverId:"", opponent:"", summary:"", cause:"", preventiveMeasures:"", repairStatus:"", insuranceUsed:false, note:"" });
   };
   const removeAccident = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, accidentHistory: (f.accidentHistory||[]).filter(x => x.id !== id) })); };
   const addViolation = async () => {
@@ -11177,17 +11180,35 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       </>
     );
     if (tab === "inspection_cert") return (
-      <Fl label="車検期限"><RetroInput type="date" value={f.nextInspection||""} onChange={e=>setF(v=>({...v,nextInspection:e.target.value}))}/></Fl>
+      <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
+        <Fl label="車検を受けた日"><RetroInput type="date" value={f.lastInspectionDate||""} onChange={e=>setF(v=>({...v,lastInspectionDate:e.target.value}))}/></Fl>
+        <Fl label="車検期限（次回）"><RetroInput type="date" value={f.nextInspection||""} onChange={e=>setF(v=>({...v,nextInspection:e.target.value}))}/></Fl>
+      </div>
     );
     if (tab === "accident") return (
       <>
+        <div style={{ background:"#fff8e1", border:"1px solid #ffe082", borderRadius:"6px", padding:"10px 12px", marginBottom:"10px", fontSize:"11px", color:"#795500", lineHeight:1.6 }}>
+          ⚠️ 次のいずれかに該当する事故は、国土交通大臣への事故報告書の提出が必要です（事故があった日から30日以内）：
+          自動車の転覆・転落・火災・鉄道車両との衝突、10台以上の衝突・接触、死者又は重傷者の発生、10人以上の負傷者、
+          危険物・火薬類・高圧ガス等の飛散・漏えい、酒気帯び・無免許・無資格・麻薬等運転、疾病により運行継続不能、
+          救護義務違反、装置の故障による運行不能、車輪の脱落、鉄道施設を3時間以上損傷させたもの　等。
+        </div>
         <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", marginBottom:"10px", background:"#fafbfc" }}>
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
             <Fl label="事故日時"><RetroInput type="datetime-local" value={newAccident.datetime} onChange={e=>setNewAccident(v=>({...v,datetime:e.target.value}))}/></Fl>
             <Fl label="事故場所"><RetroInput value={newAccident.place} onChange={e=>setNewAccident(v=>({...v,place:e.target.value}))}/></Fl>
-            <Fl label="相手情報"><RetroInput value={newAccident.opponent} onChange={e=>setNewAccident(v=>({...v,opponent:e.target.value}))}/></Fl>
+            <Fl label="乗務員（運転していたドライバー）">
+              <RetroSelect value={newAccident.driverId} onChange={e=>setNewAccident(v=>({...v,driverId:e.target.value}))}>
+                <option value="">選択</option>
+                {drivers.map(d => <option key={d?.id} value={d?.id}>{d?.name}</option>)}
+              </RetroSelect>
+            </Fl>
+            <Fl label="相手方の氏名（事故の当事者、乗務員を除く）"><RetroInput value={newAccident.opponent} onChange={e=>setNewAccident(v=>({...v,opponent:e.target.value}))}/></Fl>
             <Fl label="修理状況"><RetroInput value={newAccident.repairStatus} onChange={e=>setNewAccident(v=>({...v,repairStatus:e.target.value}))}/></Fl>
           </div>
+          <Fl label="事故の概要（損害の程度を含む）"><RetroTextarea value={newAccident.summary} onChange={e=>setNewAccident(v=>({...v,summary:e.target.value}))} style={{ minHeight:"50px" }}/></Fl>
+          <Fl label="事故の原因"><RetroTextarea value={newAccident.cause} onChange={e=>setNewAccident(v=>({...v,cause:e.target.value}))} style={{ minHeight:"50px" }}/></Fl>
+          <Fl label="再発防止対策"><RetroTextarea value={newAccident.preventiveMeasures} onChange={e=>setNewAccident(v=>({...v,preventiveMeasures:e.target.value}))} style={{ minHeight:"50px" }}/></Fl>
           <Fl label="保険対応"><CB label="保険対応あり" checked={newAccident.insuranceUsed} onChange={v=>setNewAccident(p=>({...p,insuranceUsed:v}))}/></Fl>
           <Fl label="備考"><RetroTextarea value={newAccident.note} onChange={e=>setNewAccident(v=>({...v,note:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
           <RetroBtn onClick={addAccident} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}✅ この事故を保存</RetroBtn>
@@ -11204,6 +11225,10 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 <RetroBtn small onClick={()=>removeAccident(rec.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>{trashIcon}</RetroBtn>
               </div>
               <div>場所：{rec.place||"—"} / 相手：{rec.opponent||"—"}</div>
+              {rec.driverId && <div>乗務員：{drivers.find(d=>d?.id===rec.driverId)?.name||"—"}</div>}
+              {rec.summary && <div>概要：{rec.summary}</div>}
+              {rec.cause && <div>原因：{rec.cause}</div>}
+              {rec.preventiveMeasures && <div>再発防止対策：{rec.preventiveMeasures}</div>}
               <div>修理：{rec.repairStatus||"—"} / 保険：{rec.insuranceUsed?"あり":"なし"}</div>
             </div>
           ))}
@@ -11348,8 +11373,8 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           <div style={{ minHeight:"300px" }}>
             {activeTab==="basic" && <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px" }}><div style={{ color:"#888" }}>ナンバー</div><div>{selectedVehicle?.plate||"—"}</div><div style={{ color:"#888" }}>車種</div><div>{selectedVehicle?.type||"—"}</div><div style={{ color:"#888" }}>メーカー</div><div>{selectedVehicle?.maker||"—"}</div><div style={{ color:"#888" }}>年式</div><div>{selectedVehicle?.year||"—"}</div><div style={{ color:"#888" }}>最大積載量</div><div>{selectedVehicle?.maxLoad||"—"}</div><div style={{ color:"#888" }}>車両重量</div><div>{selectedVehicle?.vehicleWeight||"—"}</div><div style={{ color:"#888" }}>総重量</div><div>{selectedVehicle?.grossWeight||"—"}</div><div style={{ color:"#888" }}>状態</div><div><StatusPill s={selectedVehicle?.status}/></div><div style={{ color:"#888" }}>メモ</div><div>{selectedVehicle?.notes||"—"}</div></div>}
             {activeTab==="inspection" && <div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"340px", overflowY:"auto" }}>{(selectedVehicle?.inspectionHistory||[]).length===0&&<div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}{[...(selectedVehicle?.inspectionHistory||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec=><div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#fff", fontSize:"12px" }}><div style={{ fontWeight:700, color:"#007a74" }}>{rec.date} — {rec.shop||"—"}</div><div>次回：{rec.nextDate||"—"}</div>{rec.content&&<div>内容：{rec.content}</div>}{rec.issue&&<div style={{ color:"#e65100" }}>不具合：{rec.issue}</div>}</div>)}</div>}
-            {activeTab==="inspection_cert" && <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px" }}><div style={{ color:"#888" }}>車検期限</div><div>{selectedVehicle?.nextInspection||"—"}</div></div>}
-            {activeTab==="accident" && <><div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"6px" }}>事故記録</div><div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"160px", overflowY:"auto", marginBottom:"12px" }}>{(selectedVehicle?.accidentHistory||[]).length===0&&<div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}{[...(selectedVehicle?.accidentHistory||[])].sort((a,b)=>(b.datetime||"").localeCompare(a.datetime||"")).map(rec=><div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}><div style={{ fontWeight:700, color:"#e63946" }}>{rec.datetime?.slice(0,10)||"—"} {rec.place||""}</div><div>相手：{rec.opponent||"—"} / 修理：{rec.repairStatus||"—"} / 保険：{rec.insuranceUsed?"あり":"なし"}</div></div>)}</div><div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"6px" }}>違反・処分記録</div><div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"120px", overflowY:"auto" }}>{(selectedVehicle?.violationHistory||[]).length===0&&<div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}{[...(selectedVehicle?.violationHistory||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec=><div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}><div style={{ fontWeight:700 }}>{rec.date||"—"}</div><div>違反：{rec.content||"—"} / 処分：{rec.penalty||"—"}</div></div>)}</div></>}
+            {activeTab==="inspection_cert" && <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px" }}><div style={{ color:"#888" }}>車検を受けた日</div><div>{selectedVehicle?.lastInspectionDate||"—"}</div><div style={{ color:"#888" }}>車検期限</div><div>{selectedVehicle?.nextInspection||"—"}</div></div>}
+            {activeTab==="accident" && <><div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"6px" }}>事故記録</div><div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"160px", overflowY:"auto", marginBottom:"12px" }}>{(selectedVehicle?.accidentHistory||[]).length===0&&<div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}{[...(selectedVehicle?.accidentHistory||[])].sort((a,b)=>(b.datetime||"").localeCompare(a.datetime||"")).map(rec=><div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}><div style={{ fontWeight:700, color:"#e63946" }}>{rec.datetime?.slice(0,10)||"—"} {rec.place||""}</div><div>相手：{rec.opponent||"—"} / 修理：{rec.repairStatus||"—"} / 保険：{rec.insuranceUsed?"あり":"なし"}</div>{rec.driverId && <div>乗務員：{drivers.find(d=>d?.id===rec.driverId)?.name||"—"}</div>}{rec.summary && <div>概要：{rec.summary}</div>}{rec.cause && <div>原因：{rec.cause}</div>}{rec.preventiveMeasures && <div>再発防止対策：{rec.preventiveMeasures}</div>}</div>)}</div><div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"6px" }}>違反・処分記録</div><div style={{ display:"flex", flexDirection:"column", gap:"6px", maxHeight:"120px", overflowY:"auto" }}>{(selectedVehicle?.violationHistory||[]).length===0&&<div style={{ fontSize:"12px", color:"#999" }}>記録なし</div>}{[...(selectedVehicle?.violationHistory||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(rec=><div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}><div style={{ fontWeight:700 }}>{rec.date||"—"}</div><div>違反：{rec.content||"—"} / 処分：{rec.penalty||"—"}</div></div>)}</div></>}
             {activeTab==="insurance" && <div style={{ display:"grid", gridTemplateColumns:"140px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px" }}><div style={{ color:"#888" }}>任意保険期限</div><div>{selectedVehicle?.insuranceExpiry||"—"}</div><div style={{ color:"#888" }}>自賠責期限</div><div>{selectedVehicle?.liabilityExpiry||"—"}</div><div style={{ color:"#888" }}>車両保険</div><div>{selectedVehicle?.vehicleInsurance||"—"}</div><div style={{ color:"#888" }}>ロードサービス</div><div>{selectedVehicle?.roadServicePhone||"—"}</div></div>}
             {activeTab==="driver" && <div style={{ fontSize:"12px" }}>{(()=>{ const d=drivers.find(x=>x?.id===selectedVehicle?.assignedDriverId); if(!d) return <div style={{ color:"#999" }}>未割当</div>; return <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px", background:"#f9fcfc" }}><div style={{ fontWeight:700, color:"#007a74", marginBottom:"4px" }}>{d.name}</div><div>電話：{d.phone||"—"}</div><div>免許：{d.license||"—"} / 有効期限：{d.license_expiry||"—"}</div></div>; })()}</div>}
             {activeTab==="lease" && (() => {
@@ -11795,21 +11820,21 @@ const TenantsPage = ({ tenantId, userRole }) => {
 const MENU = [
   { id:"dashboard", icon:<Icon size={16}><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></Icon>, label:"ダッシュボード", section:"メイン" },
   { id:"calendar",  icon:<Icon size={16}><rect x="3" y="4" width="18" height="18"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></Icon>, label:"カレンダー", section:"メイン" },
-  { id:"analytics", icon:<Icon size={16}><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></Icon>, label:"経営分析", section:"メイン" },
-  { id:"orders",    icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></Icon>, label:"受注管理", section:"案件管理" },
+  { id:"notices",   icon:<Icon size={16}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></Icon>, label:"お知らせ配信", section:"メイン" },
+  { id:"chat",      icon:<Icon size={16}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></Icon>, label:"チャット", section:"メイン" },
   { id:"recurring", icon:<Icon size={16}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></Icon>, label:"定期便管理", section:"案件管理" },
+  { id:"orders",    icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></Icon>, label:"受注管理", section:"案件管理" },
   { id:"dispatch",  icon:<Icon size={16}><rect x="2" y="8" width="15" height="8"/><path d="M17 10h3l2 3v3h-5"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>, label:"配車管理", section:"案件管理" },
   { id:"approval",  icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績承認", section:"案件管理" },
-  { id:"notices",   icon:<Icon size={16}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></Icon>, label:"お知らせ配信", section:"案件管理" },
-  { id:"chat",      icon:<Icon size={16}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></Icon>, label:"チャット", section:"案件管理" },
+  { id:"sales_mgmt", icon:<Icon size={16}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>, label:"売上管理", section:"経理" },
+  { id:"invoices",  icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>, label:"請求管理", section:"経理" },
+  { id:"bank",      icon:<Icon size={16}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>, label:"口座・入金", section:"経理" },
+  { id:"payout", icon:<Icon size={16}><path d="M12 12v8"/><path d="M8 4l4 6 4-6"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="17" y2="16"/></Icon>, label:"報酬・振込", section:"経理" },
+  { id:"quality_mgmt", icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績・品質管理", section:"経理" },
   { id:"drivers",   icon:<Icon size={16}><circle cx="12" cy="8" r="4"/><path d="M4 21c1.6-3.8 4.7-5.5 8-5.5s6.4 1.7 8 5.5"/></Icon>, label:"ドライバー管理", section:"マスタ管理" },
   { id:"vehicles",  icon:<Icon size={16}><rect x="3" y="9" width="18" height="7" rx="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>, label:"車両管理", section:"マスタ管理" },
   { id:"customers", icon:<Icon size={16}><circle cx="9" cy="8" r="3"/><circle cx="16" cy="9" r="2.5"/><path d="M3 20c1.4-3 3.8-4.5 6-4.5"/><path d="M10 20c1.8-3 4.6-4.5 7-4.5"/></Icon>, label:"顧客管理", section:"マスタ管理" },
-  { id:"invoices",  icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>, label:"請求管理", section:"経理" },
-  { id:"bank",      icon:<Icon size={16}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>, label:"口座・入金", section:"経理" },
-  { id:"sales_mgmt", icon:<Icon size={16}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>, label:"売上管理", section:"経理" },
-  { id:"payout", icon:<Icon size={16}><path d="M12 12v8"/><path d="M8 4l4 6 4-6"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="17" y2="16"/></Icon>, label:"報酬・振込", section:"経理" },
-  { id:"quality_mgmt", icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績・品質管理", section:"経理" },
+  { id:"analytics", icon:<Icon size={16}><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></Icon>, label:"経営分析", section:"admin" },
   { id:"tenants", label:"テナント管理", icon:"🏢", section:"admin" },
 ];
 
@@ -12510,8 +12535,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const sectionOrder = [
     { key: "メイン", label: "メイン" },
     { key: "案件管理", label: "案件管理" },
-    { key: "マスタ管理", label: "マスタ管理" },
     { key: "経理", label: "経理" },
+    { key: "マスタ管理", label: "マスタ管理" },
     { key: "admin", label: "管理者" },
   ];
   return (
