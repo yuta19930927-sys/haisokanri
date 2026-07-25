@@ -8683,6 +8683,13 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   const [historyCustomerId, setHistoryCustomerId] = useState("");
   const [customerHistoryMonths, setCustomerHistoryMonths] = useState(12);
   const [isGeneratingBatch, setIsGeneratingBatch] = useState(false);
+  // 【重要】isGeneratingBatch という state だけで連打を防ごうとしていたが、
+  // state の更新は非同期（次の再描画まで反映されない）ため、素早く連打すると
+  // 両方のクリックが「まだ処理中ではない」と判定してしまい、同じ対象に対して
+  // 実際に二重に請求書を発行してしまう不具合があった。
+  // ref は更新が同期的（その場で即座に反映される）ため、クリックされた
+  // 瞬間に確実にブロックできる、より確実な連打防止として使う。
+  const isGeneratingBatchRef = useRef(false);
 
   /**
    * ===== 顧客請求書の一括発行 =====
@@ -9492,15 +9499,20 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         <div style={{ display:"flex", gap:"8px", alignItems:"flex-end", flexWrap:"wrap" }}>
           <Fl label="対象月"><RetroInput type="month" value={batchMonth} onChange={e=>setBatchMonth(e.target.value)}/></Fl>
           <RetroBtn onClick={()=>{
-            // 連打対策。生成処理は複数の請求書・イベントをまとめて1回のsetDataで
-            // 作るため、連続クリックすると同じ対象がまだ「未請求」に見えたまま
-            // 二重に処理される危険がある。処理中は再度押せないようにする。
-            if (isGeneratingBatch) return;
+            // 連打対策。ref を使うことで、クリックされた瞬間に同期的に
+            // ブロックできる（state だと次の再描画まで反映されず、
+            // 素早い連打で二重発行事故が起きていた）。
+            if (isGeneratingBatchRef.current) return;
+            isGeneratingBatchRef.current = true;
             setIsGeneratingBatch(true);
-            const created = generateCustomerInvoicesForMonth(batchMonth);
-            setBatchResultMsg(created.length > 0 ? `${batchMonth} 分の請求書を ${created.length}件 発行しました。下の一覧から、続けて送信できます。` : `${batchMonth} 分の、まだ請求書化されていない配送完了実績が見つかりませんでした。`);
-            setPendingSendInvoices(created);
-            setIsGeneratingBatch(false);
+            try {
+              const created = generateCustomerInvoicesForMonth(batchMonth);
+              setBatchResultMsg(created.length > 0 ? `${batchMonth} 分の請求書を ${created.length}件 発行しました。下の一覧から、続けて送信できます。` : `${batchMonth} 分の、まだ請求書化されていない配送完了実績が見つかりませんでした。`);
+              setPendingSendInvoices(created);
+            } finally {
+              isGeneratingBatchRef.current = false;
+              setIsGeneratingBatch(false);
+            }
           }} disabled={isGeneratingBatch} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
             {isGeneratingBatch ? "発行中..." : "この月のぶんを一括発行"}
           </RetroBtn>
