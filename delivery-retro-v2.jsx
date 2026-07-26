@@ -192,8 +192,21 @@ const applyOrderDeliveredTransition = (d, orderId) => {
   // 実績データ（売上・報酬額）だけを記録し、請求書は
   // 「顧客請求書の一括発行」（InvoicesPage）で締め日ごとにまとめて作る。
   // 単発で今すぐ個別に発行したい場合は、受注詳細から手動で発行できる。
+  // 【重要】以前は orderId が一致するだけで「もう実績がある」と判定していた。
+  // しかし受注IDは「ORD-001」のような連番で、受注を削除して作り直すと
+  // 同じIDが再利用される。そのため、過去に別の受注（同じID）で作られた
+  // 古い実績が残っていると、今回の配送完了で実績が作られず、
+  // 売上にいつまでも反映されない、という深刻な不具合が起きていた
+  // （実際に、以前の「配達日経過による自動完了」が作った古い実績が
+  //   原因で発生した）。
+  // 同じ受注IDでも配達日が違えば別の仕事なので、日付もあわせて確認する。
   const alreadyInSales = (Array.isArray(d?.dailyRecords) ? d.dailyRecords : [])
-    .some((r) => r?.orderId === targetOrder?.id);
+    // 【重要】削除済みの実績まで「既にある」と判定してしまうと、
+    // 配送完了を一度取り消して（実績も削除して）から再度完了させた際に、
+    // 新しい実績が作られず、売上が一切計上されなくなる不具合が起きる。
+    // 削除済みは必ず除外する。
+    .filter((r) => !r?.deleted)
+    .some((r) => r?.orderId === targetOrder?.id && r?.date === targetOrder?.deliveryDate);
   const nextDailyRecords = alreadyInSales
     ? (Array.isArray(d?.dailyRecords) ? d.dailyRecords : [])
     : [
@@ -256,9 +269,16 @@ const validateBankKana = (value) => {
 };
 
 /** 表示用の業務ID（INV-001 等）を生成する。
- * 単純な配列長+1では削除済みデータや同時実行で重複する恐れがあるため、
- * 既存IDの最大連番 + タイムスタンプ由来のサフィックスを組み合わせて衝突を避ける。
- * 実際のレコード主キー（_dbId）は別途 crypto.randomUUID() で発行すること。
+ *
+ * 【重要】削除済みのデータも必ず採番の対象に含めること。
+ * 会計上、伝票番号（受注番号・請求書番号）の使い回しは絶対に避けなければ
+ * ならない。削除済みを除外したリストを渡すと、削除した ORD-001 の番号が
+ * 再利用され、過去の実績・請求書と新しい受注が同じ番号で混在してしまう
+ * （実際に「削除して作り直した受注の売上が計上されない」という重大な
+ *   不具合が発生した）。
+ *
+ * 呼び出し側は、必ず deleted も含む全件を渡すこと。
+ * 実際のレコード主キー（_dbId）は別途 crypto.randomUUID() で発行する。
  */
 const generateUniqueBusinessId = (existingList, prefix, separator = "-") => {
   const list = Array.isArray(existingList) ? existingList : [];
@@ -295,7 +315,7 @@ const generateUniqueBusinessId = (existingList, prefix, separator = "-") => {
  *   そこだけ履歴に残らない、という事故につながりやすいため。
  * ・new作成時は履歴を残さない（「変更」ではなく「新規作成」のため）。
  */
-const logHistoryEntry = (setData, { entityType, entityId, entityLabel, before, userRole }) => {
+const logHistoryEntry = (setData, { entityType, entityId, entityLabel, before, userRole, userEmail }) => {
   if (!before) return; // 新規作成時は before が無いので記録しない
   const entry = {
     id: `HIST-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -305,6 +325,12 @@ const logHistoryEntry = (setData, { entityType, entityId, entityLabel, before, u
     snapshot: before,
     changedAt: new Date().toISOString(),
     changedByRole: userRole || "unknown",
+    // 【重要】これまで「役割（事務・管理者など）」しか記録しておらず、
+    // 「誰が」その変更を行ったかを特定できなかった。
+    // 税務調査や社内監査で「この金額修正は誰がいつ行ったか」を
+    // 証明できない状態は、会計記録として不十分。
+    // ログイン中の本人を必ず記録する。
+    changedBy: userEmail || (typeof window !== "undefined" ? window.__hakomaneCurrentUser : null) || "unknown",
   };
   setData((d) => ({
     ...d,
@@ -473,7 +499,7 @@ const HistoryPanel = ({ data, entityType, entityId, labelMap = {}, hideKeys = []
           >
             <span>
               <b>{String(h.changedAt || "").slice(0, 16).replace("T", " ")}</b>
-              　{roleLabel[h.changedByRole] || h.changedByRole || "不明"}が変更
+              　{roleLabel[h.changedByRole] || h.changedByRole || "不明"}が変更{h.changedBy && h.changedBy !== "unknown" ? "（" + h.changedBy + "）" : ""}
             </span>
             <span style={{ color: "#999" }}>{openId === h.id ? "閉じる ▲" : "詳細 ▼"}</span>
           </button>
@@ -557,8 +583,17 @@ const StatusPill = ({ s, context }) => {
   const map = {
     pending:["未配車","#fff3e0","#e65100","#ff9800"], scheduled:["配車済","#e3f2fd","#1565c0","#2196f3"],
     in_transit:["配送中","#00a09a","#fff","#00a09a"], delivered:["完了","#4caf50","#fff","#4caf50"],
+    // キャンセル：荷主都合・不在等で配送が中止になった案件。
+    // 実務では必ず発生するが、これまで状態そのものが存在しなかった。
+    cancelled:["キャンセル","#eceff1","#546e7a","#90a4ae"],
+    // 再配達：不在等で持ち戻り、改めて配送する案件。
+    redelivery:["再配達","#fff3e0","#ef6c00","#ff9800"],
     unpaid:["未払い","#e8e8e8","#555","#d0d0d0"], pending_confirmation:["確認待ち","#fff3e0","#e65100","#ff9800"],
     overdue:["延滞","#ffebee","#c62828","#e63946"], paid:["入金済","#e8f5e9","#2e7d32","#4caf50"],
+    // 一部入金：請求額の一部だけが入金された状態（実務で頻繁に発生する）
+    partial:["一部入金","#fff8e1","#e65100","#ffb300"],
+    // 貸倒：回収不能として損失処理した状態
+    bad_debt:["貸倒","#efebe9","#5d4037","#8d6e63"],
     available:["待機中","#e8f5e9","#2e7d32","#4caf50"], on_duty:["稼働中","#e8f5f4","#007a74","#00a09a"], off:["休暇","#f1f3f5","#666","#d0d0d0"],
     retired:["退職済み","#ffebee","#c62828","#e63946"],
     in_use:["使用中","#e3f2fd","#1565c0","#2196f3"], maintenance:["整備中","#f3e5f5","#6a1b9a","#7b1fa2"],
@@ -1439,8 +1474,14 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
 // ===== BANK PAGE =====
 const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [bankTransactions, setBankTransactions] = useState(Array.isArray(data?.bankTransactions) ? data.bankTransactions : []);
-  const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
-  const customers = Array.isArray(data?.customers) ? data.customers : [];
+  // 【重要】削除済みの請求書・顧客を除外しないと、入金の照合候補として
+  // 表示されてしまい、誤って削除済みの請求書に入金を紐付ける事故が起きる。
+  // その入金は帳簿のどこにも現れず、原因不明の差異になる。
+  const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => {
+    const p = i?.payload != null && typeof i.payload === "object" ? i.payload : i;
+    return !p?.deleted && !i?.deleted;
+  });
+  const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const getEntityPayload = (row) => {
     if (!row || typeof row !== "object") return {};
     if (row.payload != null && typeof row.payload === "object") return { ...row.payload };
@@ -1469,7 +1510,9 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     if (wd > 0) return 0;
     return Number(tx?.amount) || 0;
   };
-  const payables = Array.isArray(data?.payables) ? data.payables : [];
+  // 【重要】削除済みの支払データを除外しないと、削除しても経費として
+  // 計上され続け、利益が実際より少なく見えてしまう。
+  const payables = (Array.isArray(data?.payables) ? data.payables : []).filter(p => !p?.deleted);
   const events = Array.isArray(data?.events) ? data.events : [];
   const todayStr = getTodayLocalStr();
   const fileInputRef = useRef(null);
@@ -1490,11 +1533,20 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const overdueTotal = invoices
     .filter((i) => {
       const p = getEntityPayload(i);
-      return p.status === "overdue" || (p.status === "unpaid" && (p.dueDate || "") < todayStr2);
+      // 【重要】一部入金（partial）の請求書も、期日を過ぎていれば延滞として
+      // 検知する必要がある。以前は unpaid だけを見ていたため、
+      // 「一部だけ入金されたまま期日を過ぎた請求書」が延滞から漏れていた。
+      // 貸倒処理済みのものは、回収を諦めた分なので延滞には含めない。
+      if (p.status === "bad_debt" || p.status === "paid") return false;
+      return p.status === "overdue" || ((p.status === "unpaid" || p.status === "partial") && (p.dueDate || "") < todayStr2);
     })
     .reduce((s, i) => {
       const p = getEntityPayload(i);
-      return s + (Number(p.total_amount ?? p.total) || 0);
+      // 延滞額は「請求額の全額」ではなく「未回収の残額」。
+      // 一部入金があった分を差し引かないと、延滞額が実態より大きく見える。
+      const total = Number(p.total_amount ?? p.total) || 0;
+      const paid = Number(p.paidAmount ?? p.paid_amount ?? 0) || 0;
+      return s + Math.max(0, total - paid);
     }, 0);
 
   useEffect(() => {
@@ -1719,7 +1771,18 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         const customerPayload = getEntityPayload(customer || {});
         const payerKana = customerPayload.payer_kana || "";
 
+        // 【重要】以前は「入金額と請求額が1円単位で完全に一致」した場合しか
+        // 金額一致とみなしていなかった。しかし日本の商習慣では、荷主が
+        // 振込手数料（数百円）を差し引いて入金してくることが非常に多い。
+        // 例：請求¥11,000 → 手数料¥220が引かれて¥10,780が入金される。
+        // これを一致とみなせないと、自動照合がほぼ機能せず、
+        // 毎回手作業で探して紐付けることになってしまう。
+        // 一般的な振込手数料の上限（880円程度）までの差額は、
+        // 「手数料差引による入金」として一致候補に含める。
+        const BANK_FEE_TOLERANCE = 880;
+        const shortfall = invAmount - deposit;
         const amountMatch = deposit === invAmount;
+        const feeDeductedMatch = shortfall > 0 && shortfall <= BANK_FEE_TOLERANCE;
         const counterpartyRaw = bankTx.counterparty || bankTx.description || "";
         const normalizedCounterparty = normalizeKanaForCompare(counterpartyRaw);
         const normalizedPayerKana = normalizeKanaForCompare(payerKana);
@@ -1730,8 +1793,12 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
         if (amountMatch && kanaMatch) {
           candidates.push({ invoice: inv, matchType: "exact", reason: "金額・名義一致" });
+        } else if (feeDeductedMatch && kanaMatch) {
+          candidates.push({ invoice: inv, matchType: "exact", reason: `名義一致（振込手数料 ¥${shortfall.toLocaleString()} 差引）` });
         } else if (amountMatch) {
           candidates.push({ invoice: inv, matchType: "partial_amount", reason: "金額一致" });
+        } else if (feeDeductedMatch) {
+          candidates.push({ invoice: inv, matchType: "partial_amount", reason: `金額ほぼ一致（振込手数料 ¥${shortfall.toLocaleString()} 差引）` });
         } else if (kanaMatch) {
           candidates.push({ invoice: inv, matchType: "partial_kana", reason: "名義一致" });
         }
@@ -1816,11 +1883,53 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       const invoiceDbId = matched.id;
 
       const invPayloadNext = { ...getEntityPayload(matched) };
-      invPayloadNext.status = "paid";
+      const invoiceTotal = Number(invPayloadNext.total) || Number(invPayloadNext.amount) || 0;
+
+      // 【重要】以前は「入金があったら必ず全額入金済み」として扱っていたため、
+      // 実務で頻繁に起きる「一部入金」に対応できなかった。
+      // 例：請求¥330,000に対し、荷主が資金繰りの都合で¥200,000だけ入金。
+      //     → 入金済みにすると残¥130,000が消え、未払いのままにすると
+      //       入金した事実が記録されない、という状態だった。
+      // 入金は「累計」で管理し、請求額との差で状態を自動判定する。
+      const prevPaid = Number(invPayloadNext.paidAmount ?? invPayloadNext.paid_amount ?? 0) || 0;
+      const cumulativePaid = prevPaid + paidAmount;
+
+      // 未回収の残額。振込手数料の範囲内（880円以下）の不足は
+      // 「手数料差引による入金」とみなし、完済として扱う。
+      const remaining = invoiceTotal - cumulativePaid;
+      const BANK_FEE_TOLERANCE = 880;
+      let nextStatus;
+      if (remaining <= 0) {
+        nextStatus = "paid";              // 完済（過入金含む）
+      } else if (remaining <= BANK_FEE_TOLERANCE) {
+        nextStatus = "paid";              // 手数料差引とみなして完済
+        invPayloadNext.transferFee = remaining;
+      } else {
+        nextStatus = "partial";           // 一部入金
+      }
+
+      invPayloadNext.status = nextStatus;
       invPayloadNext.paid_at = nowIso;
       invPayloadNext.paidDate = String(nowIso).slice(0, 10);
-      invPayloadNext.paid_amount = paidAmount;
-      invPayloadNext.paidAmount = paidAmount;
+      invPayloadNext.paid_amount = cumulativePaid;
+      invPayloadNext.paidAmount = cumulativePaid;
+      invPayloadNext.remainingAmount = Math.max(0, remaining);
+      // 過入金（請求額より多く入金された）も記録しておく。
+      // 次回請求で相殺するか返金するか、経理の判断材料になる。
+      if (remaining < 0) invPayloadNext.overpaidAmount = Math.abs(remaining);
+
+      // 入金の履歴を残す（いつ・いくら入金されたか）。
+      // 一部入金が複数回に分かれる場合、経緯が追えないと帳簿が説明できない。
+      const history = Array.isArray(invPayloadNext.paymentHistory) ? invPayloadNext.paymentHistory : [];
+      invPayloadNext.paymentHistory = [...history, { date: String(nowIso).slice(0, 10), amount: paidAmount, bankTxId }];
+
+      if (nextStatus === "partial") {
+        invPayloadNext.note = `${invPayloadNext.note || ""}${invPayloadNext.note ? " / " : ""}一部入金 ¥${cumulativePaid.toLocaleString()}（残 ¥${remaining.toLocaleString()}）`.trim();
+      } else if (invPayloadNext.transferFee) {
+        invPayloadNext.note = `${invPayloadNext.note || ""}${invPayloadNext.note ? " / " : ""}振込手数料 ¥${invPayloadNext.transferFee.toLocaleString()} 差引`.trim();
+      } else if (remaining < 0) {
+        invPayloadNext.note = `${invPayloadNext.note || ""}${invPayloadNext.note ? " / " : ""}過入金 ¥${Math.abs(remaining).toLocaleString()}`.trim();
+      }
       delete invPayloadNext._dbId;
 
       const customerNameForEvent = invPayloadNext.customerName || invPayloadNext.customer_name || "";
@@ -2298,10 +2407,18 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, requestOpenOrder }) => {
   const events = Array.isArray(data?.events) ? data.events : [];
   const bankTransactions = Array.isArray(data?.bankTransactions) ? data.bankTransactions : [];
-  const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
+  // 【重要】以前は請求書を種類で分けずに扱っていたため、
+  // 「ドライバーへ支払う請求書（driver_invoice）」が、荷主からの
+  // 売掛金（未回収額・今月の入金予定）に混ざって集計されていた。
+  // 支払うべきお金が、入ってくるお金として計上される深刻な誤りだった。
+  const allInvoicesForDashboard = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
+  const invoices = allInvoicesForDashboard.filter(i => i?.type !== "driver_invoice");
+  const driverInvoices = allInvoicesForDashboard.filter(i => i?.type === "driver_invoice");
   const orders = (Array.isArray(data?.orders) ? data.orders : []).filter(o => !o?.deleted);
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
-  const payables = Array.isArray(data?.payables) ? data.payables : [];
+  // 【重要】削除済みの支払データを除外しないと、削除しても経費として
+  // 計上され続け、利益が実際より少なく見えてしまう。
+  const payables = (Array.isArray(data?.payables) ? data.payables : []).filter(p => !p?.deleted);
   const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => !v?.deleted);
   const companyInfo = data?.companyInfo || {};
   const todayStr = getTodayLocalStr();
@@ -2356,14 +2473,40 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
     const remaining = list.length - 5;
     return remaining > 0 ? `${shown} 他${remaining}件` : shown;
   };
-  const todayEvents = events.filter(e=>e?.date===todayStr);
+  // 【重要】以前は events テーブル（入金期日・支払期日などの汎用予定）だけを
+  // 見ており、受注（orders）から直接「本日の配送予定」を作っていなかった。
+  // そのため source/sourceId が無く、クリックしても受注詳細に移動できない
+  // 不具合があった。ここで、本日が配達日の受注を、クリック可能な形で
+  // 別途追加する。
+  const orderStatusLabel = { pending:"未配車", scheduled:"配車済", in_transit:"配送中", delivered:"完了", cancelled:"キャンセル" };
+  const todayOrderEvents = orders
+    .filter(o => !o?.deleted && (o?.deliveryDate || "").slice(0, 10) === todayStr)
+    .map(o => ({
+      id: `today-order-${o.id}`,
+      source: "order",
+      sourceId: o.id,
+      date: todayStr,
+      type: "delivery",
+      title: `${o.customerName || "顧客未設定"}（${orderStatusLabel[o.status] || o.status || ""}）`,
+      color: o.status === "delivered" ? "#4caf50" : "#00a09a",
+    }));
+  const todayEvents = [...todayOrderEvents, ...events.filter(e=>e?.date===todayStr)];
   const todayBanks = bankTransactions.filter(b=>b?.date===todayStr);
   const unmatchedCount = bankTransactions.filter(b=>b?.status==="unmatched").length;
-  const overdueCount = invoices.filter(i=>i?.status==="overdue"||(i?.status==="unpaid"&&(i?.dueDate||"")<todayStr)).length;
+  const overdueCount = invoices.filter(i=>i?.status==="overdue"||((i?.status==="unpaid"||i?.status==="partial")&&(i?.dueDate||"")<todayStr)).length;
   const activeOrders = orders.filter(o=>["pending","scheduled","in_transit"].includes(o?.status)).length;
   const availableDrivers = drivers.filter(d=>d?.status==="available").length;
-  const totalRevenue = invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0);
-  const unpaidTotal = invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0);
+  // 実際に入金された額（振込手数料が引かれている場合はその額）で集計する。
+  // 請求額（total）で集計すると、手数料差引分だけ実際より多く見えてしまう。
+  // 一部入金（partial）も実際に入ってきたお金なので必ず含める。
+  const totalRevenue = invoices
+    .filter(i=>i?.status==="paid" || i?.status==="partial")
+    .reduce((s,i)=>s+(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0),0);
+  // 一部入金がある場合は、その分を差し引いた「本当の未回収額」を表示する。
+  // 貸倒（回収不能として処理済み）は未回収から除く。
+  const unpaidTotal = invoices
+    .filter(i=>i?.status!=="paid" && i?.status!=="bad_debt")
+    .reduce((s,i)=>s+Math.max(0,(Number(i?.total)||0)-(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0)),0);
   // 支払予定（会社が取引先に支払う側のお金）も経営状況の把握に必要なため、
   // 入金側（売上・未回収）だけでなく支出側もダッシュボードに表示する。
   const unpaidPayables = payables.filter(p=>p?.status!=="paid");
@@ -2380,7 +2523,16 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
   const invoicesDueThisMonthTotal = invoices
     .filter(i=>i?.status!=="paid" && (i?.dueDate||"").slice(0,7) === currentMonthKeyForDashboard)
     .reduce((s,i)=>s+(Number(i?.total)||0),0);
-  const netCashFlowThisMonth = invoicesDueThisMonthTotal - payablesDueThisMonthTotal;
+  // 【重要】以前は、手動登録した支払予定（payables）だけを支出として
+  // 見ており、運送会社にとって最大の支出である「委託ドライバーへの支払」
+  // が資金繰りの計算に一切含まれていなかった。
+  // その結果、実際には資金が足りないのに「今月は黒字」と表示され、
+  // 支払い直前になって資金不足に気づく、という事態になりかねなかった。
+  const driverPaymentsDueThisMonth = driverInvoices
+    .filter(i => i?.status !== "paid" && (i?.dueDate || "").slice(0,7) === currentMonthKeyForDashboard)
+    .reduce((s,i)=>s+(Number(i?.total)||0),0);
+  const totalOutgoingThisMonth = payablesDueThisMonthTotal + driverPaymentsDueThisMonth;
+  const netCashFlowThisMonth = invoicesDueThisMonthTotal - totalOutgoingThisMonth;
   // ドライバーロールは経理情報（売上・未回収額・口座照合）や
   // 他のドライバーの個人情報を見る必要がなく、見せるべきでもないため、
   // ダッシュボードの表示内容を「本日の予定」のみに絞った簡易版に切り替える。
@@ -2442,7 +2594,7 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
           ...(userRole === "dispatcher" ? [] : [
             ["入金済売上","¥"+totalRevenue.toLocaleString(),"#7b1fa2"],
             ["未回収","¥"+unpaidTotal.toLocaleString(),"#e63946"],
-            ["今月の支払予定","¥"+payablesDueThisMonthTotal.toLocaleString(),"#e65100"],
+            ["今月の支払予定","¥"+totalOutgoingThisMonth.toLocaleString(),"#e65100"],
             ["今月の資金繰り見通し", (netCashFlowThisMonth>=0?"+":"") + "¥"+netCashFlowThisMonth.toLocaleString(), netCashFlowThisMonth>=0 ? "#2e7d32" : "#e63946"],
           ]),
         ].map(([l,v,c])=>(
@@ -2482,7 +2634,10 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
       )}
 
       {/* 実績承認待ちの件数。押すと実績承認画面に直接移動する。 */}
-      {pendingApprovalCount > 0 && (
+      {/* 【重要】配車担当は実績承認画面にアクセスできない（ROLE_VISIBLE_MENUSで
+          approval が許可されていない）。ウィジェットだけ表示されると、
+          押しても移動できず混乱を招くため、同じ条件で非表示にする。 */}
+      {userRole !== "dispatcher" && pendingApprovalCount > 0 && (
         <div
           onClick={()=>setPage("approval")}
           style={{
@@ -2666,11 +2821,96 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   const saveOrderDetail = () => {
     if (!orderDraft?.id) return;
     const before = orders.find((o) => o?.id === orderDraft.id);
+
+    // 【重要】締め済みの月の受注を編集すると、その月の実績データも
+    // 一緒に更新されるため（受注⇄実績の同期）、既に確定・支払済みの
+    // ドライバー報酬や、発行済みの請求書と金額が食い違ってしまう。
+    // 編集前・編集後どちらの月が締められていても保護する
+    // （配達日を締め済みの月へ移動させるのも防ぐ）。
+    const beforeMonth = String(before?.deliveryDate || "").slice(0, 7);
+    const afterMonth = String(orderDraft?.deliveryDate || "").slice(0, 7);
+    const closedMonth = isMonthClosed(data?.companyInfo, beforeMonth)
+      ? beforeMonth
+      : (isMonthClosed(data?.companyInfo, afterMonth) ? afterMonth : null);
+    if (closedMonth) {
+      window.alert(
+        `${closedMonth} は既に締められています。\n\n` +
+        `締め済みの月の受注を変更すると、確定した売上・ドライバー報酬や\n` +
+        `発行済みの請求書と食い違いが生じるため、この操作はできません。\n\n` +
+        `どうしても必要な場合は、管理者に月の締めを解除してもらってください。`
+      );
+      return;
+    }
+
     logHistoryEntry(setData, { entityType: "order", entityId: orderDraft.id, entityLabel: orderDraft.id, before, userRole });
+
+    const nextAmount = Number(orderDraft?.amount) || 0;
+    const nextDriverPay = orderDraft?.driverPayAmount !== "" && orderDraft?.driverPayAmount != null
+      ? (Number(orderDraft.driverPayAmount) || 0) : null;
+
+    // 【重要】配送完了時に自動作成された実績データは、受注を後から
+    // 修正しても古い金額のまま残っていた。その結果、
+    // ・荷主への請求額（受注から集計）は新しい金額
+    // ・売上管理・ドライバー報酬（実績から集計）は古い金額
+    // という食い違いが起き、帳簿が合わなくなる重大な不具合があった。
+    // 実務では「後から単価訂正・追加料金が発生する」ことは日常的なため、
+    // 受注を修正したら、対応する実績データも必ず一緒に更新する。
+    const amountChanged = before && (
+      (Number(before.amount) || 0) !== nextAmount ||
+      (before.driverPayAmount ?? null) !== nextDriverPay ||
+      before.deliveryDate !== orderDraft.deliveryDate
+    );
+    let syncedCount = 0;
+    if (amountChanged) {
+      // 【重要】既に荷主へ請求書を発行済みの受注の金額を変更すると、
+      // 相手が持っている請求書の金額と、こちらの帳簿の金額が食い違う。
+      // 請求書は自動では作り直されないため、気づかないまま放置すると
+      // 「請求した額」と「売上として計上した額」がズレたままになる。
+      // インボイス制度上も、金額を訂正する場合は修正した適格請求書を
+      // 改めて交付する必要があるため、必ず明示的に警告する。
+      const issuedInvoiceId = before?.invoicedInvoiceId;
+      if (issuedInvoiceId) {
+        const proceed = window.confirm(
+          `⚠️ この受注は既に請求書（${issuedInvoiceId}）を発行済みです。\n\n` +
+          `金額を変更しても、発行済みの請求書は自動では更新されません。\n` +
+          `そのままにすると、荷主に請求した額と、帳簿上の売上が食い違います。\n\n` +
+          `変更する場合は、請求管理から該当の請求書も修正するか、\n` +
+          `修正した請求書を改めて発行してください。\n\n` +
+          `${yen(before?.amount)} → ${yen(nextAmount)} に変更しますか？`
+        );
+        if (!proceed) return;
+      }
+
+      syncedCount = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+        .filter((r) => r?.orderId === orderDraft.id && !r?.deleted).length;
+      if (syncedCount > 0) {
+        const proceed = window.confirm(
+          `この受注は既に配送完了しており、実績データが ${syncedCount}件 作られています。\n\n` +
+          `受注の金額・配達日を変更すると、その実績データ（売上・ドライバー報酬）も\n` +
+          `同じ内容に更新されます。\n\n` +
+          `更新してよろしいですか？`
+        );
+        if (!proceed) return;
+      }
+    }
+
     setData((d) => ({
       ...d,
       orders: (Array.isArray(d?.orders) ? d.orders : []).map((order) =>
-        order?.id === orderDraft.id ? { ...order, ...orderDraft, amount: Number(orderDraft?.amount) || 0, driverPayAmount: orderDraft?.driverPayAmount !== "" && orderDraft?.driverPayAmount != null ? (Number(orderDraft.driverPayAmount) || 0) : null } : order
+        order?.id === orderDraft.id ? { ...order, ...orderDraft, amount: nextAmount, driverPayAmount: nextDriverPay } : order
+      ),
+      // 受注から自動作成された実績（orderId が紐づくもの）だけを同期する。
+      // 手入力で作られた実績は orderId を持たないため、影響を受けない。
+      dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+        (r?.orderId === orderDraft.id && !r?.deleted)
+          ? {
+              ...r,
+              date: orderDraft.deliveryDate || r.date,
+              salesAmount: nextAmount,
+              driverAmount: nextDriverPay ?? 0,
+              customerId: orderDraft.customerId || r.customerId,
+            }
+          : r
       ),
     }));
     setOrderEditMode(false);
@@ -2712,23 +2952,89 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     });
   };
 
+  /**
+   * 受注をキャンセルする。
+   *
+   * 【なぜ必要か】
+   * 荷主都合・不在・天候などで配送が中止になることは実務で必ず起きるが、
+   * これまで「キャンセル」という状態そのものが無かった。そのため
+   * ・受注を削除する（記録が残らず、なぜ無くなったか分からなくなる）
+   * ・未配車のまま放置する（いつまでも未処理案件として残り続ける）
+   * のどちらかしか選べなかった。
+   * キャンセルは「あった事実」として記録に残すべきなので、状態として持つ。
+   */
+  const cancelOrder = (orderId) => {
+    const target = orders.find((o) => o?.id === orderId);
+    if (!target) return;
+    // 【重要】締め済みの月の受注をキャンセルすると、その月の実績データが
+    // 削除され、既に確定・支払済みのドライバー報酬や、発行済みの請求書と
+    // 金額が食い違ってしまう。他の実績変更と同じく、締め済みは保護する。
+    const targetMonth = String(target.deliveryDate || "").slice(0, 7);
+    if (isMonthClosed(data?.companyInfo, targetMonth)) {
+      window.alert(
+        `配達日（${target.deliveryDate}）の月は既に締められています。\n\n` +
+        `締め済みの月の受注をキャンセルすると、確定した売上・報酬と\n` +
+        `食い違いが生じるため、この操作はできません。\n\n` +
+        `どうしても必要な場合は、管理者に月の締めを解除してもらってください。`
+      );
+      return;
+    }
+    const relatedRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+      .filter((r) => r?.orderId === orderId && !r?.deleted);
+    let msg = `受注 ${orderId}（${target.customerName || "顧客未設定"}）をキャンセルにします。\n\n`;
+    if (relatedRecords.length > 0) {
+      const total = relatedRecords.reduce((s, r) => s + (Number(r?.salesAmount) || 0), 0);
+      msg += `この受注には実績データ ${relatedRecords.length}件（売上 ${yen(total)}）があります。\n` +
+             `キャンセルすると、この実績も削除され、売上・ドライバー報酬から除外されます。\n\n`;
+    }
+    if (target.invoicedInvoiceId) {
+      msg += `⚠️ 既に請求書（${target.invoicedInvoiceId}）を発行済みです。\n` +
+             `キャンセルしても請求書は自動では取り消されません。\n` +
+             `請求管理から「赤伝を発行」して、正式に訂正してください。\n\n`;
+    }
+    msg += "キャンセルしますか？";
+    if (!window.confirm(msg)) return;
+    const reason = window.prompt("キャンセルの理由を入力してください（記録として残ります）", "荷主都合によるキャンセル") || "キャンセル";
+    setData((d) => ({
+      ...d,
+      orders: (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
+        o?.id === orderId
+          ? { ...o, status: "cancelled", cancelledAt: getTodayLocalStr(), cancelReason: reason }
+          : o
+      ),
+      dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+        r?.orderId === orderId ? { ...r, deleted: true } : r
+      ),
+    }));
+  };
+
   const goPrevStatus = (orderId, currentStatus) => {
     const prev = statusPrev[currentStatus];
     if (!prev) return;
-    // 【重要】「配送完了」から前の状態に戻しても、既に自動生成された実績データ
-    // （売上・報酬額）は自動では削除されない。気づかないまま放置すると、
-    // 「まだ完了していない受注」なのに、その分の売上・報酬が計算に
-    // 含まれ続けてしまう不整合が起きるため、ここで気づけるようにする。
+    // 【重要】以前は「配送完了」を取り消しても、既に自動生成された実績データ
+    // （売上・報酬額）はそのまま残り、「あとで売上管理から手動で削除して
+    // ください」と利用者に丸投げしていた。しかし実務では確実に忘れられ、
+    // ・まだ完了していない受注なのに売上・報酬が計上され続ける
+    // ・再度「配送完了」にしても、同じ日付の実績が既にあるため
+    //   新しい実績が作られず、古い金額のまま残る
+    // といった不整合が起きていた。取り消すその場で削除できるようにする。
+    let shouldRemoveRecords = false;
     if (currentStatus === "delivered") {
-      const hasRelatedRecord = orders.find((x) => x?.id === orderId) &&
-        (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).some((r) => r?.orderId === orderId);
-      if (hasRelatedRecord) {
+      const relatedRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+        .filter((r) => r?.orderId === orderId && !r?.deleted);
+      if (relatedRecords.length > 0) {
+        const total = relatedRecords.reduce((s, r) => s + (Number(r?.salesAmount) || 0), 0);
+        const pay = relatedRecords.reduce((s, r) => s + (Number(r?.driverAmount) || 0), 0);
         const proceed = window.confirm(
-          "この受注は既に「配送完了」時点で実績データ（売上・報酬額）が記録されています。\n" +
-          "状態を戻しても、その実績データは自動的には削除されません。\n\n" +
-          "本当に前の状態に戻しますか？（必要であれば、あとで売上管理から実績データを直接修正・削除してください）"
+          `この受注は配送完了時に実績データが記録されています。\n\n` +
+          `・実績 ${relatedRecords.length}件（売上 ${yen(total)} / ドライバー報酬 ${yen(pay)}）\n\n` +
+          `「OK」を押すと、状態を戻すと同時にこの実績データも削除します。\n` +
+          `（まだ完了していない受注の売上・報酬が計上されたままになるのを防ぎます）\n\n` +
+          `※実績データを残したまま状態だけ戻したい場合は「キャンセル」を押し、\n` +
+          `　売上管理から個別に対応してください。`
         );
         if (!proceed) return;
+        shouldRemoveRecords = true;
       }
     }
     setData((d) => ({
@@ -2736,6 +3042,11 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
       orders: (Array.isArray(d?.orders) ? d.orders : []).map((x) =>
         x?.id === orderId ? { ...x, status: prev } : x
       ),
+      dailyRecords: shouldRemoveRecords
+        ? (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+            r?.orderId === orderId ? { ...r, deleted: true } : r
+          )
+        : (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []),
     }));
   };
   const handleAdd = () => {
@@ -2755,7 +3066,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     isSubmittingRef.current = true;
     try {
       const c = customers.find(x=>x.id===form.customerId);
-      const o = { id: generateUniqueBusinessId(orders, "ORD"), customerId:form.customerId, customerName:c?.name||"", deliveryType:form.deliveryType || "route", date:getTodayLocalStr(), deliveryDate:form.deliveryDate, pickupTime:form.pickupTime || "", deliveryTime:form.deliveryTime || "", from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, driverPayAmount: form.driverPayAmount !== "" && form.driverPayAmount != null ? (parseInt(form.driverPayAmount, 10) || 0) : null, notes:form.notes };
+      const o = { id: generateUniqueBusinessId(Array.isArray(data?.orders) ? data.orders : [], "ORD"), customerId:form.customerId, customerName:c?.name||"", deliveryType:form.deliveryType || "route", date:getTodayLocalStr(), deliveryDate:form.deliveryDate, pickupTime:form.pickupTime || "", deliveryTime:form.deliveryTime || "", from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, driverPayAmount: form.driverPayAmount !== "" && form.driverPayAmount != null ? (parseInt(form.driverPayAmount, 10) || 0) : null, notes:form.notes };
       setData(d=>({ ...d, orders:[o,...(Array.isArray(d?.orders) ? d.orders : [])], events:[...(Array.isArray(d?.events) ? d.events : []),{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
       setShowModal(false); setForm({ customerId:"", deliveryType:"route", deliveryDate:"", pickupTime:"", deliveryTime:"", from:"", to:"", cargo:"", weight:"", amount:"", driverPayAmount:"", notes:"" });
     } finally {
@@ -2807,6 +3118,12 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                   <div style={{ display:"flex", gap:"4px" }}>
                     {statusPrev[o?.status] && (
                       <RetroBtn small onClick={(e)=>{ e.stopPropagation(); goPrevStatus(o?.id, o?.status); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>{prevIcon}戻る</RetroBtn>
+                    )}
+                    {/* キャンセルは「配送完了」以外の段階で選べるようにする。
+                        完了済みの案件は、まず「戻る」で完了を取り消してから
+                        キャンセルする流れにして、誤操作を防ぐ。 */}
+                    {o?.status !== "delivered" && o?.status !== "cancelled" && (
+                      <RetroBtn small onClick={(e)=>{ e.stopPropagation(); cancelOrder(o?.id); }} style={{ background:"#fff", color:"#546e7a", borderColor:"#90a4ae", marginLeft:"4px" }}>キャンセル</RetroBtn>
                     )}
                     {statusNext[o?.status] && (
                       <RetroBtn small onClick={(e)=>{ e.stopPropagation(); goNextStatus(o?.id, o?.status); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>次へ{nextIcon}</RetroBtn>
@@ -3032,6 +3349,19 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                   // lineItems（明細）で複数の受注をまとめて参照する形式のため、
                   // orderIdだけを見ていると一括請求済みの受注を検知できない。
                   // 受注自身が持つ invoicedInvoiceId も必ずあわせて確認する。
+                  // 【重要】締め済みの月の受注を削除すると、その月の実績データが
+                  // 消え、既に確定・支払済みのドライバー報酬や発行済みの請求書と
+                  // 金額が食い違ってしまう。締め済みの月は保護する。
+                  const delMonth = String(selectedOrder?.deliveryDate || "").slice(0, 7);
+                  if (isMonthClosed(data?.companyInfo, delMonth)) {
+                    window.alert(
+                      `配達日（${selectedOrder?.deliveryDate}）の月は既に締められています。\n\n` +
+                      `締め済みの月の受注を削除すると、確定した売上・報酬と\n` +
+                      `食い違いが生じるため、この操作はできません。\n\n` +
+                      `どうしても必要な場合は、管理者に月の締めを解除してもらってください。`
+                    );
+                    return;
+                  }
                   const relatedInvoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter((inv) => {
                     const p = inv?.payload != null && typeof inv.payload === "object" ? inv.payload : inv;
                     if (p?.deleted || inv?.deleted) return false;
@@ -3040,11 +3370,37 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                     const matchesBatchInvoice = selectedOrder?.invoicedInvoiceId && invId === selectedOrder.invoicedInvoiceId;
                     return matchesDirectOrderId || matchesBatchInvoice;
                   });
-                  const confirmMessage = relatedInvoices.length > 0
-                    ? `この受注には既に発行済みの請求書（${relatedInvoices.map(i => (i?.payload||i)?.id || i?.id).join("、")}）があります。受注を削除しても請求書はそのまま残ります。本当に削除しますか？（後から復元できます）`
+
+                  // 【重要】受注を削除しても、配送完了時に自動作成された実績データ
+                  // （売上・ドライバー報酬）はそのまま残り続けていた。
+                  // その結果、「存在しない仕事の売上」が帳簿に計上され続け、
+                  // ドライバーにもその分の報酬が支払われてしまう状態だった。
+                  // 実績も一緒に削除するかを必ず確認する。
+                  const relatedRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+                    .filter((r) => r?.orderId === selectedOrder?.id && !r?.deleted);
+
+                  const messages = [];
+                  if (relatedInvoices.length > 0) {
+                    messages.push(`・発行済みの請求書（${relatedInvoices.map(i => (i?.payload||i)?.id || i?.id).join("、")}）があります。受注を削除しても請求書はそのまま残ります。`);
+                  }
+                  if (relatedRecords.length > 0) {
+                    const total = relatedRecords.reduce((s, r) => s + (Number(r?.salesAmount) || 0), 0);
+                    const pay = relatedRecords.reduce((s, r) => s + (Number(r?.driverAmount) || 0), 0);
+                    messages.push(`・この受注から作られた実績データ ${relatedRecords.length}件（売上 ${yen(total)} / ドライバー報酬 ${yen(pay)}）も一緒に削除されます。`);
+                  }
+                  const confirmMessage = messages.length > 0
+                    ? `この受注を削除します。\n\n${messages.join("\n")}\n\n本当に削除しますか？（後から復元できます）`
                     : "この受注を削除しますか？（後から復元できます）";
                   if(!window.confirm(confirmMessage)) return;
-                  setData(d=>({...d, orders:(Array.isArray(d?.orders)?d.orders:[]).map(o=>o?.id===selectedOrder?.id?{...o,deleted:true}:o)})); closeOrderDetail();
+                  setData(d=>({
+                    ...d,
+                    orders:(Array.isArray(d?.orders)?d.orders:[]).map(o=>o?.id===selectedOrder?.id?{...o,deleted:true}:o),
+                    // 受注から自動作成された実績だけを削除する。
+                    // 手入力の実績（orderId を持たない）には影響しない。
+                    dailyRecords:(Array.isArray(d?.dailyRecords)?d.dailyRecords:[]).map(r=>
+                      r?.orderId===selectedOrder?.id ? {...r, deleted:true} : r
+                    ),
+                  })); closeOrderDetail();
                 }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
                 {/* 「編集」は最も使う頻度が高い操作のため、すぐ隣に破壊的な「削除」が
                     あると押し間違えるリスクがある。「削除」を左側に独立させ、
@@ -4369,7 +4725,7 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
-  const dailyRecords = Array.isArray(data?.dailyRecords) ? data.dailyRecords : [];
+  const dailyRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(r => !r?.deleted);
 
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -4453,7 +4809,11 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       // setData のコールバック内で、常に最新の d.dailyRecords を見て判定する。
       setData(d => {
         const currentDailyRecords = Array.isArray(d?.dailyRecords) ? d.dailyRecords : [];
-        const alreadyRecorded = currentDailyRecords.some(dr => dr?.recurringId === r?.id && dr?.date === date);
+        // 【重要】削除済みの実績まで「既にある」と判定してしまうと、
+        // 定期便の実績を一度削除してから、同じ日をもう一度「稼働あり」に
+        // しても新しい実績が作られず、売上が計上されなくなる。
+        // （受注側の配送完了処理でも同じ不具合があり、修正済み）
+        const alreadyRecorded = currentDailyRecords.some(dr => !dr?.deleted && dr?.recurringId === r?.id && dr?.date === date);
         const currentConfirmations = Array.isArray(d?.recurringConfirmations) ? d.recurringConfirmations : [];
         const nextConfirmations = [
           ...currentConfirmations.filter(c => !(c?.recurringId === r?.id && c?.date === date)),
@@ -4509,7 +4869,12 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     setData(d => ({
       ...d,
       recurringConfirmations: (Array.isArray(d?.recurringConfirmations) ? d.recurringConfirmations : []).filter(c => !(c?.recurringId === r?.id && c?.date === date)),
-      dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).filter(dr => !(dr?.recurringId === r?.id && dr?.date === date)),
+      // 【重要】以前は実績を完全に削除していたため、誤って取り消しても
+      // 「削除済みデータの復元」で戻すことができなかった。
+      // 他の削除処理と同じく、削除の印を付ける方式に統一する。
+      dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map(dr =>
+        (dr?.recurringId === r?.id && dr?.date === date) ? { ...dr, deleted: true } : dr
+      ),
     }));
   };
 
@@ -4773,7 +5138,9 @@ async function hashPassword(driverId, password) {
  */
 const calcDriverPayout = (driver, records, month, snapshot = null) => {
   const n = (v) => Number(v) || 0;
-  const all = (Array.isArray(records) ? records : []).filter(Boolean);
+  // 【重要】削除済みの実績を除外しないと、実績を削除しても報酬計算に
+  // 含まれ続け、実際には無い仕事の分までドライバーに支払ってしまう。
+  const all = (Array.isArray(records) ? records : []).filter((r) => r && !r.deleted);
   // 締め済みの月なら固定された設定を、そうでなければ現在の設定を使う。
   const cfg = snapshot || driver || {};
 
@@ -4842,8 +5209,15 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
   // 【重要】必ず整数（円）にすること。
   // 距離制・時間制の実績では driverAmount に小数が入り得るため、合算すると
   // 振込額が「4,444.777円」のような小数になる。銀行に小数の振込データは出せず、
+  // 【重要】インボイス登録済みで、かつ「消費税を上乗せして支払う」契約の
+  // ドライバーには、報酬に消費税を加えた金額を振り込む必要がある。
+  // これをしないと、ドライバーが発行する請求書（税込）と、実際の振込額が
+  // 食い違い、毎月消費税分の未払いが発生してしまう（実務で必ず問題になる）。
+  const payTaxIncluded = !!(driver?.invoiceRegistered && driver?.payTaxIncluded);
+  const consumptionTax = payTaxIncluded ? Math.round(grossPay * 0.1) : 0;
+
   // 全銀CSVが確実にエラーになるため、ここで円単位に丸める。
-  const netPay = Math.round(grossPay - totalDeduction);
+  const netPay = Math.round(grossPay + consumptionTax - totalDeduction);
 
   return {
     driverId: driver?.id,
@@ -4861,6 +5235,9 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
     fuel: Math.round(fuel),
     otherAllowance: Math.round(otherAllowance),
     grossPay: Math.round(grossPay),
+    // 消費税（インボイス登録済み＋税込支払い契約の場合のみ発生）
+    payTaxIncluded,
+    consumptionTax,
     // 控除
     royalty: Math.round(royalty),
     lease: Math.round(lease),
@@ -4894,7 +5271,10 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
 /** 指定月("YYYY-MM")の実績だけを取り出す */
 const filterRecordsByMonth = (records, month) =>
   (Array.isArray(records) ? records : []).filter(
-    (r) => typeof r?.date === "string" && r.date.slice(0, 7) === month
+    // 【重要】削除済みの実績を除外しないと、売上・ドライバー報酬の計算に
+    // 含まれ続けてしまう。この関数は報酬計算・利益分析など、金額に関わる
+    // ほぼ全ての集計が通る場所なので、ここで確実に除外する。
+    (r) => !r?.deleted && typeof r?.date === "string" && r.date.slice(0, 7) === month
   );
 
 /**
@@ -5000,6 +5380,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
           <h3>支給</h3>
           <table>${toRows(payRows)}</table>
           <div class="subtotal"><span>支給合計</span><span>${yen(payout.grossPay)}</span></div>
+          ${payout.consumptionTax > 0 ? `<div class="subtotal"><span>消費税（10%）</span><span>${yen(payout.consumptionTax)}</span></div>` : ""}
         </div>
         <div class="col">
           <h3>控除</h3>
@@ -5293,7 +5674,7 @@ const ChangeHistoryPage = ({ data, setData, tenantId, userRole }) => {
                   </span>
                   <b>{h.entityLabel || h.entityId}</b>
                   <span style={{ color: "#999", marginLeft: "8px" }}>
-                    {String(h.changedAt || "").slice(0, 16).replace("T", " ")}　{roleLabel[h.changedByRole] || h.changedByRole || "不明"}が変更
+                    {String(h.changedAt || "").slice(0, 16).replace("T", " ")}　{roleLabel[h.changedByRole] || h.changedByRole || "不明"}が変更{h.changedBy && h.changedBy !== "unknown" ? "（" + h.changedBy + "）" : ""}
                   </span>
                 </span>
                 <span style={{ color: "#999" }}>{openId === h.id ? "閉じる ▲" : "詳細 ▼"}</span>
@@ -5332,12 +5713,19 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
   // 振り返れるようにしたいため、削除済みも含めた一覧を別途用意する
   // （通常の報酬計算・一覧表示には引き続き使わない）。
   const allDriversForHistory = Array.isArray(data?.drivers) ? data.drivers : [];
-  const dailyRecords = Array.isArray(data?.dailyRecords) ? data.dailyRecords : [];
+  const dailyRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(r => !r?.deleted);
   const companyInfo = data?.companyInfo || null;
 
   const [month, setMonth] = useState(() => getTodayLocalStr().slice(0, 7));
   const [detailDriverId, setDetailDriverId] = useState(null);
   const [confirmClose, setConfirmClose] = useState(false);
+  // 【重要】「締める」ボタンには連打防止が一切なかった。
+  // このボタンは、月の固定に加えてドライバー請求書の自動発行も行うため、
+  // 素早く2回押されると、ドライバーへの請求書が二重に発行され、
+  // 最悪の場合そのまま二重払いに繋がる恐れがあった。
+  // ref は更新が同期的（その場で即座に反映される）ため、
+  // クリックされた瞬間に確実にブロックできる。
+  const isClosingMonthRef = useRef(false);
   const [confirmReopen, setConfirmReopen] = useState(false);
   const [closeResultMsg, setCloseResultMsg] = useState("");
   // 過去の明細をPDFで1件ずつ開かなくても、月ごとの合計を一覧で見られるようにする。
@@ -5368,6 +5756,34 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
 
   // 稼働があったドライバーだけを振込対象にする（稼働ゼロの人に0円振込は不要）
   const activePayouts = payouts.filter((p) => p.workDays > 0);
+
+  /**
+   * ===== この月の売上が、荷主から回収できているか =====
+   *
+   * 「荷主から入金があってから、委託ドライバーへ支払う」という
+   * 資金繰りの基本を実践するには、支払う直前に
+   * 「この月の売上は、ちゃんと回収できているのか？」が
+   * 見えている必要がある。
+   * これまでは報酬・振込画面に一切その情報が無く、
+   * 未回収のまま先に支払ってしまい資金がショートする危険があった。
+   */
+  const collectionStatus = useMemo(() => {
+    const allInvoices = Array.isArray(data?.invoices) ? data.invoices : [];
+    // この月の配送分に対する、荷主への請求書だけを見る
+    const customerInvoices = allInvoices.filter(
+      (inv) => inv?.type !== "driver_invoice" && !inv?.deleted && (inv?.billingMonth === month || (inv?.issueDate || "").slice(0, 7) === month || (inv?.note || "").includes(month))
+    );
+    const billed = customerInvoices.reduce((s, i) => s + (Number(i?.total) || 0), 0);
+    const collected = customerInvoices
+      .filter((i) => i?.status === "paid")
+      .reduce((s, i) => s + (Number(i?.paidAmount ?? i?.paid_amount ?? i?.total) || 0), 0);
+    const uncollected = customerInvoices
+      .filter((i) => i?.status !== "paid")
+      .reduce((s, i) => s + (Number(i?.total) || 0), 0);
+    // この月にドライバーへ支払う予定の総額
+    const toPay = activePayouts.reduce((s, p) => s + Math.max(0, Number(p?.netPay) || 0), 0);
+    return { billed, collected, uncollected, toPay, invoiceCount: customerInvoices.length };
+  }, [data?.invoices, month, activePayouts]);
 
   /**
    * ===== 月ごとの履歴一覧 =====
@@ -5435,17 +5851,27 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
    * 1円単位でズレて、経理上の突合が取れなくなるため。
    */
   const generateDriverInvoicesForMonth = (targetMonth) => {
-    const already = new Set(
+    // 【重要】以前は「同じIDの請求書が既にあればスキップ」するだけだった。
+    // そのため、月締めを解除して実績を修正し、再度締めた場合に、
+    // ドライバーへの請求書は古い金額のまま残り、実際の振込額と
+    // 食い違ってしまう不具合があった（実務では「実績が1日抜けていた」等で
+    // 締め直すことは珍しくない）。
+    // まだ支払っていない請求書は、最新の金額に更新する。
+    // 既に支払済みの請求書は、会計記録として変えてはいけないため触らない。
+    const existingById = new Map(
       (Array.isArray(data?.invoices) ? data.invoices : [])
         .filter((inv) => inv?.type === "driver_invoice" && !inv?.deleted)
-        .map((inv) => inv.id)
+        .map((inv) => [inv.id, inv])
     );
     const monthPayouts = payouts.filter((p) => p.month === targetMonth && p.workDays > 0);
     const newInvoices = [];
+    const updatedInvoices = new Map(); // 金額を更新する既存請求書
 
     monthPayouts.forEach((p) => {
       const id = `DINV-AUTO-${targetMonth}-${p.driverId}`;
-      if (already.has(id)) return; // 既に発行済みなら重複生成しない
+      const existing = existingById.get(id);
+      // 既に支払済みの請求書は、会計上の記録として確定しているため変更しない。
+      if (existing && existing.status === "paid") return;
 
       const driver = drivers.find((d) => d?.id === p.driverId);
       // 請求金額は「会社がドライバーに支払う総支給額（grossPay）」を基準にする。
@@ -5456,42 +5882,93 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       if (!(subtotal > 0)) return;
 
       const registered = !!driver?.invoiceRegistered;
-      const tax = registered ? calcTax(subtotal) : 0;
-      const total = subtotal + tax;
+      // 【重要】以前は「インボイス登録済みなら、必ず報酬に消費税を上乗せする」
+      // という計算だったため、実際には税込（内税）で支払う契約のドライバーでも
+      // 請求書だけ外税で発行され、請求額と実際の振込額が毎月食い違っていた。
+      //
+      // ・消費税を上乗せして支払う契約（外税）
+      //     → 請求書も 報酬＋消費税 で発行する
+      // ・報酬額に消費税が含まれている契約（内税）
+      //     → 請求書は合計＝報酬額のまま、その内訳として消費税を明示する
+      //       （インボイス制度では税額の明記が必要なため、0円にはできない）
+      //
+      // どちらの場合も「請求書の合計 ＝ 支給合計（控除前）」となり、
+      // 実際の振込額と必ず整合するようになる。
+      const payTaxIncluded = !!(registered && driver?.payTaxIncluded);
+      let tax, total, taxExcluded;
+      if (!registered) {
+        // 未登録：消費税の記載なし
+        taxExcluded = subtotal;
+        tax = 0;
+        total = subtotal;
+      } else if (payTaxIncluded) {
+        // 外税：報酬に消費税を上乗せして支払う
+        taxExcluded = subtotal;
+        tax = calcTax(subtotal);
+        total = subtotal + tax;
+      } else {
+        // 内税：報酬額に消費税が含まれている
+        taxExcluded = Math.round(subtotal / (1 + TAX_RATE));
+        tax = subtotal - taxExcluded;
+        total = subtotal;
+      }
 
       const [y, m] = targetMonth.split("-").map(Number);
       const issueDate = getTodayLocalStr();
       const dueDate = formatDate(new Date(y, m, 15)); // 翌月15日払いを既定に
 
-      newInvoices.push({
+      const invoiceData = {
         id,
-        _dbId: crypto.randomUUID(),
         type: "driver_invoice",
         driverId: p.driverId,
         driverName: p.driverName || driver?.name || p.driverId,
         issueDate,
         dueDate,
-        amount: subtotal,
+        amount: taxExcluded,
         tax,
         total,
         status: "unpaid",
         registered,
         invoiceRegNo: registered ? (driver?.invoiceRegNo || "") : "",
-        note: `${targetMonth} 分 稼働実績に基づく自動生成請求書`,
         payoutMonth: targetMonth,
         lineItems: [{
           id: `LI-${Date.now()}`,
           name: `${targetMonth} 配送業務委託料（稼働${p.workDays}日 / ${p.totalCount.toLocaleString()}個）`,
           qty: 1,
-          unitPrice: subtotal,
-          subtotal,
+          unitPrice: taxExcluded,
+          subtotal: taxExcluded,
         }],
-      });
+      };
+
+      if (existing) {
+        // 既存の未払い請求書を、最新の金額に更新する。
+        // 「いつ更新されたか」が後から分かるよう、備考に履歴を残す。
+        updatedInvoices.set(id, {
+          ...existing,
+          ...invoiceData,
+          _dbId: existing._dbId,
+          note: `${targetMonth} 分 稼働実績に基づく自動生成請求書（${getTodayLocalStr()} に実績の修正を反映して再計算）`,
+        });
+      } else {
+        newInvoices.push({
+          ...invoiceData,
+          _dbId: crypto.randomUUID(),
+          note: `${targetMonth} 分 稼働実績に基づく自動生成請求書`,
+        });
+      }
     });
 
-    if (newInvoices.length === 0) return 0;
-    setData((d) => ({ ...d, invoices: [...(Array.isArray(d?.invoices) ? d.invoices : []), ...newInvoices] }));
-    return newInvoices.length;
+    if (newInvoices.length === 0 && updatedInvoices.size === 0) return 0;
+    setData((d) => ({
+      ...d,
+      invoices: [
+        ...(Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
+          updatedInvoices.has(inv?.id) ? updatedInvoices.get(inv.id) : inv
+        ),
+        ...newInvoices,
+      ],
+    }));
+    return newInvoices.length + updatedInvoices.size;
   };
 
   const totals = activePayouts.reduce((acc, p) => ({
@@ -5614,14 +6091,72 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  /**
+   * 振込データを出力した後に、「実際に振り込んだか」を確認し、
+   * ドライバー請求書を支払済みにする。
+   *
+   * 【重要】以前は、振込CSVを出力しても、ドライバーからの請求書は
+   * 「未払」のまま残り続けていた。支払済みにする操作は請求管理の
+   * 別画面にあり、しかも1件ずつ手動で押す必要があったため、
+   * 実務では確実に忘れられ、
+   * ・実際は支払ったのにシステム上は未払として溜まり続ける
+   * ・翌月に「まだ払っていない」と勘違いして二重払いする
+   * といった事故に繋がる状態だった。
+   * 振込データを出したその場で、まとめて支払済みにできるようにする。
+   */
+  const markDriverInvoicesPaid = (targetPayouts) => {
+    const driverIds = targetPayouts.map((p) => p.driverId);
+    const targetInvoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(
+      (inv) => inv?.type === "driver_invoice" && inv?.payoutMonth === month
+        && driverIds.includes(inv?.driverId) && inv?.status !== "paid" && !inv?.deleted
+    );
+    if (targetInvoices.length === 0) return;
+    const proceed = window.confirm(
+      `振込データを出力しました。\n\n` +
+      `実際に振込を完了したら「OK」を押してください。\n` +
+      `対象の ${targetInvoices.length}件 のドライバー請求書を「支払済み」に記録します。\n\n` +
+      `（まだ振り込んでいない場合は「キャンセル」を押してください。後から請求管理の画面で個別に記録できます）`
+    );
+    if (!proceed) return;
+    const today = getTodayLocalStr();
+    const ids = new Set(targetInvoices.map((inv) => inv.id));
+    setData((d) => ({
+      ...d,
+      invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
+        ids.has(inv?.id) ? { ...inv, status: "paid", paidDate: today } : inv
+      ),
+    }));
+    window.alert(`${targetInvoices.length}件 のドライバー請求書を支払済みにしました。`);
+  };
+
   /** 振込一覧CSV（仕様書⑤）。実務でそのまま確認・手入力に使える形式。 */
   const downloadTransferCsv = () => {
     if (activePayouts.length === 0) {
       window.alert("この月に稼働実績のあるドライバーがいません。");
       return;
     }
+    // 【重要】以前はマイナスの振込額（控除が支給を上回った場合）を
+    // そのままCSVに出力していた。このCSVは実務で「見ながら手入力で振込」
+    // する用途で使われるため、マイナス金額が紛れていると、気づかずに
+    // 誤った振込をしてしまう危険がある（全銀CSV側では既に除外していたが、
+    // こちらだけ対策が漏れていた）。
+    // 振込対象にならないドライバーは、明示的に知らせた上で除外する。
+    const payable = activePayouts.filter((p) => (Number(p.netPay) || 0) > 0);
+    const excluded = activePayouts.filter((p) => (Number(p.netPay) || 0) <= 0);
+    if (excluded.length > 0) {
+      const names = excluded.map((p) => `・${p.driverName}（${yen(p.netPay)}）`).join("\n");
+      const proceed = window.confirm(
+        `以下のドライバーは、控除が支給を上回っている（または0円）ため、振込対象から除外します。\n\n${names}\n\n` +
+        `※不足分は翌月の支給から調整するか、別途精算してください。\n\nこのまま出力しますか？`
+      );
+      if (!proceed) return;
+    }
+    if (payable.length === 0) {
+      window.alert("振込対象のドライバーがいません（全員、控除が支給を上回っています）。");
+      return;
+    }
     const headers = ["氏名", "銀行名", "銀行コード", "支店名", "支店コード", "預金種目", "口座番号", "口座名義", "振込金額"];
-    const rows = activePayouts.map((p) => {
+    const rows = payable.map((p) => {
       const d = drivers.find((x) => x?.id === p.driverId) || {};
       return [
         p.driverName, d.bankName || "", d.bankCode || "", d.branchName || "", d.branchCode || "",
@@ -5629,6 +6164,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       ];
     });
     downloadCsv(rows, headers, "振込一覧");
+    markDriverInvoicesPaid(payable);
   };
 
   /**
@@ -5684,6 +6220,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       ];
     });
     downloadCsv(rows, headers, "全銀振込データ");
+    markDriverInvoicesPaid(target);
   };
 
   const detailPayout = payouts.find((p) => p.driverId === detailDriverId) || null;
@@ -5740,6 +6277,48 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
           )}
         </div>
       </div>
+
+      {/* 【重要】「荷主から入金があってから、委託ドライバーへ支払う」という
+          資金繰りの基本を実践するための判断材料。これまでこの画面には
+          回収状況が一切表示されておらず、未回収のまま先に支払って
+          資金がショートする危険があった。 */}
+      {collectionStatus.invoiceCount > 0 && activePayouts.length > 0 && (
+        <div style={{
+          background: collectionStatus.uncollected > 0 ? "#fff8e1" : "#e8f5e9",
+          border: `1px solid ${collectionStatus.uncollected > 0 ? "#ffe082" : "#a5d6a7"}`,
+          borderRadius: "6px", padding: "12px 16px",
+        }}>
+          <div style={{ fontSize:"12px", fontWeight:700, color:"#555", marginBottom:"8px" }}>
+            {month} の資金繰り確認（荷主からの回収状況）
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:"10px", fontSize:"12px" }}>
+            <div>
+              <div style={{ color:"#888", fontSize:"11px" }}>荷主へ請求した額</div>
+              <div style={{ fontWeight:700 }}>{yen(collectionStatus.billed)}</div>
+            </div>
+            <div>
+              <div style={{ color:"#888", fontSize:"11px" }}>入金済み</div>
+              <div style={{ fontWeight:700, color:"#2e7d32" }}>{yen(collectionStatus.collected)}</div>
+            </div>
+            <div>
+              <div style={{ color:"#888", fontSize:"11px" }}>未回収</div>
+              <div style={{ fontWeight:700, color: collectionStatus.uncollected > 0 ? "#e65100" : "#888" }}>{yen(collectionStatus.uncollected)}</div>
+            </div>
+            <div>
+              <div style={{ color:"#888", fontSize:"11px" }}>ドライバーへの支払予定</div>
+              <div style={{ fontWeight:700, color:"#7b1fa2" }}>{yen(collectionStatus.toPay)}</div>
+            </div>
+          </div>
+          {collectionStatus.uncollected > 0 && (
+            <p style={{ fontSize:"11px", color:"#795500", marginTop:"8px", lineHeight:1.6 }}>
+              ⚠️ まだ {yen(collectionStatus.uncollected)} が荷主から回収できていません。
+              {collectionStatus.collected < collectionStatus.toPay && (
+                <> 現時点の入金額（{yen(collectionStatus.collected)}）だけでは、ドライバーへの支払予定額（{yen(collectionStatus.toPay)}）に届きません。手元資金をご確認ください。</>
+              )}
+            </p>
+          )}
+        </div>
+      )}
 
       {showHistory && (
         <Panel title="支払明細の履歴（月ごとの合計）">
@@ -5917,6 +6496,11 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
               <div style={{ display:"flex", justifyContent:"space-between", borderTop:"2px solid #222", marginTop:"6px", paddingTop:"6px", fontWeight:700 }}>
                 <span>支給合計</span><span>{yen(detailPayout.grossPay)}</span>
               </div>
+              {detailPayout.consumptionTax > 0 && (
+                <div style={{ display:"flex", justifyContent:"space-between", marginTop:"4px", fontWeight:700, color:"#00695c" }}>
+                  <span>消費税（10%）</span><span>{yen(detailPayout.consumptionTax)}</span>
+                </div>
+              )}
             </div>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:700, color:"#7b1fa2", borderBottom:"2px solid #7b1fa2", paddingBottom:"4px", marginBottom:"6px" }}>控除</div>
@@ -6002,6 +6586,29 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
               <RetroBtn onClick={() => setConfirmClose(false)}>キャンセル</RetroBtn>
               <RetroBtn
                 onClick={() => {
+                  // 連打対策。このボタンはドライバー請求書の自動発行も行うため、
+                  // 二重に走ると二重払いの原因になる。ref で確実にブロックする。
+                  if (isClosingMonthRef.current) return;
+                  // 【重要】承認待ちの実績は売上・報酬に計上されない。
+                  // その状態で月を締めると、ドライバーへの支払いが
+                  // 不足したまま金額が確定してしまい、後から気づいても
+                  // 締め解除・再計算という手間のかかる対応が必要になる。
+                  // 締める前に必ず気づけるようにする。
+                  const unapproved = filterRecordsByMonth(dailyRecords, month).filter(isPendingRecord);
+                  if (unapproved.length > 0) {
+                    const pendingPay = unapproved.reduce((s, r) => s + (Number(r?.driverAmount) || 0), 0);
+                    const ok = window.confirm(
+                      `⚠️ ${month} には、まだ承認していない実績が ${unapproved.length}件 あります。\n\n` +
+                      `未承認の実績（ドライバー報酬 ${yen(pendingPay)} 相当）は、\n` +
+                      `売上にも報酬にも計上されません。\n\n` +
+                      `このまま締めると、ドライバーへの支払いが不足したまま確定します。\n` +
+                      `先に「実績承認」画面で承認することをおすすめします。\n\n` +
+                      `それでも締めますか？`
+                    );
+                    if (!ok) return;
+                  }
+                  isClosingMonthRef.current = true;
+                  try {
                   // 【重要】締めた瞬間の各ドライバーの設定（リース料・保険料・
                   // ロイヤリティ率など）を固定保存する。これをしないと、
                   // 締めた後に会社が設定を変更した際、過去の確定済み金額が
@@ -6032,6 +6639,9 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
                       : `${month} を締めました。（対象ドライバーがいなかったため請求書は発行されていません）`
                   );
                   setConfirmClose(false);
+                  } finally {
+                    isClosingMonthRef.current = false;
+                  }
                 }}
                 style={{ background:"#c62828", borderColor:"#c62828", color:"#fff" }}
               >
@@ -6372,8 +6982,10 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => !v?.deleted);
-  const dailyRecords = Array.isArray(data?.dailyRecords) ? data.dailyRecords : [];
-  const payables = Array.isArray(data?.payables) ? data.payables : [];
+  const dailyRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(r => !r?.deleted);
+  // 【重要】削除済みの支払データを除外しないと、削除しても経費として
+  // 計上され続け、利益が実際より少なく見えてしまう。
+  const payables = (Array.isArray(data?.payables) ? data.payables : []).filter(p => !p?.deleted);
   const qualityRecords = Array.isArray(data?.qualityRecords) ? data.qualityRecords : [];
 
   const [month, setMonth] = useState(() => getTodayLocalStr().slice(0, 7));
@@ -6720,6 +7332,19 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => v && !v.deleted);
   const records = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(Boolean);
   const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
+
+  // --- 自社のインボイス登録番号が未設定 ---
+  // 【重要】インボイス制度では、請求書に発行事業者の登録番号を記載することが
+  // 義務付けられている。未記載だと、請求を受けた取引先が消費税の
+  // 仕入税額控除を受けられず、取引に支障が出る（実質的な値引き要求や
+  // 取引見直しに繋がりかねない）実害の大きい項目のため、danger とする。
+  if (data?.companyInfo && !data.companyInfo.invoiceRegistrationNumber) {
+    alerts.push({
+      id: "company-invoice-reg-missing", level: "danger", category: "インボイス", page: "invoices",
+      message: "【インボイス】自社の適格請求書発行事業者の登録番号が未設定です。このままだと発行する請求書が適格請求書の要件を満たさず、取引先が消費税の仕入税額控除を受けられません。設定 → 会社情報設定 から登録してください。",
+    });
+  }
+
 
   /** 期限系の共通処理。期限切れは danger、接近中は warn。 */
   const pushExpiry = (dateStr, label, page, category) => {
@@ -7127,8 +7752,20 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
           ...r,
           approvalStatus: status,
           approvedAt: status === APPROVAL.APPROVED ? now : r.approvedAt,
-          approvedBy: status === APPROVAL.APPROVED ? (data?.__authEmail || "会社") : r.approvedBy,
+          // 【重要】以前は data.__authEmail を参照していたが、この項目は
+          // どこからも設定されておらず、承認者が常に「会社」としか
+          // 記録されない状態だった（実質的に誰が承認したか分からない）。
+          // ドライバーの報酬を確定させる重要な操作なので、
+          // 監査ログと同じ仕組みでログイン中の本人を必ず記録する。
+          approvedBy: status === APPROVAL.APPROVED
+            ? (typeof window !== "undefined" && window.__hakomaneCurrentUser) || "不明"
+            : r.approvedBy,
           rejectedAt: status === APPROVAL.REJECTED ? now : null,
+          // 差戻した人も記録する。ドライバーから「なぜ差し戻されたか」を
+          // 問い合わせられた際に、誰に確認すればよいか分かるようにする。
+          rejectedBy: status === APPROVAL.REJECTED
+            ? (typeof window !== "undefined" && window.__hakomaneCurrentUser) || "不明"
+            : r.rejectedBy,
           rejectReason: status === APPROVAL.REJECTED ? reason : "",
         };
       }),
@@ -7830,8 +8467,10 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
-  const dailyRecords = Array.isArray(data?.dailyRecords) ? data.dailyRecords : [];
-  const payables = Array.isArray(data?.payables) ? data.payables : [];
+  const dailyRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(r => !r?.deleted);
+  // 【重要】削除済みの支払データを除外しないと、削除しても経費として
+  // 計上され続け、利益が実際より少なく見えてしまう。
+  const payables = (Array.isArray(data?.payables) ? data.payables : []).filter(p => !p?.deleted);
   const invoicesForPL = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
   const [activeTab, setActiveTab] = useState("daily");
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -7940,6 +8579,32 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     }
     const jt = jobTypes.find(j => j?.id === recordForm.jobTypeId);
 
+    // 【重要】以前は、同じ日・同じドライバー・同じ顧客・同じ案件の実績を
+    // 何度でも追加できてしまい、売上とドライバー報酬が二重に計上される
+    // 危険があった（画面には注意書きがあるだけで、実際には何も
+    // 防いでいなかった）。二重計上は「請求しすぎ」「払いすぎ」に直結し、
+    // 取引先・ドライバー双方との信頼問題になるため、必ず確認を挟む。
+    if (!editingRecord) {
+      const dup = dailyRecords.filter((r) =>
+        !r?.deleted &&
+        r?.date === recordForm.date &&
+        r?.driverId === recordForm.driverId &&
+        r?.customerId === recordForm.customerId &&
+        r?.jobTypeId === recordForm.jobTypeId
+      );
+      if (dup.length > 0) {
+        const detail = dup.map((r) => `・売上 ${yen(r?.salesAmount)} / 報酬 ${yen(r?.driverAmount)}${r?.note ? `（${r.note}）` : ""}`).join("\n");
+        const proceed = window.confirm(
+          `同じ日・同じドライバー・同じ顧客・同じ案件の実績が、既に ${dup.length}件 登録されています。\n\n` +
+          `${detail}\n\n` +
+          `このまま追加すると、売上とドライバー報酬が二重に計上されます。\n` +
+          `（配送完了や定期便の確認で、自動的に実績が作られている場合があります）\n\n` +
+          `それでも追加しますか？`
+        );
+        if (!proceed) return;
+      }
+    }
+
     /**
      * 【重要】編集のたびに無条件で金額を再計算すると、案件の単価を
      * 後から変更した際、過去の確定済み実績のメモを直しただけなのに
@@ -7966,9 +8631,48 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     if (editingRecord) {
       logHistoryEntry(setData, { entityType: "daily_record", entityId: editingRecord.id, entityLabel: `${editingRecord.date} ${editingRecord.driverId}`, before: editingRecord, userRole });
     }
+
+    // 【重要】受注から自動作成された実績（orderId を持つもの）を編集しても、
+    // 元の受注の金額は古いまま残っていた。荷主への請求書は受注の金額から
+    // 作られるため、
+    // ・売上管理（実績から集計）は新しい金額
+    // ・荷主への請求書（受注から集計）は古い金額
+    // という食い違いが起き、請求額と帳簿が合わなくなっていた。
+    // 実績を修正したら、対応する受注の金額も一緒に更新する。
+    const linkedOrderId = editingRecord?.orderId || null;
+    const shouldSyncOrder = !!linkedOrderId &&
+      (Number(editingRecord?.salesAmount) !== salesAmount || Number(editingRecord?.driverAmount) !== driverAmount);
+    if (shouldSyncOrder) {
+      // 受注側の編集と同じく、既に請求書を発行済みの場合は必ず警告する。
+      const linkedOrder = (Array.isArray(data?.orders) ? data.orders : []).find((o) => o?.id === linkedOrderId);
+      if (linkedOrder?.invoicedInvoiceId) {
+        const proceedInv = window.confirm(
+          `⚠️ この実績の元になった受注は、既に請求書（${linkedOrder.invoicedInvoiceId}）を発行済みです。\n\n` +
+          `金額を変更しても、発行済みの請求書は自動では更新されません。\n` +
+          `そのままにすると、荷主に請求した額と、帳簿上の売上が食い違います。\n\n` +
+          `続けますか？`
+        );
+        if (!proceedInv) return;
+      }
+      const proceed = window.confirm(
+        `この実績は受注 ${linkedOrderId} から自動作成されたものです。\n\n` +
+        `金額を変更すると、元の受注の金額も同じ内容に更新されます。\n` +
+        `（荷主への請求書は受注の金額から作られるため、揃えておく必要があります）\n\n` +
+        `売上 ${yen(editingRecord?.salesAmount)} → ${yen(salesAmount)}\n` +
+        `報酬 ${yen(editingRecord?.driverAmount)} → ${yen(driverAmount)}\n\n` +
+        `更新してよろしいですか？`
+      );
+      if (!proceed) return;
+    }
+
     setData(d => {
       const current = Array.isArray(d?.dailyRecords) ? d.dailyRecords : [];
-      if (editingRecord) return { ...d, dailyRecords: current.map(r => r?.id === editingRecord.id ? { ...r, ...next } : r) };
+      const nextOrders = shouldSyncOrder
+        ? (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
+            o?.id === linkedOrderId ? { ...o, amount: salesAmount, driverPayAmount: driverAmount } : o
+          )
+        : (Array.isArray(d?.orders) ? d.orders : []);
+      if (editingRecord) return { ...d, orders: nextOrders, dailyRecords: current.map(r => r?.id === editingRecord.id ? { ...r, ...next } : r) };
       return { ...d, dailyRecords: [...current, { ...next, id: generateUniqueBusinessId(current, "DR") }] };
     });
     setShowRecordModal(false);
@@ -7985,8 +8689,37 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       window.alert("この実績は承認済みです。削除が必要な場合は「実績承認」画面から差し戻してください。");
       return;
     }
-    if (!window.confirm("この記録を削除しますか？（この操作は元に戻せません。売上集計や請求書生成に影響する場合があります）")) return;
-    setData(d => ({ ...d, dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).filter(r => r?.id !== id) }));
+
+    // 【重要】受注から自動作成された実績を削除しても、元の受注は
+    // 「配送完了」のまま残っていた。その結果、
+    // ・売上管理からは消える（実績が無いため）
+    // ・しかし荷主への請求対象には含まれ続ける（受注は完了のまま）
+    // という食い違いが起き、「売上が立っていないのに請求だけする」
+    // 状態になっていた。元の受注がどうなるかを必ず知らせる。
+    const linkedOrder = rec?.orderId
+      ? (Array.isArray(data?.orders) ? data.orders : []).find((o) => o?.id === rec.orderId && !o?.deleted)
+      : null;
+    let msg = "この記録を削除しますか？（後から「削除済みデータの復元」で戻せます）";
+    if (linkedOrder) {
+      msg =
+        `この実績は受注 ${linkedOrder.id} から自動作成されたものです。\n\n` +
+        `実績だけを削除すると、受注は「配送完了」のまま残るため、\n` +
+        `売上には計上されないのに、荷主への請求対象には含まれ続けます。\n\n` +
+        `※受注ごと取り消したい場合は、受注管理から受注を削除するか、\n` +
+        `　「戻る」で配送完了を取り消してください。\n\n` +
+        `それでもこの実績だけを削除しますか？`;
+    }
+    if (!window.confirm(msg)) return;
+
+    // 他の削除処理と同じく、完全には消さず「削除済み」の印を付ける。
+    // 以前は完全削除していたため、誤って消しても「削除済みデータの復元」
+    // 機能で戻すことができなかった。
+    setData(d => ({
+      ...d,
+      dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map(r =>
+        r?.id === id ? { ...r, deleted: true } : r
+      ),
+    }));
   };
 
   const saveJobType = () => {
@@ -8063,9 +8796,13 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const plNetProfit = plGrossProfit - plExpensesTotal; // 粗利からその他経費を引いた、月の儲け（見込み）
   // 参考情報として、その月が支払期日の請求書のうち実際に入金済みの金額も出す
   // （実績ベースの売上とは別に、実際にお金が入ってきたかどうかの確認用）。
+  // 【重要】一部入金（partial）も「実際に入ってきたお金」なので必ず含める。
+  // 金額も請求額（total）ではなく、実際に入金された額（paidAmount）を使う。
+  // これをしないと、振込手数料が引かれた分だけ実際より多く見え、
+  // 銀行残高と突き合わせたときに合わなくなる。
   const plActualReceivedThisMonth = invoicesForPL
-    .filter(i => i?.status === "paid" && (i?.paidDate || "").slice(0, 7) === selectedMonth)
-    .reduce((s, i) => s + (Number(i?.total) || 0), 0);
+    .filter(i => (i?.status === "paid" || i?.status === "partial") && (i?.paidDate || "").slice(0, 7) === selectedMonth)
+    .reduce((s, i) => s + (Number(i?.paidAmount ?? i?.paid_amount ?? i?.total) || 0), 0);
 
   const driverSummary = drivers.map(driver => {
     const recs = monthRecords.filter(r => r?.driverId === driver?.id);
@@ -8703,6 +9440,85 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
    * まだどの請求書にも含まれていない（二重請求にならない）ものだけを
    * まとめて1顧客につき1通の請求書にする。
    */
+  /**
+   * ===== 会計仕訳CSVの出力 =====
+   *
+   * 【なぜ必要か】
+   * これまで会計ソフト（freee・マネーフォワード・弥生など）への連携手段が
+   * 一切無く、月次で数百件の取引を経理が手作業で再入力する必要があった。
+   * 転記ミス・二重入力が必ず発生し、決算時に帳簿が合わなくなる。
+   *
+   * 【出力する仕訳】
+   * ・売上計上：  （借）売掛金 ／（貸）売上高・仮受消費税
+   * ・入金：      （借）普通預金・支払手数料 ／（貸）売掛金
+   * ・外注費計上：（借）外注費・仮払消費税 ／（貸）買掛金
+   * ・支払：      （借）買掛金 ／（貸）普通預金
+   *
+   * 多くの会計ソフトが取り込める汎用的な列構成にしてある。
+   */
+  const downloadJournalCsv = (targetMonth) => {
+    const allInvoices = Array.isArray(data?.invoices) ? data.invoices : [];
+    const rows = [];
+    const fmt = (n) => String(Math.round(Number(n) || 0));
+
+    // --- 荷主への請求（売上計上）と、その入金 ---
+    allInvoices
+      .filter((inv) => inv?.type !== "driver_invoice" && !inv?.deleted && (inv?.issueDate || "").slice(0, 7) === targetMonth)
+      .forEach((inv) => {
+        const name = inv.customerName || inv.customer_name || "";
+        const amount = Number(inv.amount) || 0;
+        const tax = Number(inv.tax) || 0;
+        // 売上計上
+        rows.push([inv.issueDate, "売掛金", fmt(inv.total), "売上高", fmt(amount), `${name} ${inv.id} 売上計上`]);
+        if (tax > 0) rows.push([inv.issueDate, "", "", "仮受消費税", fmt(tax), `${name} ${inv.id} 消費税`]);
+        // 入金
+        const paid = Number(inv.paidAmount ?? inv.paid_amount ?? 0) || 0;
+        if (paid > 0) {
+          const fee = Number(inv.transferFee) || 0;
+          rows.push([inv.paidDate || inv.issueDate, "普通預金", fmt(paid), "売掛金", fmt(paid), `${name} ${inv.id} 入金`]);
+          if (fee > 0) rows.push([inv.paidDate || inv.issueDate, "支払手数料", fmt(fee), "売掛金", fmt(fee), `${name} ${inv.id} 振込手数料`]);
+        }
+        if (inv.status === "bad_debt") {
+          // 貸倒処理した日付・金額を正確に使う（未設定の古いデータは推定で補う）。
+          const badAmount = Number(inv.badDebtAmount) || Math.max(0, (Number(inv.total) || 0) - paid);
+          const badDate = inv.badDebtDate || inv.paidDate || inv.issueDate;
+          if (badAmount > 0) rows.push([badDate, "貸倒損失", fmt(badAmount), "売掛金", fmt(badAmount), `${name} ${inv.id} 貸倒処理`]);
+        }
+      });
+
+    // --- 委託ドライバーへの外注費と、その支払 ---
+    allInvoices
+      .filter((inv) => inv?.type === "driver_invoice" && !inv?.deleted && inv?.payoutMonth === targetMonth)
+      .forEach((inv) => {
+        const name = inv.driverName || "";
+        const amount = Number(inv.amount) || 0;
+        const tax = Number(inv.tax) || 0;
+        rows.push([inv.issueDate, "外注費", fmt(amount), "買掛金", fmt(inv.total), `${name} ${inv.id} 外注費計上`]);
+        if (tax > 0) rows.push([inv.issueDate, "仮払消費税", fmt(tax), "", "", `${name} ${inv.id} 消費税`]);
+        if (inv.status === "paid") {
+          rows.push([inv.paidDate || inv.issueDate, "買掛金", fmt(inv.total), "普通預金", fmt(inv.total), `${name} ${inv.id} 支払`]);
+        }
+      });
+
+    if (rows.length === 0) {
+      window.alert(`${targetMonth} に会計仕訳として出力できる取引がありません。`);
+      return;
+    }
+
+    const headers = ["日付", "借方勘定科目", "借方金額", "貸方勘定科目", "貸方金額", "摘要"];
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = [headers, ...rows].map((r) => r.map(esc).join(",")).join("\r\n");
+    // Excelで文字化けしないよう、BOM付きUTF-8で出力する。
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `会計仕訳_${targetMonth}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    window.alert(`${targetMonth} の会計仕訳 ${rows.length}行 を出力しました。\n会計ソフトの仕訳インポート機能から取り込んでください。`);
+  };
+
   const generateCustomerInvoicesForMonth = (targetMonth) => {
     const targetOrders = orders.filter((o) =>
       o?.status === "delivered" &&
@@ -8710,6 +9526,31 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
       !o?.invoicedInvoiceId // 既に何らかの請求書（個別・一括問わず）に含まれていないもの
     );
     if (targetOrders.length === 0) return [];
+
+    // 【重要】受注は「配送完了」のままなのに、対応する実績データが
+    // （削除等で）存在しない受注が請求対象に混ざることがある。
+    // その状態で請求書を作ると、
+    // ・荷主には請求する
+    // ・しかし売上管理には計上されていない
+    // という食い違いが起き、帳簿と請求が合わなくなる。
+    // 発行前に必ず気づけるようにする。
+    const activeRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter((r) => !r?.deleted);
+    const ordersWithoutRecord = targetOrders.filter(
+      (o) => !activeRecords.some((r) => r?.orderId === o?.id)
+    );
+    if (ordersWithoutRecord.length > 0) {
+      const list = ordersWithoutRecord.slice(0, 5).map((o) => `・${o.id}（${o.customerName || "顧客未設定"} / ${yen(o.amount)}）`).join("\n");
+      const more = ordersWithoutRecord.length > 5 ? `\n…他 ${ordersWithoutRecord.length - 5}件` : "";
+      const proceed = window.confirm(
+        `次の受注は「配送完了」になっていますが、売上管理に対応する実績データがありません。\n\n` +
+        `${list}${more}\n\n` +
+        `このまま請求書を発行すると、荷主には請求されるのに、売上管理には計上されていない\n` +
+        `状態になり、帳簿と請求額が食い違います。\n\n` +
+        `（実績を削除した、または実績が正しく作られていない可能性があります）\n\n` +
+        `それでも発行しますか？`
+      );
+      if (!proceed) return [];
+    }
 
     const byCustomer = new Map();
     targetOrders.forEach((o) => {
@@ -8736,7 +9577,8 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
       const issueDate = formatDate(new Date(y, m - 1, issueDay));
       const dueDate = calcDueDateByTerms(issueDate, customer?.closingDay ?? 31, customer?.paymentSite || "翌月末払い");
 
-      const invoiceId = generateUniqueBusinessId([...invoices, ...newInvoices], "INV");
+      // ドライバー請求書・削除済みも含む全請求書から採番し、番号の重複を防ぐ。
+      const invoiceId = generateUniqueBusinessId([...allInvoices, ...newInvoices], "INV");
       const customerName = customerOrders[0]?.customerName || customer?.name || "";
       newInvoices.push({
         id: invoiceId,
@@ -8831,17 +9673,39 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   // 請求書数が増えると目的の請求書を探すのが難しくなるため、
   // 他のページと同じ仕組みで検索機能を追加する（以前は検索手段が一切なかった）。
   const [invoiceSearch, setInvoiceSearch] = useState("");
-  const filteredInvoices = invoices.filter((inv) => {
-    const id = inv?.id || "";
-    const customerName = inv?.customerName || "";
-    const note = inv?.note || "";
-    return id.includes(invoiceSearch) || customerName.includes(invoiceSearch) || note.includes(invoiceSearch);
-  });
-  const filteredDriverInvoices = driverInvoicesAll.filter((inv) => {
-    const id = inv?.id || "";
-    const driverName = inv?.driverName || "";
-    return id.includes(invoiceSearch) || driverName.includes(invoiceSearch);
-  }).sort((a, b) => String(b.payoutMonth || "").localeCompare(String(a.payoutMonth || "")));
+  // 【電子帳簿保存法の検索要件への対応】
+  // 電子取引データを保存する場合、「取引年月日・取引金額・取引先」の
+  // 3項目で検索できることが法律で要求されている（検索要件）。
+  // 以前は請求書番号・取引先名・備考しか検索できず、
+  // ・日付での検索（2026-07 など）
+  // ・金額での検索（330000 など）
+  // ができなかったため、税務調査でデータの提示を求められた際に
+  // 要件を満たせない状態だった。
+  const matchesSearch = (inv, keyword) => {
+    if (!keyword) return true;
+    const kw = String(keyword).trim();
+    if (!kw) return true;
+    // 取引年月日（発行日・支払期日の両方を対象にする）
+    const issueDate = String(inv?.issueDate || "");
+    const dueDate = String(inv?.dueDate || "");
+    // 取引金額（税込・税抜の両方、およびカンマ有無どちらでも探せるように）
+    const total = String(Math.abs(Number(inv?.total) || 0));
+    const amount = String(Math.abs(Number(inv?.amount) || 0));
+    const totalComma = (Number(inv?.total) || 0).toLocaleString();
+    // 取引先
+    const partner = String(inv?.customerName || inv?.driverName || "");
+    const id = String(inv?.id || "");
+    const note = String(inv?.note || "");
+    return (
+      id.includes(kw) || partner.includes(kw) || note.includes(kw) ||
+      issueDate.includes(kw) || dueDate.includes(kw) ||
+      total.includes(kw) || amount.includes(kw) || totalComma.includes(kw)
+    );
+  };
+  const filteredInvoices = invoices.filter((inv) => matchesSearch(inv, invoiceSearch));
+  const filteredDriverInvoices = driverInvoicesAll
+    .filter((inv) => matchesSearch(inv, invoiceSearch))
+    .sort((a, b) => String(b.payoutMonth || "").localeCompare(String(a.payoutMonth || "")));
   const selectedDriverInvoice = driverInvoicesAll.find((inv) => inv?.id === selectedDriverInvoiceId) || null;
   const [invoiceDraft, setInvoiceDraft] = useState(null);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
@@ -8893,7 +9757,9 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     );
     const baseAmount = Number(o?.amount)||0;
     const inv={
-      id: generateUniqueBusinessId(invoices, "INV"),
+      // 【重要】ドライバー請求書・削除済みも含む全請求書から採番する。
+      // 一部を除外して採番すると、請求書番号が重複する恐れがある。
+      id: generateUniqueBusinessId(allInvoices, "INV"),
       orderId:o?.id,
       customerId:o?.customerId,
       customerName:o?.customerName||"",
@@ -8950,6 +9816,24 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
 
   const saveInvoice = () => {
     if (!invoiceDraft?.id) return;
+    // 【重要】既に取引先へ送付した請求書、または入金済みの請求書を
+    // 後から書き換えると、相手が持っている請求書と、こちらの控えの
+    // 内容が食い違ってしまう。これは会計・税務上「改ざん」とみなされる
+    // 危険がある重大な問題（インボイス制度では、記載事項を修正する場合、
+    // 本来は「修正した適格請求書」を改めて交付する必要がある）。
+    // 気づかずに編集してしまうことを防ぐため、必ず確認を挟む。
+    const original = invoices.find((i) => i?.id === invoiceDraft.id);
+    if (original?.sentAt || original?.status === "paid") {
+      const reason = original?.status === "paid" ? "入金済み" : "取引先へ送付済み";
+      const proceed = window.confirm(
+        `この請求書は既に${reason}です。\n\n` +
+        `内容を書き換えると、取引先が持っている請求書と、こちらの控えが食い違ってしまいます。\n` +
+        `（インボイス制度では、本来は「修正した適格請求書」を改めて交付する必要があります）\n\n` +
+        `それでも編集内容を保存しますか？`
+      );
+      if (!proceed) return;
+    }
+
     // 「明細追加」ボタンを押した直後の空行（品目名未入力・単価0円のまま）が
     // 入力し忘れで残ったまま保存されると、PDFやメール送付の請求書に
     // 内容のない行がそのまま印字されてしまう。
@@ -9186,6 +10070,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
             <div>${mergedCompany.address || fallbackCompany.address}</div>
             <div>TEL: ${mergedCompany.phone || fallbackCompany.phone}</div>
             <div>MAIL: ${mergedCompany.email || fallbackCompany.email}</div>
+            ${mergedCompany?.invoiceRegistrationNumber ? `<div style="margin-top:4px">登録番号: ${mergedCompany.invoiceRegistrationNumber}</div>` : ""}
             ${mergedCompany?.stampImage ? `<div style="margin-top:8px"><img src="${mergedCompany.stampImage}" alt="stamp" style="height:70px"/></div>` : ""}
           </div>
         </div>
@@ -9516,6 +10401,11 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
           }} disabled={isGeneratingBatch} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
             {isGeneratingBatch ? "発行中..." : "この月のぶんを一括発行"}
           </RetroBtn>
+          {/* 会計ソフトへの連携。これが無いと、経理が月次で数百件の取引を
+              手作業で再入力することになり、転記ミスの温床になる。 */}
+          <RetroBtn onClick={()=>downloadJournalCsv(batchMonth)} style={{ background:"#fff", borderColor:"#7b1fa2", color:"#7b1fa2" }}>
+            会計仕訳CSVを出力
+          </RetroBtn>
         </div>
         {batchResultMsg && <p style={{ fontSize:"12px", color:"#00695c", marginTop:"8px" }}>{batchResultMsg}</p>}
         {pendingSendInvoices.length > 0 && (
@@ -9599,10 +10489,21 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
       </Panel>
       <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"8px" }}>
         <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>検索</span>
-        <RetroInput value={invoiceSearch} onChange={e=>setInvoiceSearch(e.target.value)} placeholder="請求書番号・顧客名・備考で検索" style={{ width: isMobile ? "200px" : "260px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
+        <RetroInput value={invoiceSearch} onChange={e=>setInvoiceSearch(e.target.value)} placeholder="取引日・金額・取引先・請求書番号で検索" style={{ width: isMobile ? "200px" : "300px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
+        <span style={{ fontSize:"10px", color:"#999" }}>例：2026-07 / 330000 / 坪倉商事</span>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"8px" }}>
-        {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#7b1fa2"],["入金済","¥"+invoices.filter(i=>i?.status==="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#4caf50"],["未回収","¥"+invoices.filter(i=>i?.status!=="paid").reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#e63946"]].map(([l,v,c])=>(
+        {/* 【重要】「入金済」は、以前は請求額（total）をそのまま合計していたため、
+            振込手数料が差し引かれて入金された場合でも、請求額どおり満額
+            入金されたことになってしまい、実際の入金額と食い違っていた。
+            実際に入金された額（paidAmount）があればそちらを優先して集計する。 */}
+        {/* 【重要】一部入金に対応。
+            ・入金済:  実際に入金された額の累計（一部入金も含む）
+            ・未回収:  請求額から入金済み額を引いた「本当の残額」
+            以前は「入金済でない請求書の請求額を全部足す」計算だったため、
+            一部入金があっても全額未回収として表示されていた。
+            貸倒は回収を諦めた分なので、未回収からは除く。 */}
+        {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#7b1fa2"],["入金済","¥"+invoices.reduce((s,i)=>s+(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0),0).toLocaleString(),"#4caf50"],["未回収","¥"+invoices.filter(i=>i?.status!=="paid" && i?.status!=="bad_debt").reduce((s,i)=>s+Math.max(0,(Number(i?.total)||0)-(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0)),0).toLocaleString(),"#e63946"]].map(([l,v,c])=>(
           <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
             <div style={{ fontSize:"11px", color:"#888", fontWeight:700 }}>{l}</div>
             <div style={{ fontSize:"20px", fontWeight:700, color:c }}>{v}</div>
@@ -9669,14 +10570,34 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
                   {/* 銀行CSV照合を経由しない支払い（現金・手形・対応していない金融機関など）の場合に、
                       手動で入金済みへ切り替えられる手段がこれまで一切なかったため追加する。
                       overdue（延滞）はダッシュボード等で「未払いかつ期日超過」として自動判定されるため、
-                      ここでは手動操作の対象を unpaid / paid の2択に絞る。 */}
-                  <RetroSelect
-                    value={invoiceDraft.status === "paid" ? "paid" : "unpaid"}
-                    onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), status:e.target.value, paidDate: e.target.value === "paid" ? (v?.paidDate || getTodayLocalStr()) : null }))}
-                  >
-                    <option value="unpaid">未払い</option>
-                    <option value="paid">入金済み</option>
-                  </RetroSelect>
+                      ここでは手動操作の対象を unpaid / paid の2択に絞る。
+
+                      【重要】一部入金（partial）・貸倒（bad_debt）の請求書を開くと、
+                      以前はこの欄が「未払い」と表示され、そのまま保存すると
+                      状態が壊れて入金記録が失われる不具合があった。
+                      これらは口座照合や貸倒処理で自動的に設定される状態なので、
+                      ここでは手動で変更させず、現在の状態をそのまま表示する。 */}
+                  {(invoiceDraft.status === "partial" || invoiceDraft.status === "bad_debt") ? (
+                    <div style={{ padding:"8px 10px", background:"#f5f5f5", border:cardBorder, borderRadius:"4px", fontSize:"12px" }}>
+                      <StatusPill s={invoiceDraft.status}/>
+                      <span style={{ color:"#888", marginLeft:"8px" }}>
+                        {invoiceDraft.status === "partial"
+                          ? `入金済み ${yen(invoiceDraft.paidAmount)} / 残 ${yen((Number(invoiceDraft.total)||0) - (Number(invoiceDraft.paidAmount)||0))}`
+                          : `貸倒処理済み ${yen(invoiceDraft.badDebtAmount)}`}
+                      </span>
+                      <div style={{ fontSize:"10px", color:"#999", marginTop:"4px" }}>
+                        この状態は口座・入金の照合、または貸倒処理で自動的に設定されます。
+                      </div>
+                    </div>
+                  ) : (
+                    <RetroSelect
+                      value={invoiceDraft.status === "paid" ? "paid" : "unpaid"}
+                      onChange={(e)=>setInvoiceDraft((v)=>({ ...(v||{}), status:e.target.value, paidDate: e.target.value === "paid" ? (v?.paidDate || getTodayLocalStr()) : null }))}
+                    >
+                      <option value="unpaid">未払い</option>
+                      <option value="paid">入金済み</option>
+                    </RetroSelect>
+                  )}
                 </Fl>
                 {invoiceDraft.status === "paid" && (
                   <Fl label="入金日">
@@ -9728,7 +10649,134 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
               {/* 「削除」は破壊的な操作のため、「保存」のすぐ隣に置くと
                   急いでいるときに押し間違えるリスクがある。誤操作を防ぐため、
                   保存・キャンセルのグループから離し、こちら側にまとめる。 */}
-              <RetroBtn onClick={()=>{ if(!window.confirm("この請求書を削除しますか？（後から復元できます）")) return; setData(d=>({...d, invoices:(Array.isArray(d?.invoices)?d.invoices:[]).map(i=>i?.id===invoiceDraft?.id?{...i,deleted:true}:i)})); setShowInvoiceModal(false); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+              <RetroBtn onClick={()=>{
+                // 【重要】入金済み・送付済みの請求書を削除すると、
+                // 入金記録だけが残って対応する請求書が消え、帳簿の
+                // 突き合わせができなくなる（税務調査で説明できない状態になる）。
+                // 通常の削除確認より強い警告を出す。
+                const original = invoices.find((i) => i?.id === invoiceDraft?.id);
+                if (original?.status === "paid") {
+                  if (!window.confirm(
+                    "⚠️ この請求書は入金済みです。\n\n" +
+                    "削除すると、入金の記録だけが残り、対応する請求書が無い状態になります。\n" +
+                    "帳簿の突き合わせができなくなるため、通常は削除せず、必要なら「赤伝（マイナスの請求書）」で調整してください。\n\n" +
+                    "本当に削除しますか？"
+                  )) return;
+                } else if (original?.sentAt) {
+                  if (!window.confirm(
+                    "⚠️ この請求書は既に取引先へ送付済みです。\n\n" +
+                    "こちらだけ削除しても、取引先の手元には請求書が残ったままです。\n" +
+                    "削除する場合は、必ず取引先にもご連絡ください。\n\n" +
+                    "本当に削除しますか？"
+                  )) return;
+                } else {
+                  if(!window.confirm("この請求書を削除しますか？（後から復元できます）")) return;
+                }
+                setData(d=>({...d, invoices:(Array.isArray(d?.invoices)?d.invoices:[]).map(i=>i?.id===invoiceDraft?.id?{...i,deleted:true}:i)}));
+                setShowInvoiceModal(false);
+              }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+              {/* 【重要】過大請求・配送事故での返金時、これまでは請求書を
+                  直接書き換えるしか手段が無く、それは会計上「改ざん」に
+                  あたる危険な操作だった。正式な訂正手段である
+                  「赤伝（マイナスの請求書）」を発行できるようにする。 */}
+              {invoiceDraft?.total > 0 && (
+                <RetroBtn onClick={()=>{
+                  const original = invoices.find((i) => i?.id === invoiceDraft?.id);
+                  if (!original) return;
+                  const input = window.prompt(
+                    `赤伝（マイナスの請求書）を発行します。\n\n` +
+                    `元の請求書: ${original.id}（${yen(original.total)}）\n\n` +
+                    `返金・減額する金額を、税抜きで入力してください。\n` +
+                    `（全額取り消す場合は ${Math.round(Number(original.amount) || 0)} と入力）`,
+                    String(Math.round(Number(original.amount) || 0))
+                  );
+                  if (input == null) return;
+                  const refundBase = Math.abs(Number(input) || 0);
+                  if (refundBase <= 0) { window.alert("金額を正しく入力してください。"); return; }
+                  if (refundBase > (Number(original.amount) || 0)) {
+                    if (!window.confirm(`元の請求額（税抜 ${yen(original.amount)}）を超えています。このまま発行しますか？`)) return;
+                  }
+                  const reason = window.prompt("赤伝の理由を入力してください（請求書に記載されます）", "請求金額訂正のため") || "請求金額訂正";
+                  const tax = calcTax(refundBase);
+                  const creditId = `${original.id}-R`;
+                  if (invoices.some((i) => i?.id === creditId && !i?.deleted)) {
+                    window.alert(`この請求書の赤伝（${creditId}）は既に発行されています。`);
+                    return;
+                  }
+                  const today = getTodayLocalStr();
+                  setData((d) => ({
+                    ...d,
+                    invoices: [{
+                      id: creditId,
+                      _dbId: crypto.randomUUID(),
+                      customerId: original.customerId,
+                      customerName: original.customerName,
+                      issueDate: today,
+                      dueDate: original.dueDate,
+                      // 赤伝はマイナス金額で記録する。これにより売上・売掛金が
+                      // 正しく減算され、会計仕訳にもそのまま反映される。
+                      amount: -refundBase,
+                      tax: -tax,
+                      total: -(refundBase + tax),
+                      status: "unpaid",
+                      isCreditNote: true,
+                      originalInvoiceId: original.id,
+                      note: `${original.id} に対する赤伝（${reason}）`,
+                      lineItems: [{
+                        id: `LI-${Date.now()}`,
+                        name: `${original.id} 訂正分（${reason}）`,
+                        qty: 1,
+                        unitPrice: -refundBase,
+                        subtotal: -refundBase,
+                      }],
+                    }, ...(Array.isArray(d?.invoices) ? d.invoices : [])],
+                  }));
+                  setShowInvoiceModal(false);
+                  window.alert(
+                    `赤伝 ${creditId} を発行しました（${yen(-(refundBase + tax))}）。\n\n` +
+                    `元の請求書はそのまま残ります（会計記録として正しい形です）。\n` +
+                    `赤伝を取引先へ送付し、差額を精算してください。`
+                  );
+                }} style={{ background:"#fff", color:"#e65100", borderColor:"#e65100" }}>赤伝を発行</RetroBtn>
+              )}
+              {/* 【重要】回収不能になった売掛金を「貸倒」として処理する手段が
+                  無かったため、取引先が倒産しても未回収として永久に残り続け、
+                  未回収額が実態とかけ離れていく問題があった。
+                  会計上も、貸倒損失として計上しなければ利益が過大になる。 */}
+              {invoiceDraft?.total > 0 && invoiceDraft?.status !== "paid" && invoiceDraft?.status !== "bad_debt" && (
+                <RetroBtn onClick={()=>{
+                  const original = invoices.find((i) => i?.id === invoiceDraft?.id);
+                  if (!original) return;
+                  const paid = Number(original.paidAmount ?? original.paid_amount ?? 0) || 0;
+                  const rest = Math.max(0, (Number(original.total) || 0) - paid);
+                  if (rest <= 0) { window.alert("未回収の残額がありません。"); return; }
+                  const reason = window.prompt(
+                    `この請求書の未回収分 ${yen(rest)} を「貸倒（回収不能）」として処理します。\n\n` +
+                    `・未回収額から除外され、実態に近い数字になります\n` +
+                    `・会計仕訳では「貸倒損失」として出力されます\n` +
+                    `・請求書自体は記録として残ります\n\n` +
+                    `理由を入力してください`,
+                    "取引先倒産のため回収不能"
+                  );
+                  if (reason == null) return;
+                  setData((d) => ({
+                    ...d,
+                    invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((i) =>
+                      i?.id === original.id
+                        ? {
+                            ...i,
+                            status: "bad_debt",
+                            badDebtAmount: rest,
+                            badDebtDate: getTodayLocalStr(),
+                            note: `${i.note || ""}${i.note ? " / " : ""}貸倒処理 ${yen(rest)}（${reason}）`.trim(),
+                          }
+                        : i
+                    ),
+                  }));
+                  setShowInvoiceModal(false);
+                  window.alert(`${yen(rest)} を貸倒として処理しました。\n会計仕訳CSVに「貸倒損失」として出力されます。`);
+                }} style={{ background:"#fff", color:"#5d4037", borderColor:"#8d6e63" }}>貸倒処理</RetroBtn>
+              )}
             </div>
             <div style={{ display:"flex", gap:"6px" }}>
               <RetroBtn onClick={()=>setShowInvoiceModal(false)}>キャンセル</RetroBtn>
@@ -9760,6 +10808,13 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"8px 12px" }}>
             <Fl label="電話番号"><RetroInput value={companyDraft.phone} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), phone:e.target.value }))}/></Fl>
             <Fl label="メール"><RetroInput value={companyDraft.email} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), email:e.target.value }))}/></Fl>
+            {/* 【重要】インボイス制度（適格請求書等保存方式）では、請求書に
+                発行事業者の登録番号を記載することが法律で義務付けられている。
+                これが無いと、請求を受けた取引先が消費税の仕入税額控除を
+                受けられず、実質的に値引きを求められる etc. の実害が出る。 */}
+            <Fl label="適格請求書発行事業者の登録番号（インボイス番号）">
+              <RetroInput value={companyDraft.invoiceRegistrationNumber || ""} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), invoiceRegistrationNumber:e.target.value }))} placeholder="例：T1234567890123"/>
+            </Fl>
           </div>
           <Fl label="振込先"><RetroTextarea value={companyDraft.bankInfo} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), bankInfo:e.target.value }))}/></Fl>
           <Fl label="印影画像(base64)"><RetroTextarea value={companyDraft.stampImage} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), stampImage:e.target.value }))}/></Fl>
@@ -10023,6 +11078,10 @@ const createEmptyDriverForm = () => ({
   accountType:"普通", accountNumber:"", accountHolderKana:"",
   // インボイス制度（①ドライバー管理）
   invoiceRegistered:false, invoiceRegNo:"",
+  // インボイス登録済みドライバーへの支払いで、消費税を上乗せして
+  // 振り込むかどうか。契約内容によってドライバーごとに異なるため、
+  // 個別に設定できるようにする（未設定なら税抜＝上乗せしない）。
+  payTaxIncluded:false,
   // ロイヤリティ（③報酬自動計算の控除項目）
   // 「率(%)」と「固定金額」の両方に対応する。royaltyType で切り替える。
   royaltyType:"rate", royaltyRate:"", royaltyFixed:"",
@@ -10507,6 +11566,23 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               />
             </Fl>
           </div>
+          {/* 【重要】インボイス登録済みドライバーへの支払いで、消費税を
+              上乗せして振り込むかどうかは契約によって異なる。
+              これが実際の振込額と、ドライバーが出す請求書の金額の
+              一致・不一致を左右するため、必ず個別に設定できるようにする。 */}
+          {form.invoiceRegistered && (
+            <div style={{ marginTop:"6px", padding:"8px 10px", background:"#fff8e1", border:"1px solid #ffe082", borderRadius:"6px" }}>
+              <CheckRow
+                label="消費税を上乗せして支払う（税込で振り込む）"
+                checked={form.payTaxIncluded}
+                onChange={c=>setForm(v=>({...v,payTaxIncluded:c}))}
+              />
+              <p style={{ fontSize:"11px", color:"#795500", marginTop:"4px", lineHeight:1.6 }}>
+                チェックすると、報酬に消費税を上乗せした金額が振込額になります（ドライバーが発行する請求書の税込金額と一致します）。<br/>
+                チェックしない場合は、報酬額そのままを振り込みます（消費税は報酬に内税として含まれている契約の場合）。
+              </p>
+            </div>
+          )}
 
           {sectionTitle("ロイヤリティ（報酬からの控除）")}
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
@@ -12007,6 +13083,10 @@ const fetchDataFromSupabase = async (tenantId) => {
     nextData.events = cleanEvents(nextData.events);
   }
 
+  // 読み込んだ時刻を記録する。この時点以降にサーバー側で更新があれば、
+  // 「他の人が編集した」と判定して警告できる。
+  window.__hakomaneLastSyncAt = Date.now();
+
   return nextData;
 };
 
@@ -12063,6 +13143,72 @@ const saveDataToSupabase = async (nextData, prevData, tenantId) => {
   // ここで明確に拒否する（fetchDataFromSupabase と同じ方針）。
   if (tenantId == null || tenantId === "") {
     throw new Error("saveDataToSupabase: tenantId が指定されていません（テナント未確定の状態での保存は許可されません）");
+  }
+
+  // ===== 同時編集の競合検知 =====
+  //
+  // 【なぜ必要か】
+  // このシステムは「ブラウザ上の全データを丸ごと保存し直す」方式のため、
+  // 2人が同時に作業すると、後から保存した人のデータで先の人の変更が
+  // 上書きされ、警告も無く消えてしまう。
+  // 例：09:05 事務員Aが受注ORD-100を登録 → 保存
+  //     09:07 配車担当Bが別の受注を登録 → Bは09:00時点のデータを持っているため
+  //           ORD-100が存在しないデータで上書きされ、Aの登録が消える
+  //
+  // 完全な排他制御はデータ構造の大幅な変更が必要になるため、まずは
+  // 「他の人が更新している」ことを検知して警告し、上書き事故を防ぐ。
+  try {
+    // 【重要】以前は orders テーブルの更新時刻だけを見ていた。
+    // そのため「実績だけを入力した」「請求書だけを直した」といった
+    // 変更は検知できず、他の担当者の作業が警告なく消えていた。
+    // お金・業務に直結する主要テーブルすべてを確認する。
+    const watchTables = ["orders", "daily_records", "invoices", "drivers", "customers", "recurring_confirmations"];
+    const results = await Promise.all(
+      watchTables.map((t) =>
+        supabase
+          .from(t)
+          .select("updated_at")
+          .eq("tenant_id", tenantId)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          // 一部のテーブルが未作成でも、他の確認は続行する
+          .then((r) => ({ table: t, at: r?.data?.[0]?.updated_at || null }))
+          .catch(() => ({ table: t, at: null }))
+      )
+    );
+    // 最も新しい更新（＝誰かが直近で保存した時刻）と、そのテーブル名を特定する
+    let serverLatest = 0;
+    let latestTable = "";
+    results.forEach(({ table, at }) => {
+      const t = at ? new Date(at).getTime() : 0;
+      if (t > serverLatest) { serverLatest = t; latestTable = table; }
+    });
+    const tableLabel = {
+      orders: "受注", daily_records: "実績", invoices: "請求書",
+      drivers: "ドライバー", customers: "顧客", recurring_confirmations: "定期便の稼働確認",
+    };
+    const myLastSync = window.__hakomaneLastSyncAt || 0;
+    // サーバー側に、自分が最後に同期した時点より新しい更新がある＝
+    // 他の誰かが保存した可能性が高い。
+    if (serverLatest > 0 && myLastSync > 0 && serverLatest > myLastSync) {
+      const when = new Date(serverLatest).toLocaleString("ja-JP", { hour12: false }).slice(0, 16);
+      const proceed = window.confirm(
+        "⚠️ 他の担当者がデータを更新した可能性があります。\n\n" +
+        `更新された内容：${tableLabel[latestTable] || latestTable}（${when} 頃）\n\n` +
+        "このまま保存すると、相手の変更内容を上書きして消してしまう恐れがあります。\n\n" +
+        "【推奨】いったん「キャンセル」を押し、画面を再読み込み（F5）して\n" +
+        "　　　　最新の状態を確認してから、もう一度操作してください。\n\n" +
+        "それでもこのまま保存しますか？"
+      );
+      if (!proceed) {
+        throw new Error("保存を中止しました。画面を再読み込みしてから、もう一度操作してください。");
+      }
+    }
+  } catch (e) {
+    // 競合チェック自体が失敗しても、保存そのものは続行する
+    // （チェックできないことを理由に保存不能にすると、業務が止まってしまう）。
+    if (String(e?.message || "").includes("保存を中止")) throw e;
+    console.warn("競合チェックをスキップしました:", e);
   }
 
   const failedTables = [];
@@ -12154,6 +13300,10 @@ const saveDataToSupabase = async (nextData, prevData, tenantId) => {
 
   await Promise.all(jobs);
 
+  // 保存が完了した時刻を記録しておく。次回の保存時、サーバー側に
+  // この時刻より新しい更新があれば「他の人が編集した」と判定できる。
+  window.__hakomaneLastSyncAt = Date.now();
+
   if (failedTables.length > 0) {
     // 一部のテーブルだけ失敗した場合でも、他の正常なテーブルは既に保存済み。
     // その上で、失敗があったことは呼び出し元（保存失敗バナー）に伝える。
@@ -12234,6 +13384,10 @@ export const HakomaneLogo = ({ height = 44 }) => {
 export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile: mobileProp }) {
   const isMobileLocal = useIsMobile();
   const isMobile = typeof mobileProp === "boolean" ? mobileProp : isMobileLocal;
+  // 変更履歴（監査ログ）に「誰が」を記録するため、ログイン中の本人を
+  // グローバルに保持する。logHistoryEntry はコンポーネント外の関数のため、
+  // props を渡せない箇所からも参照できるようにしておく。
+  if (typeof window !== "undefined") window.__hakomaneCurrentUser = authEmail || null;
   const [page, setPage] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
   const [data, setData] = useState(initialData);
@@ -12530,7 +13684,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const pendingCount = (Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="pending").length;
   const unmatchedCount = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched").length;
   const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
-  const overdueCount = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i=>i?.status==="overdue"||(i?.status==="unpaid"&&(i?.dueDate||"")<todayStr)).length;
+  const overdueCount = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i=>i?.status==="overdue"||((i?.status==="unpaid"||i?.status==="partial")&&(i?.dueDate||"")<todayStr)).length;
 
   // ダッシュボードの期限接近アラート（免許更新・車検・任意保険）と同じ判定を、
   // メニューのバッジにも反映する。ダッシュボードを開かないと気づけない状態を防ぐ。
@@ -12918,7 +14072,144 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             <div style={{ fontSize:"12px", color:"#999", textAlign:"center", padding:"20px" }}>削除済みデータはありません</div>
           )}
           <div style={{ borderTop:"2px solid #e8e8e8", marginTop:"16px", paddingTop:"16px" }}>
-            <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px" }}>CSVダウンロード</div>
+            {/* 【重要】顧客・ドライバー・案件を削除した後、それを参照している
+                受注・実績・定期便が残ることがある（孤立データ）。
+                放置すると「削除済みドライバー」名義の実績が集計に残り続けたり、
+                報酬計算の対象から外れて支払漏れになったりする。
+                これまで検出手段が一切無かったため、気づきようがなかった。 */}
+            <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px", marginTop:"16px" }}>データの健全性チェック</div>
+            <p style={{ fontSize:"11px", color:"#888", marginBottom:"8px", lineHeight:1.6 }}>
+              削除した顧客・ドライバー・案件を参照したまま残っているデータ（孤立データ）を探します。
+            </p>
+            <RetroBtn small onClick={()=>{
+              const d = data || {};
+              const alive = (list) => new Set((Array.isArray(list) ? list : []).filter(x => !x?.deleted).map(x => x?.id));
+              const liveDrivers = alive(d.drivers);
+              const liveCustomers = alive(d.customers);
+              const liveJobTypes = alive(d.jobTypes);
+              const records = (Array.isArray(d.dailyRecords) ? d.dailyRecords : []).filter(r => !r?.deleted);
+              const orders = (Array.isArray(d.orders) ? d.orders : []).filter(o => !o?.deleted);
+              const recurring = (Array.isArray(d.recurringAssignments) ? d.recurringAssignments : []).filter(r => !r?.deleted);
+
+              const issues = [];
+              const recNoDriver = records.filter(r => r?.driverId && !liveDrivers.has(r.driverId));
+              const recNoCustomer = records.filter(r => r?.customerId && !liveCustomers.has(r.customerId));
+              const recNoJobType = records.filter(r => r?.jobTypeId && !liveJobTypes.has(r.jobTypeId));
+              const ordNoCustomer = orders.filter(o => o?.customerId && !liveCustomers.has(o.customerId));
+              const ordNoDriver = orders.filter(o => o?.driverId && !liveDrivers.has(o.driverId));
+              const recurNoDriver = recurring.filter(r => r?.driverId && !liveDrivers.has(r.driverId));
+              const recurNoCustomer = recurring.filter(r => r?.customerId && !liveCustomers.has(r.customerId));
+
+              if (recNoDriver.length) issues.push(`・実績 ${recNoDriver.length}件：削除済みのドライバーを参照（報酬計算の対象外になり、支払漏れの恐れ）`);
+              if (recNoCustomer.length) issues.push(`・実績 ${recNoCustomer.length}件：削除済みの顧客を参照`);
+              if (recNoJobType.length) issues.push(`・実績 ${recNoJobType.length}件：削除済みの案件を参照`);
+              if (ordNoCustomer.length) issues.push(`・受注 ${ordNoCustomer.length}件：削除済みの顧客を参照（請求先が不明）`);
+              if (ordNoDriver.length) issues.push(`・受注 ${ordNoDriver.length}件：削除済みのドライバーを配車`);
+              if (recurNoDriver.length) issues.push(`・定期便 ${recurNoDriver.length}件：削除済みのドライバーを参照`);
+              if (recurNoCustomer.length) issues.push(`・定期便 ${recurNoCustomer.length}件：削除済みの顧客を参照`);
+
+              if (issues.length === 0) {
+                window.alert("✅ 孤立データは見つかりませんでした。\n\nすべてのデータが、有効な顧客・ドライバー・案件を正しく参照しています。");
+              } else {
+                const detail = recNoDriver.length > 0
+                  ? `\n\n【支払漏れの恐れがある実績】\n${recNoDriver.slice(0, 5).map(r => `　${r.date}（売上 ${yen(r.salesAmount)} / 報酬 ${yen(r.driverAmount)}）`).join("\n")}${recNoDriver.length > 5 ? `\n　…他 ${recNoDriver.length - 5}件` : ""}`
+                  : "";
+                window.alert(
+                  `⚠️ 孤立データが見つかりました。\n\n${issues.join("\n")}${detail}\n\n` +
+                  `【対処方法】\n` +
+                  `・削除したドライバー・顧客を「削除済みデータの復元」で戻す\n` +
+                  `・または、該当する実績・受注を正しい相手に付け替える\n` +
+                  `のいずれかで解消できます。`
+                );
+              }
+            }} style={{ background:"#fff", color:"#7b1fa2", borderColor:"#7b1fa2" }}>孤立データを検出する</RetroBtn>
+
+            {/* 【重要】これまでバックアップ手段が一切なかった。
+                誤操作による大量削除、Supabaseの障害、契約解除などで
+                データを失うと、復旧手段が無く事業が止まる。
+                会計データは法律上7年間の保存義務があるため、
+                手元にも必ず残せるようにする。 */}
+            <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px", marginTop:"16px" }}>バックアップ</div>
+            <p style={{ fontSize:"11px", color:"#888", marginBottom:"8px", lineHeight:1.6 }}>
+              全データを1つのファイルに保存します。万一データを失った場合、このファイルから復元できます。<br/>
+              <b>月に1回程度、定期的に保存しておくことをおすすめします。</b>
+            </p>
+            <div style={{ display:"flex", gap:"6px", flexWrap:"wrap" }}>
+              <RetroBtn small onClick={()=>{
+                try {
+                  const backup = {
+                    _format: "hakomane-backup",
+                    _version: 1,
+                    _exportedAt: new Date().toISOString(),
+                    _tenantId: tenantId,
+                    data: data,
+                  };
+                  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `ハコマネ_バックアップ_${getTodayLocalStr()}.json`;
+                  a.click();
+                  setTimeout(() => URL.revokeObjectURL(url), 1000);
+                  const counts = [
+                    `受注 ${(data?.orders || []).length}件`,
+                    `実績 ${(data?.dailyRecords || []).length}件`,
+                    `請求書 ${(data?.invoices || []).length}件`,
+                    `ドライバー ${(data?.drivers || []).length}名`,
+                    `顧客 ${(data?.customers || []).length}社`,
+                  ].join(" / ");
+                  window.alert(`バックアップを保存しました。\n\n${counts}\n\n大切なファイルです。パソコンとは別の場所（クラウドドライブ・外付けHDD等）にも保管してください。`);
+                } catch (e) {
+                  window.alert("バックアップの保存に失敗しました：" + (e?.message || e));
+                }
+              }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>バックアップを保存</RetroBtn>
+
+              <RetroBtn small onClick={()=>{
+                const input = document.createElement("input");
+                input.type = "file";
+                input.accept = "application/json,.json";
+                input.onchange = async (ev) => {
+                  const file = ev.target?.files?.[0];
+                  if (!file) return;
+                  try {
+                    const text = await file.text();
+                    const parsed = JSON.parse(text);
+                    if (parsed?._format !== "hakomane-backup") {
+                      window.alert("このファイルはハコマネのバックアップではありません。");
+                      return;
+                    }
+                    const b = parsed.data || {};
+                    const counts = [
+                      `受注 ${(b.orders || []).length}件`,
+                      `実績 ${(b.dailyRecords || []).length}件`,
+                      `請求書 ${(b.invoices || []).length}件`,
+                      `ドライバー ${(b.drivers || []).length}名`,
+                      `顧客 ${(b.customers || []).length}社`,
+                    ].join("\n・");
+                    const when = String(parsed._exportedAt || "").slice(0, 16).replace("T", " ");
+                    // 【重要】復元は現在のデータを完全に置き換える破壊的操作。
+                    // 誤って実行すると今のデータが全て失われるため、
+                    // 中身と件数を必ず提示し、二段階で確認する。
+                    if (!window.confirm(
+                      `このバックアップを復元します。\n\n` +
+                      `【保存日時】${when}\n` +
+                      `【内容】\n・${counts}\n\n` +
+                      `⚠️ 現在のデータはすべて置き換えられます。\n` +
+                      `今のデータが必要な場合は、先に「バックアップを保存」しておいてください。\n\n` +
+                      `続けますか？`
+                    )) return;
+                    if (!window.confirm("本当に復元しますか？\n\nこの操作は取り消せません。")) return;
+                    setData(b);
+                    window.alert("復元しました。画面を再読み込み（F5）して内容をご確認ください。");
+                  } catch (e) {
+                    window.alert("バックアップの読み込みに失敗しました：" + (e?.message || e));
+                  }
+                };
+                input.click();
+              }} style={{ background:"#fff", color:"#e65100", borderColor:"#e65100" }}>バックアップから復元</RetroBtn>
+            </div>
+
+            <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px", marginTop:"16px" }}>CSVダウンロード</div>
             {[
               { key:"customers", label:"顧客一覧", headers:["ID","会社名","担当者","電話","メール","住所","単価","締め日","支払サイト","振込名義カナ","メモ"], getRow: c => [c.id,c.name,c.contact,c.phone,c.email,c.address,c.unitPrice,c.closingDay,c.paymentSite,c.payer_kana,c.notes] },
               { key:"orders", label:"受注一覧", headers:["ID","顧客","配送種別","配達日","出発地","配送先","荷物","重量","金額","状態"], getRow: o => [o.id,o.customerName,o.deliveryType,o.deliveryDate,o.from,o.to,o.cargo,o.weight,o.amount,o.status] },
