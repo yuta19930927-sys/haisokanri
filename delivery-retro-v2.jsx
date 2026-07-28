@@ -212,7 +212,13 @@ const applyOrderDeliveredTransition = (d, orderId) => {
     : [
         ...(Array.isArray(d?.dailyRecords) ? d.dailyRecords : []),
         {
-          id: `DR-${Date.now()}`,
+          // 【重要】以前は `DR-${Date.now()}` としていたが、ミリ秒単位のため
+          // 一括操作で複数件をまとめて完了にすると、同じミリ秒内に作られた
+          // 実績のIDがすべて同じになってしまう（20件中19件が重複した）。
+          // その結果、保存時に1件だけ残って他が消え、
+          // ドライバーへの支払いが大幅に不足する事故になる。
+          // ランダムな文字を足して、必ず一意になるようにする。
+          id: `DR-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           orderId: targetOrder?.id,
           date: targetOrder?.deliveryDate,
           driverId: targetOrder?.assignedDriverId || targetOrder?.driverId || "",
@@ -430,6 +436,143 @@ const RetroSelect = ({ children, ...props }) => (
     {children}
   </select>
 );
+/**
+ * ===== 検索して選べる選択欄 =====
+ *
+ * 【なぜ必要か】
+ * 顧客やドライバーが数十件になると、通常のドロップダウンでは
+ * 「開く → スクロールして探す → クリック」で1件あたり数秒かかる。
+ * 1日500件を扱う現場では、この積み重ねが数十分の無駄になる。
+ * さらに、似た名前（「坪倉商事」と「坪倉運輸」など）を
+ * 見間違えて選ぶ事故も起きやすい。
+ *
+ * 文字を打つと候補が絞り込まれる方式にすることで、
+ * 「つ」と打つだけで坪倉商事にたどり着けるようにする。
+ *
+ * options: [{ id, name }] の配列
+ */
+const SearchableSelect = ({ value, onChange, options, placeholder = "入力して検索", disabled, style }) => {
+  const [keyword, setKeyword] = useState("");
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const boxRef = useRef(null);
+
+  const list = Array.isArray(options) ? options.filter(Boolean) : [];
+  const selected = list.find((o) => String(o?.id) === String(value));
+
+  // 【重要】日本語では「坪倉商事」を探すのに「つぼくら」と打つのが自然。
+  // 漢字の名前しか持っていないと、ひらがなで打っても見つからず、
+  // 結局スクロールして探すことになり、候補表示の意味が無くなる。
+  // 名前に加えて「よみがな（kana）」でも検索できるようにする。
+  // カタカナ・ひらがなの違いも吸収する（「ツボクラ」でも「つぼくら」でも探せる）。
+  const toHiragana = (s) => String(s || "").replace(/[\u30a1-\u30f6]/g, (c) =>
+    String.fromCharCode(c.charCodeAt(0) - 0x60)
+  );
+  const matches = (o, kw) => {
+    const k = toHiragana(kw).toLowerCase();
+    if (!k) return true;
+    const name = String(o?.name || "");
+    const kana = toHiragana(o?.kana || "");
+    return name.includes(kw) || name.toLowerCase().includes(k) || kana.includes(k);
+  };
+  const filtered = keyword.trim() ? list.filter((o) => matches(o, keyword.trim())) : list;
+
+  // 欄の外をクリックしたら閉じる（開きっぱなしで他の操作を邪魔しないように）
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e) => {
+      if (boxRef.current && !boxRef.current.contains(e.target)) {
+        setOpen(false);
+        setKeyword("");
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const choose = (id) => {
+    onChange?.({ target: { value: id } });
+    setOpen(false);
+    setKeyword("");
+  };
+
+  // キーボードだけで操作できるようにする（マウスに持ち替える手間を無くす）
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setHighlight((h) => Math.min(h + 1, filtered.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      if (open && filtered[highlight]) choose(filtered[highlight].id);
+      else setOpen(true);
+    } else if (e.key === "Escape") {
+      // 【重要】候補リストが開いているときのEscは「候補を閉じる」だけにする。
+      // そのまま親（モーダル）にイベントが伝わると、モーダルごと閉じてしまい、
+      // 入力途中の内容がすべて失われる。
+      if (open) {
+        e.stopPropagation();
+        setOpen(false);
+        setKeyword("");
+      }
+      // 候補が閉じている状態のEscは、モーダルを閉じる動作に任せる。
+    }
+  };
+
+  return (
+    // 候補リストが開いていることを、モーダル側から判別できるようにする。
+    // （Escで候補だけを閉じ、モーダルは閉じないようにするために必要）
+    <div ref={boxRef} data-dropdown-open={open ? "true" : undefined} style={{ position: "relative", ...style }}>
+      {/* 【重要】以前は onFocus で候補を開いていたが、モーダルが開いた瞬間に
+          自動フォーカスが当たるため、候補リストが勝手に展開され、
+          下の入力欄が隠れて利用者が戸惑う問題があった。
+          「自分でクリックした」「文字を打った」「↓キーを押した」ときだけ開く。 */}
+      <input
+        value={open ? keyword : (selected?.name || "")}
+        onChange={(e) => { setKeyword(e.target.value); setOpen(true); setHighlight(0); }}
+        onClick={() => { setOpen(true); setKeyword(""); setHighlight(0); }}
+        onKeyDown={onKeyDown}
+        placeholder={selected ? selected.name : placeholder}
+        disabled={disabled}
+        style={{ ...inputBase, fontFamily: "'Noto Sans JP', sans-serif", fontSize: "13px", padding: "9px 10px", color: UI.text, outline: "none", width: "100%", boxSizing: "border-box", background: disabled ? "#f5f5f5" : "#fff" }}
+      />
+      {open && (
+        <div style={{
+          position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50,
+          background: "#fff", border: "1px solid #00a09a", borderRadius: "4px",
+          maxHeight: "220px", overflowY: "auto", boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+        }}>
+          {/* 「未選択に戻す」手段を必ず用意する（選び間違えたときに戻せないと困る） */}
+          <div
+            onMouseDown={(e) => { e.preventDefault(); choose(""); }}
+            style={{ padding: "8px 10px", fontSize: "12px", color: "#999", cursor: "pointer", borderBottom: "1px solid #f0f0f0" }}
+          >
+            （選択しない）
+          </div>
+          {filtered.length === 0 && (
+            <div style={{ padding: "10px", fontSize: "12px", color: "#999" }}>
+              「{keyword}」に一致するものがありません
+            </div>
+          )}
+          {filtered.map((o, i) => (
+            <div
+              key={o.id}
+              onMouseDown={(e) => { e.preventDefault(); choose(o.id); }}
+              onMouseEnter={() => setHighlight(i)}
+              style={{
+                padding: "8px 10px", fontSize: "13px", cursor: "pointer",
+                background: i === highlight ? "#e8f5f4" : "#fff",
+                fontWeight: String(o.id) === String(value) ? 700 : 400,
+                color: String(o.id) === String(value) ? "#00695c" : UI.text,
+              }}
+            >
+              {o.name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const RetroTextarea = (props) => (
   <textarea {...props} style={{ ...inputBase, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", padding:"9px 10px", color:UI.text, outline:"none", width:"100%", boxSizing:"border-box", resize:"vertical", minHeight:"80px", ...props.style }} />
 );
@@ -719,6 +862,11 @@ const Modal = ({ title, icon, onClose, children, width=480 }) => {
   useEffect(() => {
     // モーダル表示中、背景のページ全体のスクロールを止める。
     const prevOverflow = document.body.style.overflow;
+    // 【重要】モーダルを開いた時点のスクロール位置を覚えておく。
+    // ダッシュボードから受注詳細へ飛ぶ場合など、画面遷移と同時に
+    // モーダルが開くと、閉じた後にどこを表示しているか分からなくなる。
+    // 閉じたときに元の位置へ戻すことで、常に予測どおりの見え方になる。
+    const prevScrollY = window.scrollY;
     document.body.style.overflow = "hidden";
 
     // モーダルを開いた瞬間にフォーカスをモーダル内に移し、
@@ -742,7 +890,47 @@ const Modal = ({ title, icon, onClose, children, width=480 }) => {
 
     const handleKeyDown = (e) => {
       if (e.key === "Escape" && typeof onCloseRef.current === "function") {
+        // 【重要】モーダル内で候補リスト（SearchableSelect）が開いている場合、
+        // Escは「候補を閉じる」ためのものであって、モーダルを閉じる意図ではない。
+        // ここでモーダルまで閉じてしまうと、入力途中の内容がすべて失われる。
+        // 候補リストが開いているときは、モーダルは閉じない。
+        if (document.querySelector("[data-dropdown-open='true']")) {
+          return;
+        }
         onCloseRef.current();
+        return;
+      }
+      // 【重要】業務システムで最も使われるショートカット。
+      // 1日に何度も保存する現場では、そのたびにマウスで
+      // 「保存」ボタンを探して押すのは大きな負担になる。
+      // Ctrl+S（Macは Cmd+S）で、モーダル内の保存ボタンを押す。
+      //
+      // ブラウザ標準の「ページを保存」を止めないと、
+      // 保存ダイアログが開いて作業が中断されてしまう。
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        // 【重要】候補リストを開いて絞り込んでいる最中に保存すると、
+        // まだ選択が確定していない状態で保存されてしまう。
+        // 利用者は「つぼくら」と打ったので選んだつもりでいるのに、
+        // 実際には未選択のまま保存され、混乱の原因になる。
+        // まず候補を確定（Enter）してもらう。
+        if (document.querySelector("[data-dropdown-open='true']")) {
+          return;
+        }
+        const dialogEl2 = dialogRef.current;
+        if (!dialogEl2) return;
+        // モーダル内の「保存」ボタンだけを押す。
+        //
+        // 【重要】「発行」「確定」といった語まで対象に含めると、
+        // 請求書画面で Ctrl+S を押したときに「赤伝を発行」が
+        // 実行されてしまうなど、意図しない重大な操作が走る危険がある。
+        // 保存以外の操作は、必ず利用者が自分でボタンを押すべき。
+        const buttons = Array.from(dialogEl2.querySelectorAll("button")).filter((b) => !b.disabled);
+        const saveBtn = buttons.find((b) => {
+          const t = (b.textContent || "").trim();
+          return t === "保存" || t === "登録する" || t === "保存する";
+        });
+        if (saveBtn) saveBtn.click();
         return;
       }
       if (e.key !== "Tab" || !dialogEl) return;
@@ -765,6 +953,10 @@ const Modal = ({ title, icon, onClose, children, width=480 }) => {
     return () => {
       document.body.style.overflow = prevOverflow;
       document.removeEventListener("keydown", handleKeyDown);
+      // モーダルを閉じたら、開く前のスクロール位置に戻す。
+      // これが無いと、画面遷移と同時にモーダルが開いた場合などに、
+      // 閉じた後どこを見ているか分からなくなる。
+      window.scrollTo({ top: prevScrollY, behavior: "auto" });
       // モーダルを閉じたら、開く前にフォーカスしていた要素に戻す。
       if (previouslyFocused && typeof previouslyFocused.focus === "function") {
         previouslyFocused.focus();
@@ -2777,6 +2969,63 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   // まとめて処理したい場面が日常的にある。
   // チェックで選んだ複数の受注に、一括で操作できるようにする。
   const [checkedOrderIds, setCheckedOrderIds] = useState([]);
+  // 【重要】1日100件以上を扱う現場では、目当ての案件を探すのに
+  // 全件をスクロールするのは現実的でない。
+  // 「配達日順」「金額順」など、見出しをクリックするだけで
+  // 並べ替えられるようにする。
+  // 既定は「配達日が近い順」＝これから対応すべき案件が上に来る並び。
+  const [sortKey, setSortKey] = useState("deliveryDate");
+  // 【重要】配車担当は毎朝「今日まだ配車していない案件」を探すところから
+  // 業務が始まる。しかし絞り込みが無いため、全件をスクロールして
+  // 目視で探すしかなかった。
+  // ボタン1つで「未配車だけ」「本日分だけ」に絞れるようにする。
+  const [statusFilter, setStatusFilter] = useState("all");
+  // 【重要】表が横に長く、ノートPCでは横スクロールが必要だった。
+  // しかし、必要な列は役割によって違う。
+  // ・配車担当：金額は業務上不要（そもそも報酬額は見られない）
+  // ・経理　　：荷物名より金額が重要
+  // 自分の業務に必要な列だけを表示できるようにする。
+  const [visibleCols, setVisibleCols] = useState(() =>
+    // 配車担当は金額を扱わないため、最初から非表示にしておく。
+    userRole === "dispatcher"
+      ? ["id", "customerName", "cargo", "deliveryDate", "status"]
+      : ["id", "customerName", "cargo", "deliveryDate", "amount", "status"]
+  );
+  const [showColMenu, setShowColMenu] = useState(false);
+  const toggleCol = (key) => {
+    setVisibleCols((prev) => {
+      // 全部消せてしまうと何も見えなくなるため、最低1列は残す。
+      if (prev.includes(key) && prev.length <= 1) return prev;
+      const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
+      // 【重要】今並べ替えに使っている列を非表示にすると、
+      // ・なぜこの順番なのかが分からない
+      // ・見出しが消えているため並べ替えを解除できない
+      // という「詰み」の状態になる。
+      // 隠した列で並んでいた場合は、既定の「配達日順」に戻す。
+      if (!next.includes(key) && sortKey === key) {
+        setSortKey(next.includes("deliveryDate") ? "deliveryDate" : next[0]);
+        setSortAsc(true);
+      }
+      return next;
+    });
+  };
+  const [todayOnly, setTodayOnly] = useState(false);
+  // 絞り込みや検索を変えたら、チェックを解除する。
+  // 「3件を選択中」と表示されているのに画面には1件しか無い、
+  // という食い違いが起きると、利用者が状況を把握できなくなる。
+  useEffect(() => {
+    setCheckedOrderIds([]);
+  }, [statusFilter, todayOnly, search]);
+  const [sortAsc, setSortAsc] = useState(true);
+  const toggleSort = (key) => {
+    if (sortKey === key) {
+      setSortAsc((prev) => !prev);
+    } else {
+      setSortKey(key);
+      // 日付は「近い順」、金額は「大きい順」から始めるのが実務的に自然。
+      setSortAsc(key !== "amount");
+    }
+  };
   const toggleCheck = (id) => {
     setCheckedOrderIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
   };
@@ -2786,6 +3035,14 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   // 開けるようにするための合図。開いたら合図をリセットする。
   useEffect(() => {
     if (autoOpenOrderId) {
+      // 【重要】前に絞り込んだ条件が残っていると、詳細を閉じたあとに
+      // その案件が一覧に表示されず「どこに行った？」と混乱する。
+      // （例：「完了」で絞り込んだ状態で、未配車の案件を開いた場合）
+      // 外から特定の案件を指定して開くときは、必ず絞り込みを解除して、
+      // 閉じたあとも同じ案件が見えるようにする。
+      setStatusFilter("all");
+      setTodayOnly(false);
+      setSearch("");
       setSelectedOrderId(autoOpenOrderId);
       onOrderAutoOpenHandled?.();
     }
@@ -2833,11 +3090,37 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   }
   const orders = (Array.isArray(data.orders) ? data.orders : []).filter(o => !o?.deleted);
   const customers = (Array.isArray(data.customers) ? data.customers : []).filter(c => !c?.deleted);
-  const filtered = orders.filter((o) => {
+  const filteredUnsorted = orders.filter((o) => {
+    // 状態での絞り込み（未配車だけ・完了だけ、など）
+    if (statusFilter !== "all" && o?.status !== statusFilter) return false;
+    // 本日分だけに絞る（配車担当が朝一番に使う）
+    if (todayOnly && (o?.deliveryDate || "").slice(0, 10) !== getTodayLocalStr()) return false;
     const customerName = o?.customerName || "";
     const id = o?.id || "";
     const cargo = o?.cargo || "";
     return customerName.includes(search) || id.includes(search) || cargo.includes(search);
+  });
+
+  // 見出しのクリックで並べ替える。
+  // 状態は「作業の進み具合」の順（未配車→配車済→配送中→完了→キャンセル）に
+  // 並べたいため、単純な文字列順ではなく、意味のある順序を定義する。
+  const statusOrder = { pending: 0, scheduled: 1, in_transit: 2, delivered: 3, cancelled: 4 };
+  const filtered = [...filteredUnsorted].sort((a, b) => {
+    let av, bv;
+    switch (sortKey) {
+      case "customerName": av = a?.customerName || ""; bv = b?.customerName || ""; break;
+      case "cargo":        av = a?.cargo || "";        bv = b?.cargo || "";        break;
+      case "amount":       av = Number(a?.amount) || 0; bv = Number(b?.amount) || 0; break;
+      case "status":       av = statusOrder[a?.status] ?? 99; bv = statusOrder[b?.status] ?? 99; break;
+      case "id":           av = a?.id || "";           bv = b?.id || "";           break;
+      default:             av = a?.deliveryDate || ""; bv = b?.deliveryDate || ""; break;
+    }
+    if (av < bv) return sortAsc ? -1 : 1;
+    if (av > bv) return sortAsc ? 1 : -1;
+    // 同じ値の場合は、受注IDで並びを固定する。
+    // これをしないと、並べ替えるたびに順番が変わって見え、
+    // 「さっき見た案件がどこに行ったか分からない」状態になる。
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
   });
   const statusNext = { pending:"scheduled", scheduled:"in_transit", in_transit:"delivered" };
   const statusPrev = { delivered:"in_transit", in_transit:"scheduled", scheduled:"pending" };
@@ -2963,7 +3246,13 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
    */
   const bulkGoNext = () => {
     if (isBulkRunningRef.current) return;
-    const targets = orders.filter((o) => checkedOrderIds.includes(o?.id));
+    // 【重要】チェックした後に絞り込みを変えると、画面に表示されていない
+    // 案件までチェックが残ったままになる。そのまま一括操作すると、
+    // 利用者が「今見えている分だけ」のつもりで押したのに、
+    // 見えていない案件まで処理されてしまう重大な事故になる。
+    // 対象は必ず「今画面に表示されているもの」に限定する。
+    const visibleIds = new Set(filtered.map((o) => o?.id));
+    const targets = orders.filter((o) => checkedOrderIds.includes(o?.id) && visibleIds.has(o?.id));
     if (targets.length === 0) return;
 
     const movable = [];
@@ -3026,9 +3315,61 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   };
 
   /** 選択した受注をまとめてキャンセルする（天候不良で全便中止、等） */
+  /**
+   * 選択したキャンセル済みの受注を、まとめて元に戻す。
+   *
+   * 【なぜ必要か】
+   * 「天候不良で全便中止 → 天候が回復して再開」は実務でよく起きる。
+   * 一括でキャンセルできるのに取り消しは1件ずつ、では
+   * 20件キャンセルしたら20回クリックすることになり、
+   * 結局この機能が使われなくなってしまう。
+   */
+  const bulkUncancel = () => {
+    if (isBulkRunningRef.current) return;
+    const visibleIds = new Set(filtered.map((o) => o?.id));
+    const targets = orders.filter(
+      (o) => checkedOrderIds.includes(o?.id) && visibleIds.has(o?.id) && o?.status === "cancelled"
+    );
+    if (targets.length === 0) {
+      window.alert("選択した中に、キャンセル済みの受注がありません。");
+      return;
+    }
+    if (!window.confirm(
+      `選択した ${targets.length}件 のキャンセルを取り消します。\n\n` +
+      `状態は「未配車」に戻ります。改めて配車してください。\n\n` +
+      `※キャンセル時に削除された実績データは復元されません。\n` +
+      `　配送が完了したら、通常どおり「配送完了」にすることで新しく記録されます。\n\n` +
+      `よろしいですか？`
+    )) return;
+
+    isBulkRunningRef.current = true;
+    try {
+      const ids = new Set(targets.map((o) => o.id));
+      const today = getTodayLocalStr();
+      setData((d) => ({
+        ...d,
+        orders: (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
+          ids.has(o?.id)
+            ? { ...o, status: "pending", driverId: null, vehicleId: null, cancelledAt: null, cancelReason: null, uncancelledAt: today }
+            : o
+        ),
+      }));
+      setCheckedOrderIds([]);
+      window.alert(`${targets.length}件 のキャンセルを取り消しました。`);
+    } finally {
+      isBulkRunningRef.current = false;
+    }
+  };
+
   const bulkCancel = () => {
     if (isBulkRunningRef.current) return;
-    const targets = orders.filter((o) => checkedOrderIds.includes(o?.id));
+    // 【重要】チェックした後に絞り込みを変えると、画面に表示されていない
+    // 案件までチェックが残ったままになる。そのまま一括操作すると、
+    // 利用者が「今見えている分だけ」のつもりで押したのに、
+    // 見えていない案件まで処理されてしまう重大な事故になる。
+    // 対象は必ず「今画面に表示されているもの」に限定する。
+    const visibleIds = new Set(filtered.map((o) => o?.id));
+    const targets = orders.filter((o) => checkedOrderIds.includes(o?.id) && visibleIds.has(o?.id));
     if (targets.length === 0) return;
 
     const cancelable = [];
@@ -3279,19 +3620,119 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
         <RetroBtn onClick={()=>setShowModal(true)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}新規受注</RetroBtn>
         <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
           <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>検索</span>
-          <RetroInput value={search} onChange={e=>setSearch(e.target.value)} style={{ width:"240px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
+          <RetroInput value={search} onChange={e=>setSearch(e.target.value)} placeholder="ID・顧客名・荷物で検索" style={{ width:"240px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
+        </div>
+      </div>
+
+      {/* 【重要】配車担当は毎朝「今日まだ配車していない案件」を探すところから
+          業務が始まる。絞り込みが無いと全件をスクロールすることになる。
+          件数も併せて表示することで、「何件残っているか」が一目で分かる。 */}
+      <div style={{ display:"flex", gap:"6px", alignItems:"center", flexWrap:"wrap", marginTop:"8px" }}>
+        <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>絞り込み</span>
+        {[
+          ["all", "すべて"],
+          ["pending", "未配車"],
+          ["scheduled", "配車済"],
+          ["in_transit", "配送中"],
+          ["delivered", "完了"],
+          ["cancelled", "キャンセル"],
+        ].map(([key, label]) => {
+          const count = key === "all"
+            ? orders.length
+            : orders.filter(o => o?.status === key).length;
+          const active = statusFilter === key;
+          return (
+            <RetroBtn
+              key={key}
+              small
+              onClick={()=>setStatusFilter(key)}
+              style={{
+                background: active ? "#00a09a" : "#fff",
+                color: active ? "#fff" : "#555",
+                borderColor: active ? "#00a09a" : "#d0d0d0",
+              }}
+            >
+              {label}（{count}）
+            </RetroBtn>
+          );
+        })}
+        <span style={{ width:"1px", height:"20px", background:"#ddd", margin:"0 4px" }}/>
+        <RetroBtn
+          small
+          onClick={()=>setTodayOnly(v=>!v)}
+          style={{
+            background: todayOnly ? "#e65100" : "#fff",
+            color: todayOnly ? "#fff" : "#555",
+            borderColor: todayOnly ? "#e65100" : "#d0d0d0",
+          }}
+        >
+          本日分のみ
+        </RetroBtn>
+        {(statusFilter !== "all" || todayOnly || search) && (
+          <RetroBtn
+            small
+            onClick={()=>{ setStatusFilter("all"); setTodayOnly(false); setSearch(""); }}
+            style={{ background:"#fff", color:"#999", borderColor:"#ccc" }}
+          >
+            絞り込みを解除
+          </RetroBtn>
+        )}
+        <span style={{ fontSize:"12px", color:"#00695c", fontWeight:700, marginLeft:"4px" }}>
+          {filtered.length}件を表示中
+        </span>
+        {/* 【重要】表が横に長く、ノートPCでは横スクロールが必要だった。
+            必要な列は役割によって違うため、自分で選べるようにする。 */}
+        <div style={{ position:"relative", marginLeft:"auto" }}>
+          <RetroBtn small onClick={()=>setShowColMenu(v=>!v)} style={{ background:"#fff", color:"#555", borderColor:"#d0d0d0" }}>
+            表示する列
+          </RetroBtn>
+          {showColMenu && (
+            <>
+              {/* 画面のどこかをクリックしたら閉じる */}
+              <div onClick={()=>setShowColMenu(false)} style={{ position:"fixed", inset:0, zIndex:40 }}/>
+              <div style={{
+                position:"absolute", top:"100%", right:0, zIndex:41, marginTop:"4px",
+                background:"#fff", border:"1px solid #d0d0d0", borderRadius:"6px",
+                boxShadow:"0 4px 12px rgba(0,0,0,0.12)", padding:"8px", minWidth:"160px",
+              }}>
+                <div style={{ fontSize:"11px", color:"#888", marginBottom:"6px" }}>
+                  表示する列を選んでください
+                </div>
+                {[
+                  ["id", "ID"], ["customerName", "顧客"], ["cargo", "荷物"],
+                  ["deliveryDate", "配達日"], ["amount", "金額"], ["status", "状態"],
+                ].map(([key, label]) => (
+                  <label key={key} style={{ display:"flex", alignItems:"center", gap:"6px", padding:"5px 4px", fontSize:"12px", cursor:"pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={visibleCols.includes(key)}
+                      onChange={()=>toggleCol(key)}
+                      style={{ cursor:"pointer" }}
+                    />
+                    {label}
+                  </label>
+                ))}
+                <div style={{ fontSize:"10px", color:"#999", marginTop:"6px", borderTop:"1px solid #eee", paddingTop:"6px" }}>
+                  ※「操作」列は常に表示されます
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
       {/* 選択したときだけ表示する一括操作バー。
           1日100件以上を扱う現場では、1件ずつの操作は現実的でない。 */}
-      {checkedOrderIds.length > 0 && (
+      {/* 【重要】表示する件数は、実際に処理される件数と必ず一致させる。
+          削除された案件のチェックが残っていると「2件を選択中」と出るのに
+          1件しか処理されない、という食い違いが起きて利用者が混乱する。 */}
+      {filtered.filter(o => checkedOrderIds.includes(o?.id)).length > 0 && (
         <div style={{
           display:"flex", alignItems:"center", gap:"8px", flexWrap:"wrap",
           background:"#e8f5f4", border:"1px solid #00a09a", borderRadius:"6px",
           padding:"10px 14px", marginBottom:"10px",
         }}>
           <span style={{ fontSize:"13px", fontWeight:700, color:"#00695c" }}>
-            {checkedOrderIds.length}件を選択中
+            {filtered.filter(o => checkedOrderIds.includes(o?.id)).length}件を選択中
           </span>
           <RetroBtn small onClick={bulkGoNext} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
             まとめて次へ進める
@@ -3299,6 +3740,13 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
           <RetroBtn small onClick={bulkCancel} style={{ background:"#fff", color:"#546e7a", borderColor:"#90a4ae" }}>
             まとめてキャンセル
           </RetroBtn>
+          {/* キャンセル済みが選ばれているときだけ出す。
+              普段は表示しないことで、ボタンが増えすぎて迷うのを防ぐ。 */}
+          {filtered.some(o => checkedOrderIds.includes(o?.id) && o?.status === "cancelled") && (
+            <RetroBtn small onClick={bulkUncancel} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
+              まとめてキャンセル取消
+            </RetroBtn>
+          )}
           <RetroBtn small onClick={()=>setCheckedOrderIds([])} style={{ background:"#fff", color:"#999", borderColor:"#ccc" }}>
             選択を解除
           </RetroBtn>
@@ -3320,7 +3768,30 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                   style={{ cursor:"pointer" }}
                 />
               </th>
-              {["ID","顧客","荷物","配達日","金額","状態","操作"].map((h)=><th key={h} style={{ color:"#666", fontSize:"11px", padding:"8px 10px", textAlign:"left", fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder }}>{h}</th>)}
+              {/* 見出しをクリックすると並べ替わる。
+                  「今どの順で並んでいるか」が一目で分かるよう、
+                  矢印（▲▼）で向きを示す。 */}
+              {[
+                ["ID", "id"], ["顧客", "customerName"], ["荷物", "cargo"],
+                ["配達日", "deliveryDate"], ["金額", "amount"], ["状態", "status"], ["操作", null],
+              // 操作列（key が null）は常に表示。それ以外は設定に従う。
+              ].filter(([, key]) => key === null || visibleCols.includes(key)).map(([label, key])=>(
+                <th
+                  key={label}
+                  onClick={key ? ()=>toggleSort(key) : undefined}
+                  title={key ? "クリックで並べ替え" : undefined}
+                  style={{
+                    color: sortKey === key ? "#00695c" : "#666",
+                    fontSize:"11px", padding:"8px 10px", textAlign:"left",
+                    fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder,
+                    cursor: key ? "pointer" : "default",
+                    userSelect:"none",
+                  }}
+                >
+                  {label}
+                  {sortKey === key && <span style={{ marginLeft:"3px" }}>{sortAsc ? "▲" : "▼"}</span>}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -3337,12 +3808,14 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                     style={{ cursor:"pointer" }}
                   />
                 </td>
-                <td style={{ padding:"8px 10px" }}><span style={{ color:"#007a74", fontWeight:700 }}>{o?.id||"—"}</span></td>
-                <td style={{ padding:"8px 10px" }}>{o?.customerName||""}</td>
-                <td style={{ padding:"8px 10px" }}>{o?.cargo||""}{o?.weight ? `（${o.weight}）` : ""}</td>
-                <td style={{ padding:"8px 10px" }}>{o?.deliveryDate||""}</td>
-                <td style={{ padding:"8px 10px" }}>¥{(Number(o?.amount)||0).toLocaleString()}</td>
-                <td style={{ padding:"8px 10px" }}>
+                {/* 表示する列の設定に従う。見出しと同じ条件で出し分けないと
+                    列がずれてしまうため、必ず同じキーで判定する。 */}
+                {visibleCols.includes("id") && <td style={{ padding:"8px 10px" }}><span style={{ color:"#007a74", fontWeight:700 }}>{o?.id||"—"}</span></td>}
+                {visibleCols.includes("customerName") && <td style={{ padding:"8px 10px" }}>{o?.customerName||""}</td>}
+                {visibleCols.includes("cargo") && <td style={{ padding:"8px 10px" }}>{o?.cargo||""}{o?.weight ? `（${o.weight}）` : ""}</td>}
+                {visibleCols.includes("deliveryDate") && <td style={{ padding:"8px 10px" }}>{o?.deliveryDate||""}</td>}
+                {visibleCols.includes("amount") && <td style={{ padding:"8px 10px" }}>¥{(Number(o?.amount)||0).toLocaleString()}</td>}
+                {visibleCols.includes("status") && <td style={{ padding:"8px 10px" }}>
                   <StatusPill s={o?.status}/>
                   {/* 配車済みでも、まだ「完了」ではないことが分かりにくいという指摘があったため、
                       本日が配達日の場合は「本日稼働」の目印を追加で表示する
@@ -3350,7 +3823,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                   {o?.status === "scheduled" && o?.deliveryDate === getTodayLocalStr() && (
                     <span style={{ marginLeft:"4px", fontSize:"10px", background:"#fff3e0", color:"#e65100", border:"1px solid #ffcc80", borderRadius:"999px", padding:"1px 6px" }}>本日稼働</span>
                   )}
-                </td>
+                </td>}
                 <td style={{ padding:"8px 10px", whiteSpace:"nowrap" }}>
                   <div style={{ display:"flex", gap:"4px" }}>
                     {statusPrev[o?.status] && (
@@ -3380,14 +3853,19 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
       </div>
       {showModal&&<Modal title="新規受注登録" icon={orderIcon} onClose={()=>setShowModal(false)}>
         <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap:"6px 12px" }}>
-          <Fl label="顧客"><RetroSelect value={form.customerId} onChange={e=>{
-            const selectedCustomer = customers.find((c) => c?.id === e.target.value);
-            setForm(f=>({
-              ...f,
-              customerId:e.target.value,
-              amount: selectedCustomer?.unitPrice != null ? String(selectedCustomer.unitPrice) : "0",
-            }));
-          }}><option value="">選択</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</RetroSelect></Fl>
+          <Fl label="顧客"><SearchableSelect
+            value={form.customerId}
+            options={customers.map(c=>({ id:c.id, name:c.name, kana:c.payer_kana || "" }))}
+            placeholder="顧客名を入力して検索"
+            onChange={e=>{
+              const selectedCustomer = customers.find((c) => c?.id === e.target.value);
+              setForm(f=>({
+                ...f,
+                customerId:e.target.value,
+                amount: selectedCustomer?.unitPrice != null ? String(selectedCustomer.unitPrice) : "0",
+              }));
+            }}
+          /></Fl>
           <Fl label="配達日"><RetroInput type="date" value={form.deliveryDate} onChange={e=>setForm(f=>({...f,deliveryDate:e.target.value}))}/></Fl>
           <Fl label="配送種別">
             <RetroSelect value={form.deliveryType} onChange={e=>setForm(f=>({...f,deliveryType:e.target.value}))}>
@@ -3741,14 +4219,24 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           ))}
         </Panel>
         {sel&&<Panel title="配車アサイン" icon={truckIcon} style={{ marginTop:"10px" }}>
-          <Fl label="ドライバー"><RetroSelect value={aD} onChange={e=>setAD(e.target.value)}><option value="">選択</option>{drivers.filter(d=>d?.status==="available").map(d=>{
-            // 契約終了日を過ぎているドライバーは、これまで配車選択肢から
-            // 区別なく選べてしまい、契約満了に気づかず誤って新しい配送を
-            // 割り当ててしまうリスクがあった。選択肢のラベルに警告を付けて
-            // 気づきやすくする（選択自体は禁止せず、現場の柔軟性は残す）。
-            const isContractEnded = d?.contractEnd && d.contractEnd < getTodayLocalStr();
-            return <option key={d?.id||`driver-${Math.random()}`} value={d?.id||""}>{isContractEnded ? "⚠契約終了済み " : ""}{d?.name||""}（{d?.license||""}）</option>;
-          })}</RetroSelect></Fl>
+          <Fl label="ドライバー"><SearchableSelect
+            value={aD}
+            onChange={e=>setAD(e.target.value)}
+            placeholder="ドライバー名を入力して検索"
+            options={drivers.filter(d=>d?.status==="available").map(d=>{
+              // 契約終了日を過ぎているドライバーは、これまで配車選択肢から
+              // 区別なく選べてしまい、契約満了に気づかず誤って新しい配送を
+              // 割り当ててしまうリスクがあった。名前に警告を付けて
+              // 気づきやすくする（選択自体は禁止せず、現場の柔軟性は残す）。
+              const isContractEnded = d?.contractEnd && d.contractEnd < getTodayLocalStr();
+              return {
+                id: d?.id || "",
+                name: `${isContractEnded ? "⚠契約終了済み " : ""}${d?.name || ""}（${d?.license || ""}）`,
+                // ひらがな・カタカナで検索できるよう、登録済みのカナも渡す
+                kana: d?.nameKana || d?.accountHolderKana || "",
+              };
+            })}
+          /></Fl>
           <Fl label="車両"><RetroSelect value={aV} onChange={e=>setAV(e.target.value)}><option value="">選択</option>{vehicles.filter(v=>v?.status==="available").map(v=>{
             // ドライバーの契約終了日と同様、車検・任意保険の期限が切れている車両も
             // これまで警告なく選択肢に表示されてしまっていた。車検切れの車両を
@@ -4220,7 +4708,8 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         )};
       }
       return { ...d, qualityRecords: [...current, {
-        id: `QR-${Date.now()}`,
+        // 実績IDと同じ理由で、連続入力しても必ず一意になるようにする
+        id: `QR-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         driverId,
         date,
         jobTypeId,
@@ -5446,10 +5935,26 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
     parking += n(r?.parkingFee);
     fuel += n(r?.fuelAllowance);
     otherAllowance += n(r?.otherAllowance);
-    // driverAmount は「基本報酬＋チャーター＋実費・手当」の合計として保存されている。
-    // 基本報酬だけを取り出すため、加算項目を差し引く。
+    // 【重要な前提】driverAmount は「基本報酬＋チャーター＋実費・手当」の
+    // 合計として保存されている。ここでは基本報酬だけを取り出すため、
+    // 加算項目を差し引いている。
+    //
+    // ▼ この前提を守っている入力経路（確認済み）
+    //   ・売上管理の日次入力 → calcAmounts が必ず手当を合算して保存
+    //   ・受注の配送完了      → 手当項目を持たない（driverPayAmount のみ）
+    //   ・実績入力（品質管理）→ 個数×単価のみで、手当項目を扱わない
+    //
+    // ▼ 前提が崩れると起きること
+    //   driverAmount に手当が含まれていない状態で手当項目だけが入ると、
+    //   基本報酬から手当分が引かれ、その分が支給されなくなる（支払漏れ）。
+    //
+    // 将来、実績を登録する経路を追加する場合は、必ず
+    // 「driverAmount ＝ 基本報酬 ＋ 手当の合計」となるようにすること。
     const addOns = n(r?.charterDriver) + n(r?.highwayFee) + n(r?.parkingFee) + n(r?.fuelAllowance) + n(r?.otherAllowance);
-    baseReward += n(r?.driverAmount) - addOns;
+    const base = n(r?.driverAmount) - addOns;
+    // 差し引いた結果がマイナスになるのは、明らかに前提が崩れている状態。
+    // その場合は差し引かずに扱い、支給額が不当に減るのを防ぐ。
+    baseReward += base < 0 ? n(r?.driverAmount) : base;
   });
 
   // 稼働日数（同じ日に複数件あっても1日と数える）
@@ -6223,7 +6728,9 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         invoiceRegNo: registered ? (driver?.invoiceRegNo || "") : "",
         payoutMonth: targetMonth,
         lineItems: [{
-          id: `LI-${Date.now()}`,
+          // 月締めでは複数ドライバー分の請求書をまとめて作るため、
+          // 同じミリ秒内に複数の明細が生まれる。必ず一意にする。
+          id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           name: `${targetMonth} 配送業務委託料（稼働${p.workDays}日 / ${p.totalCount.toLocaleString()}個）`,
           qty: 1,
           unitPrice: taxExcluded,
@@ -6299,11 +6806,16 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
     .map((p) => ({ payout: p, driver: drivers.find((x) => x?.id === p.driverId) }))
     .filter(({ driver }) => {
       if (!driver?.bankChangedAt) return false;
-      // 変更から30日以内のものを対象にする（月次の振込サイクルを1回はまたぐ）
-      const changed = new Date(driver.bankChangedAt + "T00:00:00");
-      if (isNaN(changed.getTime())) return false;
-      const days = Math.floor((new Date() - changed) / 86400000);
-      return days >= 0 && days <= 30;
+      // 【重要】以前は「変更から30日以内」で判定していたが、これには
+      // 抜け道があった。稼働の少ないドライバーの口座を書き換えても、
+      // その月は稼働ゼロで警告対象にならず、翌月には30日を過ぎているため
+      // 一度も警告されないまま振り込まれてしまう。
+      //
+      // 日数ではなく「変更後、まだ一度も振り込んでいないか」で判定する。
+      // これなら、いつ変更されても、変更後の最初の振込時に必ず警告が出る。
+      const changedAt = String(driver.bankChangedAt);
+      const paidAfterChange = String(driver.bankChangeConfirmedAt || "");
+      return !paidAfterChange || paidAfterChange < changedAt;
     });
 
   const openStatement = (payout) => {
@@ -6426,10 +6938,19 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
     if (!proceed) return;
     const today = getTodayLocalStr();
     const ids = new Set(targetInvoices.map((inv) => inv.id));
+    // 振込を実行したドライバーは、その口座で実際に支払った＝確認済みとみなす。
+    // これにより、次回以降は口座変更の警告が出なくなる
+    // （逆に、また口座が変われば必ず警告が出る）。
+    const paidDriverIds = new Set(targetPayouts.map((p) => p.driverId));
     setData((d) => ({
       ...d,
       invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
         ids.has(inv?.id) ? { ...inv, status: "paid", paidDate: today } : inv
+      ),
+      drivers: (Array.isArray(d?.drivers) ? d.drivers : []).map((dr) =>
+        paidDriverIds.has(dr?.id) && dr?.bankChangedAt
+          ? { ...dr, bankChangeConfirmedAt: today }
+          : dr
       ),
     }));
     window.alert(`${targetInvoices.length}件 のドライバー請求書を支払済みにしました。`);
@@ -9366,7 +9887,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             <RetroBtn onClick={openAddRecord} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}実績を追加</RetroBtn>
           </div>
           <div style={{ background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:"6px", padding:"8px 10px", fontSize:"11px", color:"#e65100" }}>
-            ⚠ 同じ配送を「実績・品質管理」の日次入力欄にも入力すると、売上が二重に集計されます。どちらか一方の画面で入力してください。
+            ⚠ 同じ配送を「実績入力」の画面にも入力すると、売上が二重に集計されます。どちらか一方の画面で入力してください。
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
             <span style={{ fontSize:"12px", color:"#666" }}>表示月：</span>
@@ -9973,7 +10494,12 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         const tax = Number(inv.tax) || 0;
         // 売上計上
         rows.push([inv.issueDate, "売掛金", fmt(inv.total), "売上高", fmt(amount), `${name} ${inv.id} 売上計上`]);
-        if (tax > 0) rows.push([inv.issueDate, "", "", "仮受消費税", fmt(tax), `${name} ${inv.id} 消費税`]);
+        // 【重要】赤伝（マイナスの請求書）では税額もマイナスになる。
+        // 条件を「tax > 0」にしていると赤伝の消費税行が出力されず、
+        // 売上は取り消されるのに仮受消費税だけが残ってしまう。
+        // その結果、消費税の申告額が実際より多くなる（納めすぎになる）。
+        // 0以外なら、プラス・マイナスどちらでも必ず出力する。
+        if (tax !== 0) rows.push([inv.issueDate, "", "", "仮受消費税", fmt(tax), `${name} ${inv.id} 消費税`]);
         // 入金
         const paid = Number(inv.paidAmount ?? inv.paid_amount ?? 0) || 0;
         if (paid > 0) {
@@ -9997,7 +10523,9 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         const amount = Number(inv.amount) || 0;
         const tax = Number(inv.tax) || 0;
         rows.push([inv.issueDate, "外注費", fmt(amount), "買掛金", fmt(inv.total), `${name} ${inv.id} 外注費計上`]);
-        if (tax > 0) rows.push([inv.issueDate, "仮払消費税", fmt(tax), "", "", `${name} ${inv.id} 消費税`]);
+        // 顧客請求書と同じ理由で、0以外なら必ず出力する
+        // （将来ドライバー側にも減額処理を入れた場合に備える）。
+        if (tax !== 0) rows.push([inv.issueDate, "仮払消費税", fmt(tax), "", "", `${name} ${inv.id} 消費税`]);
         if (inv.status === "paid") {
           rows.push([inv.paidDate || inv.issueDate, "買掛金", fmt(inv.total), "普通預金", fmt(inv.total), `${name} ${inv.id} 支払`]);
         }
@@ -13515,12 +14043,12 @@ const MENU = [
   { id:"recurring", icon:<Icon size={16}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></Icon>, label:"定期便管理", section:"案件管理" },
   { id:"orders",    icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></Icon>, label:"受注管理", section:"案件管理" },
   { id:"dispatch",  icon:<Icon size={16}><rect x="2" y="8" width="15" height="8"/><path d="M17 10h3l2 3v3h-5"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>, label:"配車管理", section:"案件管理" },
+  { id:"quality_mgmt", icon:<Icon size={16}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></Icon>, label:"実績入力", section:"案件管理" },
   { id:"approval",  icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績承認", section:"案件管理" },
   { id:"sales_mgmt", icon:<Icon size={16}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>, label:"売上管理", section:"経理" },
   { id:"invoices",  icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>, label:"請求管理", section:"経理" },
   { id:"bank",      icon:<Icon size={16}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>, label:"口座・入金", section:"経理" },
   { id:"payout", icon:<Icon size={16}><path d="M12 12v8"/><path d="M8 4l4 6 4-6"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="17" y2="16"/></Icon>, label:"報酬・振込", section:"経理" },
-  { id:"quality_mgmt", icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績・品質管理", section:"経理" },
   { id:"drivers",   icon:<Icon size={16}><circle cx="12" cy="8" r="4"/><path d="M4 21c1.6-3.8 4.7-5.5 8-5.5s6.4 1.7 8 5.5"/></Icon>, label:"ドライバー管理", section:"マスタ管理" },
   { id:"vehicles",  icon:<Icon size={16}><rect x="3" y="9" width="18" height="7" rx="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>, label:"車両管理", section:"マスタ管理" },
   { id:"customers", icon:<Icon size={16}><circle cx="9" cy="8" r="3"/><circle cx="16" cy="9" r="2.5"/><path d="M3 20c1.4-3 3.8-4.5 6-4.5"/><path d="M10 20c1.8-3 4.6-4.5 7-4.5"/></Icon>, label:"顧客管理", section:"マスタ管理" },
@@ -14032,16 +14560,34 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           // 記録に失敗しても業務は続行する（ログが取れないことを理由に
           // ログインできなくなる方が実害が大きい）。
           try {
-            await supabase.from("login_history").insert({
-              tenant_id: profile.tenant_id,
-              user_id: user.id,
-              user_email: user.email || "",
-              role: profile.role || "",
-              logged_in_at: new Date().toISOString(),
-              // どの端末からのアクセスかを記録する。
-              // 見慣れない端末からのログインに気づく手がかりになる。
-              user_agent: (typeof navigator !== "undefined" ? navigator.userAgent : "").slice(0, 300),
-            });
+            // 【重要】この処理は画面を再読み込みするたびに走る。
+            // そのまま記録すると、1人が1日に10〜30件の記録を作ってしまい、
+            // 「不審なアクセスを見つける」という本来の目的を果たせない
+            // （一覧が同じ人の再読み込みで埋まってしまう）。
+            // 同じ人の記録が直近30分以内にあれば、同じ作業の続きとみなして
+            // 記録しない。
+            const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+            const { data: recent } = await supabase
+              .from("login_history")
+              .select("id")
+              .eq("tenant_id", profile.tenant_id)
+              .eq("user_id", user.id)
+              .gte("logged_in_at", thirtyMinAgo)
+              .limit(1);
+            if (recent && recent.length > 0) {
+              // 直近に記録済み。何もしない。
+            } else {
+              await supabase.from("login_history").insert({
+                tenant_id: profile.tenant_id,
+                user_id: user.id,
+                user_email: user.email || "",
+                role: profile.role || "",
+                logged_in_at: new Date().toISOString(),
+                // どの端末からのアクセスかを記録する。
+                // 見慣れない端末からのログインに気づく手がかりになる。
+                user_agent: (typeof navigator !== "undefined" ? navigator.userAgent : "").slice(0, 300),
+              });
+            }
           } catch (e) {
             console.warn("ログイン履歴の記録をスキップしました:", e);
           }
@@ -14191,6 +14737,24 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
       return nextPage;
     });
   };
+
+  // 【重要】メニューの下の方（マスタ管理・管理者など）を選ぶには、
+  // サイドバーを下までスクロールする必要がある。
+  // しかし画面全体が一緒にスクロールしているため、そのまま切り替わると
+  // 右側の内容も下の方が表示され、「真っ白な画面」に見えてしまう。
+  // 画面が切り替わったら、必ず一番上から表示する。
+  //
+  // スクロールは「画面が実際に描画された後」に行う必要があるため、
+  // setPage の更新関数の中ではなく、page の変化を見て実行する。
+  // （更新関数は React によって複数回呼ばれることがあり、
+  //   副作用を書く場所として適切ではない）
+  useEffect(() => {
+    // モーダルが開いている間は背景のスクロールが固定されているため、
+    // ここでスクロールしても意味が無い（かつ、閉じた後の位置が乱れる）。
+    // モーダルを開いた状態での遷移は、モーダル側の後始末に任せる。
+    if (document.body.style.overflow === "hidden") return;
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }, [page]);
 
   useEffect(() => {
     if (!isLoaded || tenantId == null) return;
@@ -14435,6 +14999,11 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                   // （ユーザーが待たされ続けるのを防ぐ）。エラーは既に
                   // saveErrorBanner で表示されているはず。
                 }
+                // 【重要】保存の完了を待った後は、未保存の状態を解除する。
+                // これをしないと、ログアウトしてログイン画面に戻った後で
+                // タブを閉じようとしたときに「保存されていない変更があります」
+                // という的外れな警告が出てしまう。
+                hasUnsavedChangesRef.current = false;
                 onLogout();
               }}>ログアウト</RetroBtn>}
             </>
@@ -14742,8 +15311,17 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                         )) return;
                         // 変更履歴に「復元前の状態（削除済み）」を残す。
                         // これにより、後から「誰がいつ復元したか」を追跡できる。
+                        //
+                        // 【重要】変更履歴の種類は単数形（order / customer など）で
+                        // 統一されている。ここで複数形（orders / customers）のまま
+                        // 記録すると、履歴画面の絞り込みに引っかからず、
+                        // 種類も日本語で表示されない（英語のまま出てしまう）。
+                        const entityTypeMap = {
+                          customers: "customer", drivers: "driver",
+                          vehicles: "vehicle", orders: "order", invoices: "invoice",
+                        };
                         logHistoryEntry(setData, {
-                          entityType: key,
+                          entityType: entityTypeMap[key] || key,
                           entityId: item?.id,
                           entityLabel: `${labelMap[key]}：${item?.name || item?.id}（復元）`,
                           before: item,
@@ -14791,9 +15369,17 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               const recurring = (Array.isArray(d.recurringAssignments) ? d.recurringAssignments : []).filter(r => !r?.deleted);
 
               const issues = [];
-              const recNoDriver = records.filter(r => r?.driverId && !liveDrivers.has(r.driverId));
-              const recNoCustomer = records.filter(r => r?.customerId && !liveCustomers.has(r.customerId));
-              const recNoJobType = records.filter(r => r?.jobTypeId && !liveJobTypes.has(r.jobTypeId));
+              // 【重要】締め済みの月の実績は、既に報酬を支払い、請求も済んでいる。
+              // 「3年前に辞めたドライバーを整理のため削除した」といった
+              // 正当な運用でも、その人の過去の実績が毎回
+              // 「支払漏れの恐れ」として警告され続けてしまう。
+              // 対処が必要な警告が埋もれる原因になるため、
+              // 支払いが確定している月は対象から外す。
+              const isSettled = (r) => isMonthClosed(d?.companyInfo, String(r?.date || "").slice(0, 7));
+              const openRecords = records.filter((r) => !isSettled(r));
+              const recNoDriver = openRecords.filter(r => r?.driverId && !liveDrivers.has(r.driverId));
+              const recNoCustomer = openRecords.filter(r => r?.customerId && !liveCustomers.has(r.customerId));
+              const recNoJobType = openRecords.filter(r => r?.jobTypeId && !liveJobTypes.has(r.jobTypeId));
               const ordNoCustomer = orders.filter(o => o?.customerId && !liveCustomers.has(o.customerId));
               const ordNoDriver = orders.filter(o => o?.driverId && !liveDrivers.has(o.driverId));
               const recurNoDriver = recurring.filter(r => r?.driverId && !liveDrivers.has(r.driverId));
@@ -14808,7 +15394,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               if (recurNoCustomer.length) issues.push(`・定期便 ${recurNoCustomer.length}件：削除済みの顧客を参照`);
 
               if (issues.length === 0) {
-                window.alert("✅ 孤立データは見つかりませんでした。\n\nすべてのデータが、有効な顧客・ドライバー・案件を正しく参照しています。");
+                window.alert("✅ 孤立データは見つかりませんでした。\n\nすべてのデータが、有効な顧客・ドライバー・案件を正しく参照しています。\n\n※締め済みの月の実績は、既に支払い・請求が確定しているため対象外です。");
               } else {
                 const detail = recNoDriver.length > 0
                   ? `\n\n【支払漏れの恐れがある実績】\n${recNoDriver.slice(0, 5).map(r => `　${r.date}（売上 ${yen(r.salesAmount)} / 報酬 ${yen(r.driverAmount)}）`).join("\n")}${recNoDriver.length > 5 ? `\n　…他 ${recNoDriver.length - 5}件` : ""}`
@@ -14853,8 +15439,12 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                   }
                 }
 
-                // ③消費税が税率どおりか（赤伝・非課税など意図的なものは除く）
-                if (amount > 0 && tax > 0) {
+                // ③消費税が税率どおりか
+                // 【重要】以前は「amount > 0 && tax > 0」としていたため、
+                // 赤伝（マイナス金額）の税額が誤っていても検出されなかった。
+                // 赤伝は返金額を手入力で決めるため、むしろ誤りが起きやすい。
+                // 符号にかかわらず検証する（税額0＝非課税は意図的なので対象外）。
+                if (amount !== 0 && tax !== 0) {
                   const expected = calcTax(amount);
                   if (Math.abs(expected - tax) >= 1) {
                     problems.push(`・${inv.id}：消費税が ${yen(tax)} ですが、税抜${yen(amount)} なら ${yen(expected)} のはずです`);
@@ -15016,7 +15606,23 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                     )) return;
                     if (!window.confirm("本当に復元しますか？\n\nこの操作は取り消せません。")) return;
                     setData(b);
-                    window.alert("復元しました。画面を再読み込み（F5）して内容をご確認ください。");
+                    // 【重要】setData の直後はまだサーバーへの保存が完了していない。
+                    // その状態で「F5で再読み込みしてください」と案内すると、
+                    // ・未保存の警告が出て利用者が戸惑う
+                    // ・警告を無視して再読み込みすると、復元した内容が
+                    //   保存されないまま消えてしまう
+                    // という事故が起きる。保存の完了を待ってから案内する。
+                    window.alert("復元中です。保存が完了するまで、そのままお待ちください。");
+                    try {
+                      await saveChainRef.current;
+                      window.alert("復元と保存が完了しました。\n画面を再読み込み（F5）して内容をご確認ください。");
+                    } catch (saveErr) {
+                      window.alert(
+                        "復元した内容の保存に失敗しました。\n\n" +
+                        "通信状態を確認し、画面を再読み込みせずにもう一度お試しください。\n" +
+                        "（このまま閉じると、復元した内容が失われます）"
+                      );
+                    }
                   } catch (e) {
                     window.alert("バックアップの読み込みに失敗しました：" + (e?.message || e));
                   }
