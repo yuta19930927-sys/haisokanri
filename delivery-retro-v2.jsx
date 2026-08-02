@@ -1107,6 +1107,11 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
         title: `${isCharter ? "チャーター" : "ルート"}：${order?.customerName || "未設定"}`,
         subtitle: driver?.name || "未配車",
         deliveryType: order?.deliveryType || "route",
+        // 受注に入力された集荷・配達の時刻を、カレンダーにも渡す。
+        // これが無いと、配送予定だけ時刻順に並ばず、
+        // その日の動きが読み取れない。
+        startTime: order?.pickupTime || order?.deliveryTime || "",
+        endTime: order?.deliveryTime || "",
         color: isCharter ? "#008800" : "#0000cc",
         raw: order,
       };
@@ -1235,7 +1240,19 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
   const getItemsForDate = (ds, mode = calMode) => {
     const targetDate = normalizeDateString(ds);
     if (!targetDate) return [];
-    return mode === "delivery" ? buildDeliveryItems(targetDate) : buildBusinessItems(targetDate);
+    const items = mode === "delivery" ? buildDeliveryItems(targetDate) : buildBusinessItems(targetDate);
+    // 【重要】予定に時刻を入力できるようにしたのに、並び順に使っていなかった。
+    // 「17:00の配達」「08:00のチャーター」が入力した順に並ぶと、
+    // その日の流れが読み取れず、予定表として使えない。
+    // 時刻の早い順に並べる（時刻が入っていないものは後ろにまとめる）。
+    return [...items].sort((a, b) => {
+      const ta = String(a?.startTime || "");
+      const tb = String(b?.startTime || "");
+      if (!ta && !tb) return 0;
+      if (!ta) return 1;
+      if (!tb) return -1;
+      return ta.localeCompare(tb);
+    });
   };
 
   const selectedItems = selectedDate ? getItemsForDate(selectedDate) : [];
@@ -2016,7 +2033,7 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
         const customer = (customerRows || []).find((c) => {
           const cPayload = getEntityPayload(c);
-          return c.id === invCustomerId || cPayload.id === invCustomerId;
+          return c?.id === invCustomerId || cPayload?.id === invCustomerId;
         });
         const customerPayload = getEntityPayload(customer || {});
         const payerKana = customerPayload.payer_kana || "";
@@ -2665,7 +2682,10 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
   const invoices = allInvoicesForDashboard.filter(i => i?.type !== "driver_invoice");
   const driverInvoices = allInvoicesForDashboard.filter(i => i?.type === "driver_invoice");
   const orders = (Array.isArray(data?.orders) ? data.orders : []).filter(o => !o?.deleted);
-  const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
+  // 【重要】配列の中に null が混ざっていると、d.id の参照で画面全体が
+  // エラーになり「このページの表示中にエラーが発生しました」となる。
+  // 通信の途中で壊れたデータが入ることもあるため、必ず取り除く。
+  const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => d && !d.deleted);
   // 【重要】削除済みの支払データを除外しないと、削除しても経費として
   // 計上され続け、利益が実際より少なく見えてしまう。
   const payables = (Array.isArray(data?.payables) ? data.payables : []).filter(p => !p?.deleted);
@@ -2746,9 +2766,24 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
       date: todayStr,
       type: "delivery",
       title: `${o.customerName || "顧客未設定"}（${orderStatusLabel[o.status] || o.status || ""}）`,
+      // 受注に入力された集荷・配達の時刻を渡す。
+      // これが無いと「本日の予定」に時刻が出ず、
+      // 何時に何をするのかが分からない。
+      startTime: o?.pickupTime || o?.deliveryTime || "",
       color: o.status === "delivered" ? "#4caf50" : "#00a09a",
     }));
-  const todayEvents = [...todayOrderEvents, ...events.filter(e=>e?.date===todayStr)];
+  // 【重要】本日の予定は「これから何をするか」を見るためのもの。
+  // 入力した順に並んでいると一日の流れが読めないため、時刻順に並べる。
+  // 時刻が入っていないものは後ろにまとめる。
+  const todayEvents = [...todayOrderEvents, ...events.filter(e=>e?.date===todayStr)]
+    .sort((a, b) => {
+      const ta = String(a?.startTime || "");
+      const tb = String(b?.startTime || "");
+      if (!ta && !tb) return 0;
+      if (!ta) return 1;
+      if (!tb) return -1;
+      return ta.localeCompare(tb);
+    });
   const todayBanks = bankTransactions.filter(b=>b?.date===todayStr);
   const unmatchedCount = bankTransactions.filter(b=>b?.status==="unmatched").length;
   const overdueCount = invoices.filter(i=>i?.status==="overdue"||((i?.status==="unpaid"||i?.status==="partial")&&(i?.dueDate||"")<todayStr)).length;
@@ -2815,7 +2850,11 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
               style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 4px", borderBottom:"1px solid #f0f0f0", cursor: (ev.source === "order" && ev.sourceId) ? "pointer" : "default" }}
             >
               <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:ev.color }}/>
-              <span style={{ fontSize:"12px", flex:1 }}>{ev.title}</span>
+              <span style={{ fontSize:"12px", flex:1 }}>
+                {/* 時刻が入っていれば先頭に出す。現場では「何時からか」が最も重要 */}
+                {ev.startTime && <b style={{ marginRight:"6px", color:"#00695c" }}>{ev.startTime}</b>}
+                {ev.title}
+              </span>
               <span style={{ background:"#f5f7f8", color:"#666", fontSize:"10px", padding:"2px 6px", borderRadius:"999px" }}>{EVENT_TYPE_LABEL[ev.type]||ev.type}</span>
               {ev.source === "order" && ev.sourceId && <span style={{ color:"#00a09a", fontSize:"10px" }}>詳細 ›</span>}
             </div>
@@ -2950,7 +2989,11 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
               style={{ display:"flex", alignItems:"center", gap:"8px", padding:"8px 4px", borderBottom:"1px solid #f0f0f0", cursor: (ev.source === "order" && ev.sourceId) ? "pointer" : "default" }}
             >
               <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:ev.color }}/>
-              <span style={{ fontSize:"12px", flex:1 }}>{ev.title}</span>
+              <span style={{ fontSize:"12px", flex:1 }}>
+                {/* 時刻が入っていれば先頭に出す。現場では「何時からか」が最も重要 */}
+                {ev.startTime && <b style={{ marginRight:"6px", color:"#00695c" }}>{ev.startTime}</b>}
+                {ev.title}
+              </span>
               <span style={{ background:"#f5f7f8", color:"#666", fontSize:"10px", padding:"2px 6px", borderRadius:"999px" }}>{EVENT_TYPE_LABEL[ev.type]||ev.type}</span>
               {ev.source === "order" && ev.sourceId && <span style={{ color:"#00a09a", fontSize:"10px" }}>詳細 ›</span>}
             </div>
@@ -3319,9 +3362,9 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     const skipped = [];
     targets.forEach((o) => {
       const next = statusNext[o?.status];
-      if (!next) { skipped.push(`${o.id}（既に完了、またはキャンセル済み）`); return; }
-      const m = String(o.deliveryDate || "").slice(0, 7);
-      if (isMonthClosed(data?.companyInfo, m)) { skipped.push(`${o.id}（${m} は締め済み）`); return; }
+      if (!next) { skipped.push(`${o?.id}（既に完了、またはキャンセル済み）`); return; }
+      const m = String(o?.deliveryDate || "").slice(0, 7);
+      if (isMonthClosed(data?.companyInfo, m)) { skipped.push(`${o?.id}（${m} は締め済み）`); return; }
       movable.push({ order: o, next });
     });
 
@@ -3355,12 +3398,12 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
         let next = { ...d };
         movable.forEach(({ order, next: ns }) => {
           if (ns === "delivered") {
-            next = applyOrderDeliveredTransition(next, order.id);
+            next = applyOrderDeliveredTransition(next, order?.id);
           } else {
             next = {
               ...next,
               orders: (Array.isArray(next?.orders) ? next.orders : []).map((x) =>
-                x?.id === order.id ? { ...x, status: ns } : x
+                x?.id === order?.id ? { ...x, status: ns } : x
               ),
             };
           }
@@ -3404,7 +3447,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
 
     isBulkRunningRef.current = true;
     try {
-      const ids = new Set(targets.map((o) => o.id));
+      const ids = new Set(targets.map((o) => o?.id));
       const today = getTodayLocalStr();
       setData((d) => ({
         ...d,
@@ -3435,9 +3478,9 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     const cancelable = [];
     const skipped = [];
     targets.forEach((o) => {
-      if (o?.status === "cancelled") { skipped.push(`${o.id}（既にキャンセル済み）`); return; }
-      const m = String(o.deliveryDate || "").slice(0, 7);
-      if (isMonthClosed(data?.companyInfo, m)) { skipped.push(`${o.id}（${m} は締め済み）`); return; }
+      if (o?.status === "cancelled") { skipped.push(`${o?.id}（既にキャンセル済み）`); return; }
+      const m = String(o?.deliveryDate || "").slice(0, 7);
+      if (isMonthClosed(data?.companyInfo, m)) { skipped.push(`${o?.id}（${m} は締め済み）`); return; }
       cancelable.push(o);
     });
 
@@ -3460,7 +3503,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     const reason = window.prompt("キャンセルの理由を入力してください（記録として残ります）", "天候不良のため中止") || "キャンセル";
     isBulkRunningRef.current = true;
     try {
-      const ids = new Set(cancelable.map((o) => o.id));
+      const ids = new Set(cancelable.map((o) => o?.id));
       const today = getTodayLocalStr();
       setData((d) => ({
         ...d,
@@ -3489,6 +3532,31 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
       if (targetOrderForCheck && isMonthClosed(data?.companyInfo, (targetOrderForCheck.deliveryDate || "").slice(0, 7))) {
         window.alert(`配達日（${targetOrderForCheck.deliveryDate}）の月は既に締められています。この状態のまま配送完了にはできません。管理者に月の締めを解除してもらうか、配達日を修正してください。`);
         return;
+      }
+      // 【重要】予定日がまだ先の受注を完了にすると、実績は「今日」の日付で
+      // 作られる（早く終わった仕事を今日の売上として計上するため）。
+      // ただし、来週の予定を今日終えるのは自然でも、
+      // 2ヶ月先の予定を今日完了にするのは操作ミスの可能性が高い。
+      // 黙って日付を書き換えると、本来あるべき予定が消えてしまうため、
+      // 日が大きく離れている場合だけ確認する。
+      if (targetOrderForCheck?.deliveryDate) {
+        const today = getTodayLocalStr();
+        const planned = String(targetOrderForCheck.deliveryDate).slice(0, 10);
+        if (planned > today) {
+          const diffDays = Math.round(
+            (new Date(planned + "T00:00:00") - new Date(today + "T00:00:00")) / 86400000
+          );
+          if (diffDays > 7) {
+            const proceed = window.confirm(
+              `この受注の配達予定日は ${planned}（${diffDays}日先）です。\n\n` +
+              `今日（${today}）配送したものとして完了にすると、\n` +
+              `売上・報酬は今日の日付で記録され、配達日も今日に変わります。\n\n` +
+              `別の受注と間違えていないか、ご確認ください。\n\n` +
+              `このまま完了にしますか？`
+            );
+            if (!proceed) return;
+          }
+        }
       }
       // 【重要】配送完了にすると実績データが自動生成され、その時点の
       // ドライバー報酬額がそのまま確定してしまう。未設定のまま進めると
@@ -3660,9 +3728,9 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     }
     isSubmittingRef.current = true;
     try {
-      const c = customers.find(x=>x.id===form.customerId);
+      const c = customers.find(x=> x?.id===form.customerId);
       const o = { id: generateUniqueBusinessId(Array.isArray(data?.orders) ? data.orders : [], "ORD"), customerId:form.customerId, customerName:c?.name||"", deliveryType:form.deliveryType || "route", date:getTodayLocalStr(), deliveryDate:form.deliveryDate, pickupTime:form.pickupTime || "", deliveryTime:form.deliveryTime || "", from:form.from, to:form.to, cargo:form.cargo, weight:form.weight, status:"pending", driverId:null, vehicleId:null, amount:parseInt(form.amount)||0, driverPayAmount: form.driverPayAmount !== "" && form.driverPayAmount != null ? (parseInt(form.driverPayAmount, 10) || 0) : null, notes:form.notes };
-      setData(d=>({ ...d, orders:[o,...(Array.isArray(d?.orders) ? d.orders : [])], events:[...(Array.isArray(d?.events) ? d.events : []),{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
+      setData(d=>({ ...d, orders:[o,...(Array.isArray(d?.orders) ? d.orders : [])], events:[...(Array.isArray(d?.events) ? d.events : []),{id:`EV-O${Date.now()}`,date:form.deliveryDate,type:"delivery",title:`${o?.id} 配達予定 ${c?.name||""}`,color:"#0000cc"}] }));
       setShowModal(false); setForm({ customerId:"", deliveryType:"route", deliveryDate:"", pickupTime:"", deliveryTime:"", from:"", to:"", cargo:"", weight:"", amount:"", driverPayAmount:"", notes:"" });
     } finally {
       // モーダルを閉じた後、次に開いたときは新規の登録操作として扱えるよう
@@ -3915,7 +3983,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
         <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap:"6px 12px" }}>
           <Fl label="顧客"><SearchableSelect
             value={form.customerId}
-            options={customers.map(c=>({ id:c.id, name:c.name, kana:c.payer_kana || "" }))}
+            options={customers.filter(Boolean).map(c=>({ id:c?.id, name:c?.name, kana:c?.payer_kana || "" }))}
             placeholder="顧客名を入力して検索"
             onChange={e=>{
               // 【変更】以前は顧客に設定した単価を金額欄へ自動で入れていたが、
@@ -4272,7 +4340,19 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           {pending.map(o=>(
             <div key={o?.id||`pending-${Math.random()}`} onClick={()=>{ const nextSel = o?.id===sel?null:o?.id; setSel(nextSel); setAPay(nextSel ? (o?.driverPayAmount != null ? String(o.driverPayAmount) : "") : ""); }} style={{ border:cardBorder, background:sel===o?.id?"#e8f5f4":"#fff", padding:"8px 10px", marginBottom:"6px", cursor:"pointer", borderRadius:"6px" }}>
               <div style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>{o?.id||"—"} — {o?.customerName||""}</div>
-              <div style={{ fontSize:"12px", color:"#666" }}>{o?.cargo||""}{o?.weight ? `（${o.weight}）` : ""}配達日：{o?.deliveryDate||""}</div>
+              <div style={{ fontSize:"12px", color:"#666" }}>
+                {o?.cargo||""}{o?.weight ? `（${o.weight}）` : ""}配達日：{o?.deliveryDate||""}
+                {/* 【重要】配車担当が一番知りたいのは「何時の仕事か」。
+                    受注に集荷・配達の時刻を入力できるのに、この画面に出ていないため、
+                    いちいち受注管理を開いて確認する必要があった。 */}
+                {(o?.pickupTime || o?.deliveryTime) && (
+                  <b style={{ color:"#00695c", marginLeft:"6px" }}>
+                    {o?.pickupTime ? `集荷 ${o.pickupTime}` : ""}
+                    {o?.pickupTime && o?.deliveryTime ? " / " : ""}
+                    {o?.deliveryTime ? `配達 ${o.deliveryTime}` : ""}
+                  </b>
+                )}
+              </div>
             </div>
           ))}
         </Panel>
@@ -4281,7 +4361,7 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             value={aD}
             onChange={e=>setAD(e.target.value)}
             placeholder="ドライバー名を入力して検索"
-            options={drivers.filter(d=>d?.status==="available").map(d=>{
+            options={drivers.filter(d=>d && d.status==="available").map(d=>{
               // 契約終了日を過ぎているドライバーは、これまで配車選択肢から
               // 区別なく選べてしまい、契約満了に気づかず誤って新しい配送を
               // 割り当ててしまうリスクがあった。名前に警告を付けて
@@ -4321,6 +4401,15 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               <div key={o?.id||`scheduled-${Math.random()}`}>
                 <div onClick={()=>openReassign(o)} style={{ border:cardBorder, background:reassignId===o?.id?"#e8f5f4":"#fff", padding:"8px 10px", marginBottom:"6px", borderRadius:"6px", cursor:"pointer" }}>
                   <div style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>{o?.id||"—"} — {o?.customerName||""}</div>
+                  {/* 配車済みでも「何時の仕事か」は常に必要。
+                      当日の段取りを組み直す際に、いちいち受注を開かずに済むようにする。 */}
+                  {(o?.pickupTime || o?.deliveryTime) && (
+                    <div style={{ fontSize:"11px", color:"#00695c", fontWeight:700, marginTop:"2px" }}>
+                      {o?.pickupTime ? `集荷 ${o.pickupTime}` : ""}
+                      {o?.pickupTime && o?.deliveryTime ? " / " : ""}
+                      {o?.deliveryTime ? `配達 ${o.deliveryTime}` : ""}
+                    </div>
+                  )}
                   <div style={{ display:"flex", gap:"6px", marginTop:"3px" }}>
                     {dr&&<span style={{ background:"#e3f2fd", color:"#1565c0", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{userIcon}{dr?.name||""}</span>}
                     {/* ドライバーIDは設定されているのに該当するドライバーが見つからない
@@ -4712,11 +4801,14 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 };
 
 const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
-  const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
+  // 【重要】配列の中に null が混ざっていると、d.id の参照で画面全体が
+  // エラーになり「このページの表示中にエラーが発生しました」となる。
+  // 通信の途中で壊れたデータが入ることもあるため、必ず取り除く。
+  const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => d && !d.deleted);
   // 【重要】削除済みを除外しないと、削除した記録まで日数・金額に
   // 数えられてしまう（1日しか入力していないのに2日分と表示される原因）。
   const qualityRecords = (Array.isArray(data?.qualityRecords) ? data.qualityRecords : []).filter(r => !r?.deleted);
-  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+  const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
   const now = new Date();
   const [selectedMonth, setSelectedMonth] = useState(() =>
     `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`
@@ -4728,10 +4820,13 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [editingField, setEditingField] = useState(null);
   const [cellValue, setCellValue] = useState("");
   const suppressBlurSaveRef = useRef(false);
+  // 請求済みの警告は、1回の入力作業で何度も出ると邪魔になるため
+  // 一度だけ出す（画面を開き直せばまた出る）。
+  const invoicedWarnShownRef = useRef(false);
 
   const dekaStyles = ["100以下","140","160","180","200","220","240","260"];
-  const selectedDriver = drivers.find(d => d.id === selectedDriverId) || null;
-  const selectedJobType = jobTypes.find(j => j.id === selectedJobTypeId) || null;
+  const selectedDriver = drivers.find(d => d?.id === selectedDriverId) || null;
+  const selectedJobType = jobTypes.find(j => j?.id === selectedJobTypeId) || null;
 
   const getDaysInMonth = (monthStr) => {
     const [y, m] = monthStr.split("-").map(Number);
@@ -4739,10 +4834,38 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   };
 
   const getRecord = (driverId, date, jobTypeId) =>
-    qualityRecords.find(r => r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId) || null;
+    qualityRecords.find(r => r?.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId) || null;
 
   const saveCell = (driverId, date, jobTypeId, field, value, customerId, salesAmount, driverAmount, opts) => {
-    const existingBefore = qualityRecords.find(r => r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId);
+    // 【重要】他の入力画面には「締め済み」「請求済み」の保護があるのに、
+    // この実績入力だけ素通りだった。締めた後や請求後に数字を書き換えると、
+    // 既に支払った報酬・送付済みの請求書と帳簿が食い違ってしまう。
+    const month = String(date || "").slice(0, 7);
+    if (isMonthClosed(data?.companyInfo, month)) {
+      window.alert(
+        `${month} は既に締められています。\n\n` +
+        `締め済みの月の実績を変更すると、支払い済みの報酬や\n` +
+        `発行済みの請求書と食い違いが生じるため、この操作はできません。\n\n` +
+        `どうしても必要な場合は、管理者に月の締めを解除してもらってください。`
+      );
+      return;
+    }
+
+    const existingBefore = qualityRecords.find(r => r?.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId);
+    // 請求書に含まれている実績は、変えると請求額と食い違う。
+    // 入力そのものは止めないが、必ず気づけるように一度だけ知らせる。
+    if (existingBefore?.invoicedInvoiceId && !invoicedWarnShownRef.current) {
+      const inv = (Array.isArray(data?.invoices) ? data.invoices : [])
+        .find((i) => i?.id === existingBefore.invoicedInvoiceId && !i?.deleted);
+      if (inv) {
+        invoicedWarnShownRef.current = true;
+        window.alert(
+          `⚠️ この日の実績は請求書 ${inv.id}（${yen(inv.total)}）に含まれています。\n\n` +
+          `数字を変えても、発行済みの請求書は自動では直りません。\n` +
+          `請求額を変える場合は、請求管理から「赤伝を発行」して訂正してください。`
+        );
+      }
+    }
     if (existingBefore) {
       logHistoryEntry(setData, {
         entityType: "quality_record",
@@ -4754,10 +4877,9 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     }
     setData(d => {
       const current = Array.isArray(d?.qualityRecords) ? d.qualityRecords : [];
-      const existing = current.find(r => r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId);
+      const existing = current.find(r => r?.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId);
       if (existing) {
-        return { ...d, qualityRecords: current.map(r =>
-          r.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId
+        return { ...d, qualityRecords: current.map(r => r?.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId
             ? {
                 ...r,
                 [field]: value,
@@ -4797,14 +4919,14 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
   const getDriverJobTypes = (driver) => {
     const routes = driver?.routes || [];
-    return routes.map(r => jobTypes.find(j => j.id === r.jobTypeId)).filter(Boolean);
+    return routes.map(r => jobTypes.find(j => j?.id === r.jobTypeId)).filter(Boolean);
   };
 
   const monthlySummary = drivers.map(driver => {
-    const recs = qualityRecords.filter(r => r.driverId === driver.id && r.date?.startsWith(selectedMonth));
+    const recs = qualityRecords.filter(r => r?.driverId === driver?.id && r?.date?.startsWith(selectedMonth));
     const salesTotal = recs.reduce((s, r) => {
-      const jt = jobTypes.find(j => j.id === r.jobTypeId);
-      const route = (driver.routes||[]).find(ro => ro.jobTypeId === r.jobTypeId);
+      const jt = jobTypes.find(j => j?.id === r.jobTypeId);
+      const route = (driver.routes||[]).find(ro => ro?.jobTypeId === r.jobTypeId);
       if (!jt || !route) return s;
       if (jt.name === "デカ宅") {
         const dekaRates = route.dekaRates || [];
@@ -4818,8 +4940,8 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       return s + (Number(r["配完個数"]||0)) * (Number(route.unitPrice)||0);
     }, 0);
     const driverTotal = recs.reduce((s, r) => {
-      const jt = jobTypes.find(j => j.id === r.jobTypeId);
-      const route = (driver.routes||[]).find(ro => ro.jobTypeId === r.jobTypeId);
+      const jt = jobTypes.find(j => j?.id === r.jobTypeId);
+      const route = (driver.routes||[]).find(ro => ro?.jobTypeId === r.jobTypeId);
       if (!jt || !route) return s;
       if (jt.name === "デカ宅") {
         const dekaRates = route.dekaRates || [];
@@ -4839,11 +4961,11 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const backIcon = <Icon size={14}><polyline points="15,18 9,12 15,6"/></Icon>;
 
   const renderChibiTable = () => {
-    const route = (selectedDriver?.routes||[]).find(r => r.jobTypeId === selectedJobTypeId);
+    const route = (selectedDriver?.routes||[]).find(r => r?.jobTypeId === selectedJobTypeId);
     const unitPrice = Number(route?.unitPrice||0);
     const driverUnitPrice = Number(route?.driverUnitPrice||0);
     const fields = ["持出個数","配完個数","誤配","クレーム","時間帯不履行","備考"];
-    const recs = qualityRecords.filter(r => r.driverId === selectedDriverId && r.jobTypeId === selectedJobTypeId && r.date?.startsWith(selectedMonth));
+    const recs = qualityRecords.filter(r => r?.driverId === selectedDriverId && r.jobTypeId === selectedJobTypeId && r?.date?.startsWith(selectedMonth));
     const runChibiSave = (dateStr, f, val, skipClear) => {
       saveCell(
         selectedDriverId, dateStr, selectedJobTypeId, f, val,
@@ -4897,7 +5019,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       const mergedThis = { ...(rec || {}), [f]: cellValue };
       const nextRec = nextDay === day
         ? mergedThis
-        : (qualityRecords.find(r => r.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
+        : (qualityRecords.find(r => r?.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
       suppressBlurSaveRef.current = true;
       runChibiSave(dateStr, f, cellValue, true);
       setEditingCell(`${selectedDriverId}-${nextDateStr}-${selectedJobTypeId}`);
@@ -4977,9 +5099,9 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   };
 
   const renderDekaTable = () => {
-    const route = (selectedDriver?.routes||[]).find(r => r.jobTypeId === selectedJobTypeId);
+    const route = (selectedDriver?.routes||[]).find(r => r?.jobTypeId === selectedJobTypeId);
     const dekaRates = route?.dekaRates || dekaStyles.map(s=>({size:s,unitPrice:"",driverUnitPrice:""}));
-    const recs = qualityRecords.filter(r => r.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r.date?.startsWith(selectedMonth));
+    const recs = qualityRecords.filter(r => r?.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r?.date?.startsWith(selectedMonth));
     const allFields = ["持出個数", ...dekaStyles.map(s=>`deka_${s}`), "誤配","クレーム","備考"];
     const dekaSaveExtras = (recRow, fKey, val) => {
       const totalSales = dekaStyles.reduce((s, size) => {
@@ -5042,7 +5164,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       const mergedThis = { ...(rec || {}), [f]: cellValue };
       const nextRec = nextDay === day
         ? mergedThis
-        : (qualityRecords.find(r => r.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
+        : (qualityRecords.find(r => r?.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
       suppressBlurSaveRef.current = true;
       runDekaSave(dateStr, f, cellValue, rec, true);
       setEditingCell(`${selectedDriverId}-${nextDateStr}-${selectedJobTypeId}`);
@@ -5143,7 +5265,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
   const renderRouteTable = () => {
     const fields = ["salesAmount","driverAmount","誤配","クレーム","備考"];
-    const recs = qualityRecords.filter(r => r.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r.date?.startsWith(selectedMonth));
+    const recs = qualityRecords.filter(r => r?.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r?.date?.startsWith(selectedMonth));
     const totalSales = recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0);
     const totalDriver = recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0);
     const runRouteSave = (dateStr, fKey, val, skipClear) => {
@@ -5193,7 +5315,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       const mergedThis = { ...(rec || {}), [f]: cellValue };
       const nextRec = nextDay === day
         ? mergedThis
-        : (qualityRecords.find(r => r.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
+        : (qualityRecords.find(r => r?.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
       suppressBlurSaveRef.current = true;
       runRouteSave(dateStr, f, cellValue, true);
       setEditingCell(`${selectedDriverId}-${nextDateStr}-${selectedJobTypeId}`);
@@ -5268,7 +5390,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
   const renderCharterTable = () => {
     const fields = ["count","salesAmount","driverAmount","備考"];
-    const recs = qualityRecords.filter(r => r.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r.date?.startsWith(selectedMonth));
+    const recs = qualityRecords.filter(r => r?.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r?.date?.startsWith(selectedMonth));
     const totalSales = recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0);
     const totalDriver = recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0);
     const totalCount = recs.reduce((s,r)=>s+(Number(r.count)||0),0);
@@ -5319,7 +5441,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       const mergedThis = { ...(rec || {}), [f]: cellValue };
       const nextRec = nextDay === day
         ? mergedThis
-        : (qualityRecords.find(r => r.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
+        : (qualityRecords.find(r => r?.driverId === selectedDriverId && r.date === nextDateStr && r.jobTypeId === selectedJobTypeId) || null);
       suppressBlurSaveRef.current = true;
       runCharterSave(dateStr, f, cellValue, true);
       setEditingCell(`${selectedDriverId}-${nextDateStr}-${selectedJobTypeId}`);
@@ -5414,7 +5536,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               <div style={{ fontSize:"13px", color:"#666" }}>ドライバーを選択してください</div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(200px, 1fr))", gap:"8px" }}>
                 {drivers.map(driver => {
-                  const recs = qualityRecords.filter(r => r.driverId === driver.id && r.date?.startsWith(selectedMonth));
+                  const recs = qualityRecords.filter(r => r?.driverId === driver.id && r.date?.startsWith(selectedMonth));
                   const salesTotal = monthlySummary.find(s=>s.driver.id===driver.id)?.salesTotal || 0;
                   return (
                     <div key={driver.id} onClick={() => setSelectedDriverId(driver.id)}
@@ -5439,7 +5561,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(160px, 1fr))", gap:"8px" }}>
                 {getDriverJobTypes(selectedDriver).map(jt => {
-                  const recs = qualityRecords.filter(r => r.driverId===selectedDriverId && r.jobTypeId===jt.id && r.date?.startsWith(selectedMonth));
+                  const recs = qualityRecords.filter(r => r?.driverId===selectedDriverId && r.jobTypeId===jt.id && r.date?.startsWith(selectedMonth));
                   return (
                     <div key={jt.id} onClick={() => setSelectedJobTypeId(jt.id)}
                       style={{ border:"1px solid #e8e8e8", borderRadius:"8px", padding:"14px", background:"#fff", cursor:"pointer", borderLeft:"4px solid #007a74" }}
@@ -5556,11 +5678,17 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const confirmations = Array.isArray(data?.recurringConfirmations) ? data.recurringConfirmations : [];
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
-  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+  const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
   const dailyRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(r => !r?.deleted);
 
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  // 【重要】車建て（チャーター）の定期便は、毎日走っていても
+  // その日の仕事量によって金額が変わることがある。
+  // 稼働確認の時点で「今日はいくらだった」を直せないと、
+  // 後から売上管理を探して1件ずつ直すことになり現実的でない。
+  const [amountEditTarget, setAmountEditTarget] = useState(null);
+  const [amountEditForm, setAmountEditForm] = useState({ salesAmount: "", driverAmount: "" });
   const emptyForm = { customerId:"", driverId:"", vehicleId:"", jobTypeId:"", salesAmount:"", driverPayAmount:"", daysOfWeek:[1,2,3,4,5], note:"", active:true };
   const [form, setForm] = useState(emptyForm);
 
@@ -5697,6 +5825,26 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       window.alert(`${date.slice(0, 7)} は既に締められた月のため、ここから取り消すことはできません。`);
       return;
     }
+    // 【重要】取り消すと、その日の実績が削除される。
+    // その実績が請求書に含まれていると、請求書は残ったまま
+    // 根拠となる売上だけが消え、帳簿と請求書が食い違う。
+    // 実績の削除画面には同じ保護を入れたが、こちらからは素通りだった。
+    const linkedRecord = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+      .find(dr => !dr?.deleted && dr?.recurringId === r?.id && dr?.date === date);
+    if (linkedRecord?.invoicedInvoiceId) {
+      const inv = (Array.isArray(data?.invoices) ? data.invoices : [])
+        .find((i) => i?.id === linkedRecord.invoicedInvoiceId && !i?.deleted);
+      if (inv) {
+        window.alert(
+          `${date} の実績は、請求書 ${inv.id}（${yen(inv.total)}）に含まれています。\n\n` +
+          `取り消すと実績が削除され、請求書だけが残って\n` +
+          `帳簿と食い違ってしまいます。\n\n` +
+          `請求を取り消す場合は、先に請求書を削除してください。\n` +
+          `金額だけ直す場合は、請求管理から「赤伝を発行」してください。`
+        );
+        return;
+      }
+    }
     if (!window.confirm(`${date} の確認を取り消しますか？（記録されていた実績があれば削除されます）`)) return;
     setData(d => ({
       ...d,
@@ -5784,7 +5932,20 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                     </div>
                   </div>
                   {status === "worked" ? (
-                    <RetroBtn small onClick={()=>undoStatus(r, today)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>✓ 稼働あり（取消）</RetroBtn>
+                    <div style={{ display:"flex", gap:"6px" }}>
+                      {/* 【重要】車建ての定期便は、毎日走っていても仕事量で金額が変わる。
+                          その場で直せないと、後から売上管理を探して1件ずつ直すことになる。 */}
+                      <RetroBtn small onClick={()=>{
+                        const rec = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+                          .find(dr => !dr?.deleted && dr?.recurringId === r?.id && dr?.date === today);
+                        setAmountEditTarget({ r, date: today, recordId: rec?.id || null });
+                        setAmountEditForm({
+                          salesAmount: String(Number(rec?.salesAmount ?? r?.salesAmount) || 0),
+                          driverAmount: String(Number(rec?.driverAmount ?? r?.driverPayAmount) || 0),
+                        });
+                      }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>金額修正</RetroBtn>
+                      <RetroBtn small onClick={()=>undoStatus(r, today)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>✓ 稼働あり（取消）</RetroBtn>
+                    </div>
                   ) : status === "no_work" ? (
                     <RetroBtn small onClick={()=>undoStatus(r, today)} style={{ background:"#fff", color:"#999", borderColor:"#ccc" }}>✓ 稼働なし（取消）</RetroBtn>
                   ) : (
@@ -5829,6 +5990,75 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           </div>
         )}
       </Panel>
+
+      {/* その日の金額を直すフォーム。実績データも一緒に直すため、
+          売上管理・報酬計算にもそのまま反映される。 */}
+      {amountEditTarget && (
+        <Modal title="この日の金額を修正" onClose={()=>setAmountEditTarget(null)} width={420}>
+          <div style={{ fontSize:"12px", color:"#666", marginBottom:"10px", lineHeight:1.7 }}>
+            <b>{amountEditTarget.date}</b>　{customerName(amountEditTarget.r?.customerId)}<br/>
+            {driverName(amountEditTarget.r?.driverId)}<br/><br/>
+            その日の仕事量に応じて、実際の金額に直してください。
+          </div>
+          <Fl label="売上（円）">
+            <RetroInput type="number" min="0" value={amountEditForm.salesAmount}
+              onChange={(e)=>setAmountEditForm(v=>({ ...v, salesAmount:e.target.value }))}/>
+          </Fl>
+          <Fl label="ドライバー報酬（円）">
+            <RetroInput type="number" min="0" value={amountEditForm.driverAmount}
+              onChange={(e)=>setAmountEditForm(v=>({ ...v, driverAmount:e.target.value }))}/>
+          </Fl>
+          {(() => {
+            const s = Number(amountEditForm.salesAmount) || 0;
+            const dp = Number(amountEditForm.driverAmount) || 0;
+            return (
+              <div style={{ background:"#f5f5f5", borderRadius:"6px", padding:"10px", fontSize:"12px", marginTop:"4px" }}>
+                <div style={{ display:"flex", justifyContent:"space-between" }}>
+                  <span>会社の取り分</span>
+                  <b style={{ color: s - dp < 0 ? "#c62828" : "#00695c" }}>¥{(s - dp).toLocaleString()}</b>
+                </div>
+                {s - dp < 0 && (
+                  <div style={{ color:"#c62828", fontSize:"11px", marginTop:"4px" }}>
+                    ⚠️ 報酬が売上を上回っています。金額をご確認ください。
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"14px" }}>
+            <RetroBtn onClick={()=>setAmountEditTarget(null)}>キャンセル</RetroBtn>
+            <RetroBtn onClick={()=>{
+              const sales = Number(amountEditForm.salesAmount) || 0;
+              const pay = Number(amountEditForm.driverAmount) || 0;
+              const { r, date } = amountEditTarget;
+              // 【重要】締め済みの月は、既に報酬を支払い、請求書も発行済み。
+              // ここで金額を変えると、支払った額・請求した額と食い違ってしまう。
+              // 他の金額変更と同じく、締め済みの月は保護する。
+              const m = String(date || "").slice(0, 7);
+              if (isMonthClosed(data?.companyInfo, m)) {
+                window.alert(
+                  `${m} は既に締められています。\n\n` +
+                  `締め済みの月の金額を変更すると、支払い済みの報酬や\n` +
+                  `発行済みの請求書と食い違いが生じるため、この操作はできません。\n\n` +
+                  `どうしても必要な場合は、管理者に月の締めを解除してもらってください。`
+                );
+                return;
+              }
+              setData(d => ({
+                ...d,
+                // その日の実績を直す。これにより売上管理・報酬計算・請求書に反映される。
+                dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map(dr =>
+                  (!dr?.deleted && dr?.recurringId === r?.id && dr?.date === date)
+                    ? { ...dr, salesAmount: sales, driverAmount: pay }
+                    : dr
+                ),
+              }));
+              setAmountEditTarget(null);
+              window.alert(`${date} の金額を修正しました。\n売上 ¥${sales.toLocaleString()} / 報酬 ¥${pay.toLocaleString()}`);
+            }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>保存</RetroBtn>
+          </div>
+        </Modal>
+      )}
 
       {showModal && (
         <Modal title={editingId ? "定期便編集" : "定期便登録"} onClose={()=>setShowModal(false)} width={480}>
@@ -7021,7 +7251,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
    * 振込データを出したその場で、まとめて支払済みにできるようにする。
    */
   const markDriverInvoicesPaid = (targetPayouts) => {
-    const driverIds = targetPayouts.map((p) => p.driverId);
+    const driverIds = targetPayouts.map((p) => p?.driverId);
     const targetInvoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(
       (inv) => inv?.type === "driver_invoice" && inv?.payoutMonth === month
         && driverIds.includes(inv?.driverId) && inv?.status !== "paid" && !inv?.deleted
@@ -7035,11 +7265,11 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
     );
     if (!proceed) return;
     const today = getTodayLocalStr();
-    const ids = new Set(targetInvoices.map((inv) => inv.id));
+    const ids = new Set(targetInvoices.map((inv) => inv?.id));
     // 振込を実行したドライバーは、その口座で実際に支払った＝確認済みとみなす。
     // これにより、次回以降は口座変更の警告が出なくなる
     // （逆に、また口座が変われば必ず警告が出る）。
-    const paidDriverIds = new Set(targetPayouts.map((p) => p.driverId));
+    const paidDriverIds = new Set(targetPayouts.map((p) => p?.driverId));
     setData((d) => ({
       ...d,
       invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
@@ -7148,7 +7378,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
     markDriverInvoicesPaid(target);
   };
 
-  const detailPayout = payouts.find((p) => p.driverId === detailDriverId) || null;
+  const detailPayout = payouts.find((p) => p?.driverId === detailDriverId) || null;
   const detailDriver = drivers.find((d) => d?.id === detailDriverId) || null;
 
   const yenIcon = <Icon size={14}><path d="M12 12v8M8 4l4 6 4-6M7 12h10M7 16h10"/></Icon>;
@@ -7403,9 +7633,23 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         <Stat label="対象ドライバー" value={`${activePayouts.length}名`} />
         <Stat label="売上合計" value={yen(totals.sales)} color="#007a74" />
         <Stat label="支給合計" value={yen(totals.gross)} color="#e65100" />
-        <Stat label="控除合計" value={yen(totals.deduction)} color="#7b1fa2" />
-        <Stat label="ロイヤリティ収入" value={yen(totals.royalty)} color="#7b1fa2" />
+        <Stat label="控除合計" value={`− ${yen(totals.deduction)}`} color="#7b1fa2" />
         <Stat label="振込合計" value={yen(totals.net)} color="#c62828" />
+        {/* 【重要】「控除合計」と「ロイヤリティ収入」が同じ額で並んでいたため、
+            二重に引かれているように見えてしまっていた。
+            実際は「ドライバーから引いた額」＝「会社が受け取る額」で同じお金を
+            引く側・受け取る側から見ているだけ。
+            計算式を添えて、何がどう引かれているのかを一目で分かるようにする。 */}
+        <Stat label="うちロイヤリティ" value={yen(totals.royalty)} color="#7b1fa2" />
+      </div>
+      {/* 何がどう計算されているのかを、その場で確認できるようにする */}
+      <div style={{ fontSize:"11px", color:"#666", background:"#f5f5f5", borderRadius:"6px", padding:"8px 12px", marginTop:"-6px", lineHeight:1.8 }}>
+        <b>振込額の計算</b>：支給合計 {yen(totals.gross)} − 控除合計 {yen(totals.deduction)} ＝ <b style={{ color:"#c62828" }}>{yen(totals.net)}</b>
+        <br/>
+        <span style={{ color:"#888" }}>
+          「うちロイヤリティ」は控除合計の内訳です（控除の中からロイヤリティ分だけを取り出したもの）。
+          ドライバーから引いた分が、そのまま会社の収入になります。二重には引かれていません。
+        </span>
       </div>
 
       <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", overflow:"auto" }}>
@@ -8013,8 +8257,13 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     // 実際に動かしている案件の数と合っていなかった。
     const projectCount = (() => {
       const keys = new Set();
+      // 【重要】この画面（経営分析）では monthRecords が定義されていないため、
+      // 参照すると画面全体がエラーで表示できなくなっていた。
+      // この画面で使える dailyRecords から、その月の承認済み実績を絞り込む。
+      const monthly = (Array.isArray(dailyRecords) ? dailyRecords : [])
+        .filter((r) => r && !r.deleted && String(r.date || "").startsWith(month) && isApprovedRecord(r));
       // 継続的な仕事：顧客×仕事種別ごとに1件
-      monthRecords.forEach((r) => {
+      monthly.forEach((r) => {
         if (!r?.customerId) return;
         // 単発受注から作られた実績は、下で受注として数えるため除く
         if (r?.orderId) return;
@@ -8027,7 +8276,7 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           keys.add(`${r.customerId}__${r.jobTypeId || "none"}`);
         });
       // 単発の受注：1件ずつ数える
-      const spotOrders = monthRecords.filter((r) => r?.orderId).length;
+      const spotOrders = monthly.filter((r) => r?.orderId).length;
       return keys.size + spotOrders;
     })();
 
@@ -8547,7 +8796,7 @@ const buildSystemAlerts = (data, alertDays = 30) => {
     if (list.length < 2) return;
     const names = list.map((d) => d?.name || d?.id).join("・");
     alerts.push({
-      id: `dup-bank-${list.map((d) => d.id).join("-")}`,
+      id: `dup-bank-${list.map((d) => d?.id).join("-")}`,
       level: "danger", category: "要確認", page: "drivers",
       message: `【要確認】${names} の ${list.length}名 に、同じ振込先口座が登録されています（${list[0]?.bankName || ""} ${list[0]?.accountNumber || ""}）。架空のドライバー登録でないか、必ずご確認ください。`,
     });
@@ -8574,7 +8823,7 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   if (notCompletedOrders.length > 0) {
     alerts.push({
       id:"not-completed-orders", level:"warn", category:"完了操作もれ", page:"orders",
-      message:`配達日を過ぎたのに「配送完了」になっていない受注が ${notCompletedOrders.length}件 あります（例：${notCompletedOrders.slice(0,3).map(o=>o.id).join("、")}）。受注管理で「次へ」を押すと、売上・報酬に反映されます。`,
+      message:`配達日を過ぎたのに「配送完了」になっていない受注が ${notCompletedOrders.length}件 あります（例：${notCompletedOrders.slice(0,3).map(o=> o?.id).join("、")}）。受注管理で「次へ」を押すと、売上・報酬に反映されます。`,
     });
   }
 
@@ -8585,7 +8834,7 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   if (missingRecordOrders.length > 0) {
     alerts.push({
       id:"missing-records", level:"warn", category:"未入力実績", page:"sales_mgmt",
-      message:`配送完了なのに実績データが無い受注が ${missingRecordOrders.length}件 あります（例：${missingRecordOrders.slice(0,3).map(o=>o.id).join("、")}）。売上・報酬に反映されないため、売上管理で実績を追加してください。`,
+      message:`配送完了なのに実績データが無い受注が ${missingRecordOrders.length}件 あります（例：${missingRecordOrders.slice(0,3).map(o=> o?.id).join("、")}）。売上・報酬に反映されないため、売上管理で実績を追加してください。`,
     });
   }
 
@@ -8596,7 +8845,7 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   // 記録され続けてしまう。直近30日以内に実績があるのに、単価
   // （ドライバー報酬額）が0円のままの案件を検出する。
   const recentJobTypeIds = new Set(
-    records.filter(r => r?.date && r.date >= addDays(todayStr, -30) && r?.jobTypeId).map(r => r.jobTypeId)
+    records.filter(r => r?.date && r.date >= addDays(todayStr, -30) && r?.jobTypeId).map(r => r?.jobTypeId)
   );
   const unpricedJobTypes = jobTypes.filter(jt => recentJobTypeIds.has(jt?.id) && n(jt?.driverUnitPrice) === 0);
   if (unpricedJobTypes.length > 0) {
@@ -8625,7 +8874,7 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   if (unsetRoyalty.length > 0) {
     alerts.push({
       id:"unset-royalty", level:"warn", category:"報酬確定漏れ", page:"drivers",
-      message:`先月（${lastMonth}）稼働した業務委託ドライバーのうち ${unsetRoyalty.length}名 はロイヤリティ設定が未確認です（${unsetRoyalty.slice(0,3).map(d=>d.name).join("、")}）。控除なしでよければ「なし」を選択してください。`,
+      message:`先月（${lastMonth}）稼働した業務委託ドライバーのうち ${unsetRoyalty.length}名 はロイヤリティ設定が未確認です（${unsetRoyalty.slice(0,3).map(d=> d?.name).join("、")}）。控除なしでよければ「なし」を選択してください。`,
     });
   }
 
@@ -8874,11 +9123,11 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
 
   const toggle = (id) => setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   const toggleAll = () => {
-    const ids = shown.map(r => r.id);
+    const ids = shown.map(r => r?.id);
     setSelected(prev => (ids.every(id => prev.includes(id)) ? prev.filter(id => !ids.includes(id)) : [...new Set([...prev, ...ids])]));
   };
 
-  const detail = pending.find(r => r.id === detailId) || null;
+  const detail = pending.find(r => r?.id === detailId) || null;
 
   const Stat = ({ label, value, color, sub }) => (
     <div style={{ border: cardBorder, borderRadius: "6px", background: "#fff", padding: "10px 12px", flex: 1, minWidth: "130px" }}>
@@ -9159,7 +9408,7 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px" }}>
               <RetroBtn onClick={() => setConfirmBulk(null)}>キャンセル</RetroBtn>
               <RetroBtn
-                onClick={() => applyDecision(targets.map(r => r.id), APPROVAL.APPROVED)}
+                onClick={() => applyDecision(targets.map(r => r?.id), APPROVAL.APPROVED)}
                 style={{ background: "#00a09a", borderColor: "#00a09a", color: "#fff" }}
               >
                 {targets.length}件を承認する
@@ -9563,7 +9812,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
   const qualityRecords = (Array.isArray(data?.qualityRecords) ? data.qualityRecords : []).filter(r => !r?.deleted);
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
-  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+  const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
   const dailyRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(r => !r?.deleted);
   // 【重要】削除済みの支払データを除外しないと、削除しても経費として
   // 計上され続け、利益が実際より少なく見えてしまう。
@@ -9649,6 +9898,20 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
     if (isMonthClosed(data?.companyInfo, month)) {
       window.alert(`${month} は締め処理が済んでいるため、実績を編集できません。`);
       return;
+    }
+    // 【重要】請求書に含まれている実績の金額を変えると、
+    // 既に取引先へ送った請求書と、こちらの帳簿が食い違ってしまう。
+    // 開くこと自体は止めないが、必ず気づけるように知らせる。
+    if (rec?.invoicedInvoiceId) {
+      const inv = (Array.isArray(data?.invoices) ? data.invoices : [])
+        .find((i) => i?.id === rec.invoicedInvoiceId && !i?.deleted);
+      if (inv) {
+        window.alert(
+          `⚠️ この実績は請求書 ${inv.id}（${yen(inv.total)}）に含まれています。\n\n` +
+          `金額を変えても、発行済みの請求書は自動では直りません。\n` +
+          `請求額を変える場合は、請求管理から「赤伝を発行」して訂正してください。`
+        );
+      }
     }
     if (isApprovedRecord(rec) && rec?.source === "hakolog") {
       window.alert(
@@ -9784,6 +10047,24 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
       window.alert(`${month} は締め処理が済んでいるため、削除できません。`);
       return;
     }
+    // 【重要】請求書に含まれている実績を消すと、
+    // 請求書は残っているのに、その根拠となる売上が帳簿から消える。
+    // 取引先には請求済みなのに、こちらの記録では売上が無い状態になり、
+    // 税務調査や監査で説明できなくなる。
+    if (rec?.invoicedInvoiceId) {
+      const inv = (Array.isArray(data?.invoices) ? data.invoices : [])
+        .find((i) => i?.id === rec.invoicedInvoiceId && !i?.deleted);
+      if (inv) {
+        window.alert(
+          `この実績は請求書 ${inv.id}（${yen(inv.total)}）に含まれています。\n\n` +
+          `削除すると、請求書は残ったまま売上だけが消え、\n` +
+          `帳簿と請求書が食い違ってしまいます。\n\n` +
+          `金額を直したい場合は、請求管理から「赤伝を発行」して訂正してください。\n` +
+          `請求そのものを取り消す場合は、先に請求書を削除してください。`
+        );
+        return;
+      }
+    }
     if (isApprovedRecord(rec) && rec?.source === "hakolog") {
       window.alert("この実績は承認済みです。削除が必要な場合は「実績承認」画面から差し戻してください。");
       return;
@@ -9905,7 +10186,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
     // ・売上は後から入力するが、報酬は先に確定している
     // といった記録が集計から丸ごと漏れ、ドライバーへの支払漏れになっていた。
     // 売上・報酬のどちらかが入っていれば集計対象にする。
-    .filter(r => r.customerId && r.date?.startsWith(selectedMonth) &&
+    .filter(r => r?.customerId && r.date?.startsWith(selectedMonth) &&
       (r.salesAmount != null || r.driverAmount != null))
     .reduce((acc, r) => {
       const key = `${r.driverId}_${r.customerId}_${r.jobTypeId}_${r.date}`;
@@ -10281,6 +10562,23 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                           const amount = Math.round(Number(s.sales) || 0);
                           const tax = calcTax(amount);
 
+                          // 【重要】同じ月・同じ顧客の請求書が既にあるのに、
+                          // もう一度押せてしまうと、同じ売上を2回請求することになる。
+                          // 取引先に二重請求を送る事故に直結するため、必ず知らせる。
+                          const already = (Array.isArray(data?.invoices) ? data.invoices : []).filter(
+                            (i) => i && !i.deleted && i.customerId === customer.id &&
+                              String(i.issueDate || "").slice(0, 7) === selectedMonth &&
+                              (Number(i.total) || 0) > 0
+                          );
+                          if (already.length > 0) {
+                            if (!window.confirm(
+                              `⚠️ ${customer.name} の ${selectedMonth} の請求書は、既に発行されています。\n\n` +
+                              already.map((i) => `　${i.id}　${yen(i.total)}　（発行日 ${i.issueDate}）`).join("\n") +
+                              `\n\nこのまま作ると、同じ売上を2回請求することになります。\n` +
+                              `本当にもう1枚作りますか？`
+                            )) return;
+                          }
+
                           // 【重要】いきなり発行されると、間違えて押したときに取り返しがつかない。
                           // 何がいくらで作られるのかを示してから作る。
                           if (!window.confirm(
@@ -10325,6 +10623,30 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                             return {
                               ...d,
                               invoices: [newInv, ...currentInvoices],
+                              // 【重要】請求書に含めた実績には「請求済み」の印を付ける。
+                              // これをしないと、請求管理の「実績入力ぶんの未請求」に
+                              // 同じ売上が候補として残り続け、そこからもう1枚
+                              // 請求書を作れてしまう（＝同じ売上を2回請求する事故）。
+                              dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+                                // 【重要】承認済みの実績だけに印を付ける。
+                                // 未承認の実績は売上に計上されておらず、請求書にも
+                                // 含まれていない。そこに「請求済み」の印を付けると、
+                                // 後で承認しても請求候補に出てこなくなり、
+                                // その売上が永久に請求されないまま消えてしまう。
+                                (!r?.deleted && !r?.invoicedInvoiceId && isApprovedRecord(r) &&
+                                 r?.customerId === customer.id &&
+                                 String(r?.date || "").startsWith(selectedMonth))
+                                  ? { ...r, invoicedInvoiceId: invId }
+                                  : r
+                              ),
+                              // 実績入力（品質管理）から入力された分も同じく印を付ける
+                              qualityRecords: (Array.isArray(d?.qualityRecords) ? d.qualityRecords : []).map((r) =>
+                                (!r?.deleted && !r?.invoicedInvoiceId &&
+                                 r?.customerId === customer.id &&
+                                 String(r?.date || "").startsWith(selectedMonth))
+                                  ? { ...r, invoicedInvoiceId: invId }
+                                  : r
+                              ),
                               events: alreadyHasEvent ? baseEv : [...baseEv, {
                                 id: `EV-INV${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                                 date: dueDate,
@@ -10567,6 +10889,9 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
 
 const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCompanySettings, onAutoOpenHandled }) => {
   const orders = (Array.isArray(data?.orders) ? data.orders : []).filter(o => !o?.deleted);
+  // 【重要】金額を表示する箇所で使う。定義が無いまま参照していたため、
+  // 請求管理の画面全体がエラーで表示できなくなっていた。
+  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const allInvoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
   // 【重要】顧客への請求書（お金が入ってくる）と、ドライバーからの請求書
@@ -10966,8 +11291,19 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
    * 請求するので、顧客×仕事種別でまとめた1行として見せる。
    */
   const uninvoicedWorkGroups = (() => {
-    const records = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
-      .filter((r) => r && !r.deleted && !r.invoicedInvoiceId && isApprovedRecord(r) && (Number(r.salesAmount) || 0) !== 0);
+    // 【重要】以前は dailyRecords（受注・売上管理の日次入力）だけを見ていたため、
+    // 実績入力（品質管理）から入れたルート配送・チビ宅が
+    // 請求候補にまったく出てこなかった。
+    // 「この仕事の分だけ先に請求したい」という本来の目的を果たすため、
+    // 実績入力ぶんも候補に含める。
+    const records = [
+      ...(Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+        .filter((r) => r && !r.deleted && !r.invoicedInvoiceId && isApprovedRecord(r) && (Number(r.salesAmount) || 0) !== 0),
+      // 実績入力ぶん。承認の仕組みを通らないため、承認済みとして扱う。
+      ...(Array.isArray(data?.qualityRecords) ? data.qualityRecords : [])
+        .filter((r) => r && !r.deleted && !r.invoicedInvoiceId && (Number(r.salesAmount) || 0) !== 0)
+        .map((r) => ({ ...r, _fromQuality: true })),
+    ];
     const groups = new Map();
     records.forEach((r) => {
       const key = `${r.customerId || "none"}__${r.jobTypeId || "none"}__${String(r.date || "").slice(0, 7)}`;
@@ -11045,6 +11381,11 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         // これをしないと、同じ実績が何度でも請求候補に出てきて
         // 二重請求の原因になる。
         dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+          ids.has(r?.id) ? { ...r, invoicedInvoiceId: invId } : r
+        ),
+        // 実績入力（品質管理）ぶんも候補に含めているため、こちらにも印を付ける。
+        // 片方だけだと、請求済みなのに候補に残り続けてしまう。
+        qualityRecords: (Array.isArray(d?.qualityRecords) ? d.qualityRecords : []).map((r) =>
           ids.has(r?.id) ? { ...r, invoicedInvoiceId: invId } : r
         ),
       };
@@ -11135,6 +11476,30 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     // 本来は「修正した適格請求書」を改めて交付する必要がある）。
     // 気づかずに編集してしまうことを防ぐため、必ず確認を挟む。
     const original = invoices.find((i) => i?.id === invoiceDraft.id);
+
+    // 【重要】実績から作った請求書の金額を直接変えると、
+    // 売上管理（実績ベース）と請求管理（請求書ベース）で数字が食い違い、
+    // その差額を後から説明できなくなる。
+    // 金額が変わる場合だけ、そのことを知らせる。
+    const linkedCount = [
+      ...(Array.isArray(data?.dailyRecords) ? data.dailyRecords : []),
+      ...(Array.isArray(data?.qualityRecords) ? data.qualityRecords : []),
+    ].filter((r) => !r?.deleted && r?.invoicedInvoiceId === invoiceDraft.id).length;
+    const nextAmount = Math.round(
+      (Array.isArray(invoiceDraft?.lineItems) ? invoiceDraft.lineItems : [])
+        .reduce((s, it) => s + (Number(it?.qty) || 0) * (Number(it?.unitPrice) || 0), 0)
+    );
+    if (linkedCount > 0 && nextAmount !== (Number(original?.amount) || 0)) {
+      if (!window.confirm(
+        `この請求書は、実績 ${linkedCount}件 から作られています。\n\n` +
+        `　請求書の金額： ${yen(original?.amount)} → ${yen(nextAmount)}\n` +
+        `　実績の金額　： ${yen(original?.amount)}（変わりません）\n\n` +
+        `このまま保存すると、売上管理と請求管理で数字が食い違います。\n` +
+        `本来は「赤伝を発行」で訂正するのが正しい方法です。\n\n` +
+        `それでも金額を変更しますか？`
+      )) return;
+    }
+
     if (original?.sentAt || original?.status === "paid") {
       const reason = original?.status === "paid" ? "入金済み" : "取引先へ送付済み";
       const proceed = window.confirm(
@@ -11235,10 +11600,19 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
       address: companyInfo?.address || "",
       phone: companyInfo?.phone || "",
       email: companyInfo?.email || "",
-      invoiceRegNo: companyInfo?.invoiceRegNo || "",
-      contact: companyInfo?.contactPerson || "",
-      sealImage: companyInfo?.sealImage || "",
-      bank: companyInfo?.bankInfo || {},
+      // 【重要】会社情報の項目名は、会社情報設定の画面と必ず合わせること。
+      // 名前が違うと、入力しても請求書に出てこない（実際に食い違っていた）。
+      invoiceRegNo: companyInfo?.invoiceRegistrationNumber || "",
+      sealImage: companyInfo?.stampImage || "",
+      // 【重要】振込先は会社情報の画面で「複数行のテキスト」として入力される。
+      // ここでオブジェクトとして扱うと、項目が全部 undefined になり
+      // 請求書の振込口座欄が空になってしまう（実際にそうなっていた）。
+      // 文字列でもオブジェクトでも表示できるようにしておく。
+      bankText: typeof companyInfo?.bankInfo === "string"
+        ? companyInfo.bankInfo
+        : [companyInfo?.bankInfo?.bankName, companyInfo?.bankInfo?.branch,
+           companyInfo?.bankInfo?.accountType, companyInfo?.bankInfo?.accountNumber,
+           companyInfo?.bankInfo?.accountName].filter(Boolean).join(" "),
     };
     const items = Array.isArray(inv?.lineItems) && inv.lineItems.length > 0
       ? inv.lineItems
@@ -11319,7 +11693,6 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     ${co.invoiceRegNo ? `<div>登録番号：${esc(co.invoiceRegNo)}</div>` : ""}
     ${co.phone ? `<div>TEL：${esc(co.phone)}</div>` : ""}
     ${co.email ? `<div>E-mail：${esc(co.email)}</div>` : ""}
-    ${co.contact ? `<div>担当：${esc(co.contact)}</div>` : ""}
   </div>
 </div>
 
@@ -11345,9 +11718,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   <div class="rcol" style="border-left:1px solid #111;">
     <div class="bankttl">振込口座</div>
     <div class="bankbody">
-      <div>${esc(co.bank.bankName || "")}　${esc(co.bank.branch || "")}</div>
-      <div>${esc(co.bank.accountType || "")}：${esc(co.bank.accountNumber || "")}</div>
-      <div>${esc(co.bank.accountName || "")}</div>
+      ${esc(co.bankText).split("\n").map((l) => `<div>${l}</div>`).join("")}
     </div>
   </div>
 </div>
@@ -11464,7 +11835,7 @@ ${inv?.note ? `<div style="margin-top:14px;font-size:10pt;">備考：${esc(inv.n
     <div class="totals">
       <div><span>小計</span><span>${yen(inv?.amount)}</span></div>
       ${inv?.registered
-        ? `<div><span>消費税（{Math.round(TAX_RATE * 100)}%）</span><span>${yen(inv?.tax)}</span></div>`
+        ? `<div><span>消費税（${Math.round(TAX_RATE * 100)}%）</span><span>${yen(inv?.tax)}</span></div>`
         : `<div style="color:#999"><span>消費税</span><span>対象外</span></div>`
       }
       <div class="grand"><span>ご請求額</span><span>${yen(inv?.total)}</span></div>
@@ -11633,7 +12004,7 @@ ${inv?.note ? `<div style="margin-top:14px;font-size:10pt;">備考：${esc(inv.n
                 <RetroBtn onClick={() => {
                   setData(d => ({
                     ...d,
-                    invoices: (d?.invoices || []).map(x => x.id === selectedDriverInvoice.id ? { ...x, status: x.status === "paid" ? "unpaid" : "paid", paidDate: x.status === "paid" ? null : getTodayLocalStr() } : x),
+                    invoices: (d?.invoices || []).map(x => x?.id === selectedDriverInvoice.id ? { ...x, status: x.status === "paid" ? "unpaid" : "paid", paidDate: x.status === "paid" ? null : getTodayLocalStr() } : x),
                   }));
                 }} style={{ background: selectedDriverInvoice.status === "paid" ? "#fff" : "#00a09a", borderColor:"#00a09a", color: selectedDriverInvoice.status === "paid" ? "#00a09a" : "#fff" }}>
                   {selectedDriverInvoice.status === "paid" ? "未払に戻す" : "支払済にする"}
@@ -12004,7 +12375,16 @@ ${inv?.note ? `<div style="margin-top:14px;font-size:10pt;">備考：${esc(inv.n
                 } else {
                   if(!window.confirm("この請求書を削除しますか？（後から復元できます）")) return;
                 }
-                setData(d=>({...d, invoices:(Array.isArray(d?.invoices)?d.invoices:[]).map(i=>i?.id===invoiceDraft?.id?{...i,deleted:true}:i)}));
+                // 【重要】請求書を削除しても、実績に付いた「請求済み」の印が
+                // 残ったままだと、その売上は二度と請求候補に出てこなくなり、
+                // 請求し損ねたまま消えてしまう。印も一緒に外す。
+                setData(d=>({
+                  ...d,
+                  invoices:(Array.isArray(d?.invoices)?d.invoices:[]).map(i=>i?.id===invoiceDraft?.id?{...i,deleted:true}:i),
+                  dailyRecords:(Array.isArray(d?.dailyRecords)?d.dailyRecords:[]).map(r=>r?.invoicedInvoiceId===invoiceDraft?.id?{...r,invoicedInvoiceId:null}:r),
+                  qualityRecords:(Array.isArray(d?.qualityRecords)?d.qualityRecords:[]).map(r=>r?.invoicedInvoiceId===invoiceDraft?.id?{...r,invoicedInvoiceId:null}:r),
+                  orders:(Array.isArray(d?.orders)?d.orders:[]).map(o=>o?.invoicedInvoiceId===invoiceDraft?.id?{...o,invoicedInvoiceId:null}:o),
+                }));
                 setShowInvoiceModal(false);
               }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
               {/* 【重要】過大請求・配送事故での返金時、これまでは請求書を
@@ -12293,7 +12673,7 @@ const DriversAccidentFormTab = ({ form, setForm, isMobile, tenantId }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#e63946" }}>{rec.date} 【{rec.type}】</span>
-              <RetroBtn small onClick={() => { if (!window.confirm("この記録を削除しますか？")) return; setForm(prev => ({ ...prev, accidentLogs: (prev.accidentLogs || []).filter(x => x.id !== rec.id) })); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => { if (!window.confirm("この記録を削除しますか？")) return; setForm(prev => ({ ...prev, accidentLogs: (prev.accidentLogs || []).filter(x => x?.id !== rec.id) })); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -12338,7 +12718,7 @@ const DriversAccidentFormTab = ({ form, setForm, isMobile, tenantId }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#e65100" }}>{rec.date}</span>
-              <RetroBtn small onClick={() => { if (!window.confirm("この記録を削除しますか？")) return; setForm(prev => ({ ...prev, internalLogs: (prev.internalLogs || []).filter(x => x.id !== rec.id) })); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => { if (!window.confirm("この記録を削除しますか？")) return; setForm(prev => ({ ...prev, internalLogs: (prev.internalLogs || []).filter(x => x?.id !== rec.id) })); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -12378,7 +12758,7 @@ const DriversHealthFormTab = ({ form, setForm, isMobile }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#007a74" }}>{rec.date} — {rec.org||"—"}</span>
-              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, healthLogs: (prev.healthLogs || []).filter(x => x.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, healthLogs: (prev.healthLogs || []).filter(x => x?.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -12449,7 +12829,7 @@ const createEmptyDriverForm = () => ({
 
 const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
-  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+  const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
   const allCustomers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -12793,7 +13173,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           <div key={rec.id} style={{ border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", background:"#fff", fontSize:"12px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, color:"#007a74" }}>{rec.date}</span>
-              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, trainingLogs: (prev.trainingLogs || []).filter(x => x.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+              <RetroBtn small onClick={() => setForm(prev => ({ ...prev, trainingLogs: (prev.trainingLogs || []).filter(x => x?.id !== rec.id) }))} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
                 <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/></Icon>
               </RetroBtn>
             </div>
@@ -12849,11 +13229,11 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       };
 
       const removeRoute = (id) => {
-        setForm(f => ({ ...f, routes: (f.routes||[]).filter(r => r.id !== id) }));
+        setForm(f => ({ ...f, routes: (f.routes||[]).filter(r => r?.id !== id) }));
       };
 
       const updateRoute = (id, key, value) => {
-        setForm(f => ({ ...f, routes: (f.routes||[]).map(r => r.id === id ? { ...r, [key]: value } : r) }));
+        setForm(f => ({ ...f, routes: (f.routes||[]).map(r => r?.id === id ? { ...r, [key]: value } : r) }));
       };
 
       const updateDekaRate = (routeId, size, key, value) => {
@@ -13224,7 +13604,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 {(selectedDriver?.routes||[]).length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>担当ルート未登録</div>}
                 {(selectedDriver?.routes||[]).map((route, idx) => {
                   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c=>!c?.deleted);
-                  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+                  const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
                   const customer = customers.find(c=>c?.id===route?.customerId);
                   const jt = jobTypes.find(j=>j?.id===route?.jobTypeId);
                   return (
@@ -13611,7 +13991,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     if (error) console.error('vehicle_inspections insert error:', error);
     setNewInspection({ date:"", shop:"", content:"", issue:"", nextDate:"" });
   };
-  const removeInspection = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, inspectionHistory: (f.inspectionHistory||[]).filter(x => x.id !== id) })); };
+  const removeInspection = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, inspectionHistory: (f.inspectionHistory||[]).filter(x => x?.id !== id) })); };
   const addAccident = async () => {
     if (!newAccident.datetime) return;
     setForm(f => ({ ...f, accidentHistory: [...(f.accidentHistory||[]), { ...newAccident, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }] }));
@@ -13639,7 +14019,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     if (error) console.error('vehicle_incidents(accident) insert error:', error);
     setNewAccident({ datetime:"", place:"", driverId:"", opponent:"", summary:"", cause:"", preventiveMeasures:"", repairStatus:"", insuranceUsed:false, note:"" });
   };
-  const removeAccident = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, accidentHistory: (f.accidentHistory||[]).filter(x => x.id !== id) })); };
+  const removeAccident = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, accidentHistory: (f.accidentHistory||[]).filter(x => x?.id !== id) })); };
   const addViolation = async () => {
     if (!newViolation.date) return;
     setForm(f => ({ ...f, violationHistory: [...(f.violationHistory||[]), { ...newViolation, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }] }));
@@ -13660,7 +14040,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     if (error) console.error('vehicle_incidents(violation) insert error:', error);
     setNewViolation({ date:"", content:"", penalty:"" });
   };
-  const removeViolation = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, violationHistory: (f.violationHistory||[]).filter(x => x.id !== id) })); };
+  const removeViolation = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, violationHistory: (f.violationHistory||[]).filter(x => x?.id !== id) })); };
   const vehicleIcon = <Icon size={14}><rect x="3" y="9" width="18" height="7" rx="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>;
   const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
   const trashIcon = <Icon size={12}><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></Icon>;
@@ -14833,6 +15213,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   // 保存が完了していない変更があるかどうか。
   // 画面を閉じようとした際に警告を出すかの判断に使う。
   const hasUnsavedChangesRef = useRef(false);
+  // CSV取り込みの二重実行を防ぐ。取り込みは時間がかかることがあり、
+  // その間にもう一度押されると同じデータが二重に入ってしまう。
+  const isImportingRef = useRef(false);
   // 保存中かどうかを画面に表示するための状態。
   // 「保存が終わっていないこと」が目に見えないと、
   // 利用者は完了したと思って画面を閉じてしまう。
@@ -15262,14 +15645,14 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   ];
   return (
     <div style={{ minHeight:"100vh", background:UI.mainBg, fontFamily:"'Noto Sans JP', sans-serif", fontSize:"13px", color:UI.text }}>
-      <div style={{ background:"#fff", borderBottom:cardBorder, height:"72px", display:"flex", alignItems:"center", padding:"0 12px", gap:"10px" }}>
+      <div style={{ background:"#fff", borderBottom:cardBorder, height:"54px", display:"flex", alignItems:"center", padding:"0 12px", gap:"10px" }}>
         {isMobile && (
           <button onClick={()=>setMenuOpen(v=>!v)} style={{ border:cardBorder, background:"#fff", borderRadius:"4px", width:"32px", height:"32px", display:"grid", placeItems:"center", color:"#666" }}>
             <Icon size={16}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></Icon>
           </button>
         )}
         <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
-          <HakomaneLogo height={36} />
+          <HakomaneLogo height={44} />
         </div>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px" }}>
           <button onClick={()=>setShowSettings(v=>!v)} style={{ border:"none", background:"transparent", color:"#666", display:"inline-flex", cursor:"pointer" }}>
@@ -15514,7 +15897,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           )}
           <div style={{ border:cardBorder, background:"#fff", borderRadius:"6px", padding:"8px 10px", marginBottom:"10px", display:"flex", alignItems:"center", gap:"8px" }}>
             <span style={{ fontSize:"11px", color:"#888" }}>現在：</span>
-            <span style={{ fontSize:"12px", fontWeight:700, color:"#007a74", display:"inline-flex", alignItems:"center", gap:"6px" }}>{MENU.find(m=>m.id===page)?.icon}{MENU.find(m=>m.id===page)?.label}</span>
+            <span style={{ fontSize:"12px", fontWeight:700, color:"#007a74", display:"inline-flex", alignItems:"center", gap:"6px" }}>{MENU.find(m=> m?.id===page)?.icon}{MENU.find(m=> m?.id===page)?.label}</span>
           </div>
           {!isLoaded ? (
             <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", padding:"24px", textAlign:"center", fontSize:"12px", color:"#888" }}>
@@ -15525,7 +15908,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             // state改ざんによって権限のないページに直接アクセスできてしまう。
             // ここでも同じ menuVisibleForRole のルールを使って、
             // 表示しようとしているページ自体が現在のロールで許可されているか再チェックする。
-            const currentMenuItem = MENU.find((m) => m.id === page);
+            const currentMenuItem = MENU.find((m) => m?.id === page);
             const isAllowed = !currentMenuItem || menuVisibleForRole(currentMenuItem, userRole);
             if (!isAllowed) {
               return (
@@ -15638,15 +16021,42 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                           before: item,
                           userRole,
                         });
-                        setData(d=>({
-                          ...d,
-                          [key]:(Array.isArray(d?.[key])?d[key]:[]).map(x=>x?.id===item?.id?{
-                            ...x,
-                            deleted:false,
-                            restoredAt: getTodayLocalStr(),
-                            restoredBy: (typeof window !== "undefined" && window.__hakomaneCurrentUser) || "不明",
-                          }:x)
-                        }));
+                        setData(d=>{
+                          const next = {
+                            ...d,
+                            [key]:(Array.isArray(d?.[key])?d[key]:[]).map(x=>x?.id===item?.id?{
+                              ...x,
+                              deleted:false,
+                              restoredAt: getTodayLocalStr(),
+                              restoredBy: (typeof window !== "undefined" && window.__hakomaneCurrentUser) || "不明",
+                            }:x)
+                          };
+                          // 【重要】請求書を削除したとき、実績に付いていた
+                          // 「請求済み」の印を外している。復元時に印を戻さないと、
+                          // 請求書は存在するのに実績は未請求のままとなり、
+                          // そこからもう1枚請求書を作れてしまう（＝二重請求）。
+                          if (key === "invoices") {
+                            const invId = item?.id;
+                            const inMonth = (r) =>
+                              r?.customerId === item?.customerId &&
+                              String(r?.date || "").startsWith(String(item?.issueDate || "").slice(0, 7));
+                            const remark = (list) => (Array.isArray(list) ? list : []).map((r) =>
+                              (!r?.deleted && !r?.invoicedInvoiceId && inMonth(r))
+                                ? { ...r, invoicedInvoiceId: invId }
+                                : r
+                            );
+                            next.dailyRecords = remark(d?.dailyRecords);
+                            next.qualityRecords = remark(d?.qualityRecords);
+                            next.orders = (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
+                              (!o?.deleted && !o?.invoicedInvoiceId &&
+                               o?.customerId === item?.customerId &&
+                               String(o?.deliveryDate || "").startsWith(String(item?.issueDate || "").slice(0, 7)))
+                                ? { ...o, invoicedInvoiceId: invId }
+                                : o
+                            );
+                          }
+                          return next;
+                        });
                       }} style={{ background:"#e8f5e9", color:"#2e7d32", borderColor:"#4caf50" }}>復元</RetroBtn>
                     </div>
                   );
@@ -15979,6 +16389,12 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                         ・Excelでまとめて修正して戻す
                         ができず、結局1件ずつ手入力することになる。
                         既存データと同じIDなら上書き、無ければ追加する。 */}
+                    {/* 【重要】画面では配車担当に金額を見せない・請求管理に入れない
+                        という制限をかけているのに、CSVなら顧客の支払条件や
+                        受注の金額を一括で書き換えられてしまう抜け道があった。
+                        取り込みは、データを一括で書き換える強い操作なので、
+                        事務担当以上に限定する。 */}
+                    {userRole !== "dispatcher" && (
                     <RetroBtn small onClick={()=>{
                       const input = document.createElement("input");
                       input.type = "file";
@@ -15986,6 +16402,13 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                       input.onchange = async (ev) => {
                         const file = ev.target?.files?.[0];
                         if (!file) return;
+                        // 【重要】取り込みは時間がかかることがあり、その間に
+                        // もう一度押されると同じCSVが二重に取り込まれる。
+                        if (isImportingRef.current) {
+                          window.alert("取り込み中です。完了までお待ちください。");
+                          return;
+                        }
+                        isImportingRef.current = true;
                         try {
                           const text = (await file.text()).replace(/^\uFEFF/, "");
                           // 「"」で囲まれた中のカンマ・改行を壊さないように読み取る
@@ -16007,6 +16430,19 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                           };
                           const rows2 = parseCsv(text);
                           if (rows2.length < 2) { window.alert("データの行がありません。"); return; }
+                          // 【重要】件数の上限が無かったため、大きなCSVを取り込むと
+                          // 画面が固まったように見え、利用者が失敗したと思って
+                          // もう一度押す → 二重に取り込まれる、という事故が起き得た。
+                          // 一度に扱う量に上限を設け、分けて取り込んでもらう。
+                          const MAX_IMPORT_ROWS = 5000;
+                          if (rows2.length - 1 > MAX_IMPORT_ROWS) {
+                            window.alert(
+                              `一度に取り込める件数は ${MAX_IMPORT_ROWS.toLocaleString()}件 までです。\n` +
+                              `このCSVには ${(rows2.length - 1).toLocaleString()}件 あります。\n\n` +
+                              `CSVを分割してから、もう一度お試しください。`
+                            );
+                            return;
+                          }
                           const head = rows2[0].map(h => String(h).trim());
                           if (head[0] !== "ID") {
                             window.alert("1列目が「ID」のCSVを選んでください。\nこの画面でダウンロードしたCSVをそのままお使いいただけます。");
@@ -16016,11 +16452,62 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                           const existing = Array.isArray(data?.[key]) ? data[key] : [];
                           const existingIds = new Set(existing.map(x => String(x?.id ?? "")));
                           let willUpdate = 0, willAdd = 0;
-                          body.forEach(r => {
+                          // 【重要】CSV内に同じIDが複数回あると（Excelのコピペでよく起きる）、
+                          // 実際には1件しか作られないのに件数だけ多く表示されてしまう。
+                          // 一度数えたIDは、以降「更新」として数える。
+                          const countedIds = new Set(existingIds);
+                          const dupInCsv = [];
+                          body.forEach((r, ri) => {
                             const id = String(r[0] ?? "").trim();
                             if (!id) return;
-                            if (existingIds.has(id)) willUpdate++; else willAdd++;
+                            if (countedIds.has(id)) {
+                              willUpdate++;
+                              // 同じCSV内での重複は、意図しないコピペの可能性が高いので控えておく
+                              if (!existingIds.has(id)) dupInCsv.push(`${ri + 2}行目： ${id}`);
+                            } else {
+                              willAdd++;
+                              countedIds.add(id);
+                            }
                           });
+                          if (dupInCsv.length > 0) {
+                            if (!window.confirm(
+                              `CSVの中に、同じIDが複数回あります。\n\n` +
+                              dupInCsv.slice(0, 5).join("\n") +
+                              (dupInCsv.length > 5 ? `\n…他 ${dupInCsv.length - 5}件` : "") +
+                              `\n\n同じIDの行は、最後に書かれた内容で上書きされます。\n` +
+                              `（コピペの重複でなければ問題ありません）\n\n` +
+                              `このまま続けますか？`
+                            )) return;
+                          }
+                          // 【重要】1列目が「ID」かどうかしか見ていなかったため、
+                          // 顧客の取り込み欄にドライバーCSVを渡しても通ってしまい、
+                          // 中身が空の顧客が大量に作られる恐れがあった。
+                          // その種類のCSVかどうかを、見出しの一致率で判断する。
+                          // 【重要】ダウンロードした見出しと、ここの対応表が
+                          // 1つでも食い違うと、その列は取り込まれずに無視される。
+                          // 特に「ナンバー」を「車両番号」と書いていたため、
+                          // 車両CSVがほとんど取り込めない状態だった。
+                          // 上のダウンロード定義（headers と getRow）と必ず対で直すこと。
+                          const fieldMapByKey = {
+                            customers: { "ID":"id", "会社名":"name", "担当者":"contact", "電話":"phone", "メール":"email", "住所":"address", "締め日":"closingDay", "支払サイト":"paymentSite", "振込名義カナ":"payer_kana", "メモ":"notes" },
+                            drivers:   { "ID":"id", "氏名":"name", "フリガナ":"furigana", "生年月日":"birthdate", "電話":"phone", "免許種別":"license", "有効期限":"license_expiry", "契約形態":"contractType", "状態":"status" },
+                            vehicles:  { "ID":"id", "ナンバー":"plate", "車種":"type", "メーカー":"maker", "年式":"year", "最大積載量":"maxLoad", "車検期限":"nextInspection", "任意保険期限":"insuranceExpiry", "状態":"status" },
+                            orders:    { "ID":"id", "顧客":"customerName", "配送種別":"deliveryType", "配達日":"deliveryDate", "出発地":"from", "配送先":"to", "荷物":"cargo", "重量":"weight", "金額":"amount", "状態":"status" },
+                          };
+                          const fieldMap = fieldMapByKey[key];
+                          if (!fieldMap) {
+                            window.alert(`${label} の取り込みには対応していません。\n顧客・ドライバー・車両・受注のみ取り込めます。`);
+                            return;
+                          }
+                          const known = head.filter((h) => fieldMap[h]).length;
+                          if (known < 2 || known < Math.ceil(head.length / 2)) {
+                            window.alert(
+                              `このCSVは「${label}」のものではないようです。\n\n` +
+                              `　CSVの列： ${head.slice(0, 5).join("、")}${head.length > 5 ? " …" : ""}\n\n` +
+                              `${label} の「ダウンロード」で出したCSVを選んでください。`
+                            );
+                            return;
+                          }
                           if (!window.confirm(
                             `${label} を取り込みます。\n\n` +
                             `　既存を上書き： ${willUpdate}件\n` +
@@ -16031,18 +16518,47 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                           )) return;
                           // ダウンロード時の見出しと、データの項目名の対応表。
                           // 見出しだけで判断すると取り違えるため、明示的に対応させる。
-                          const fieldMapByKey = {
-                            customers: { "ID":"id", "会社名":"name", "担当者":"contact", "電話":"phone", "メール":"email", "住所":"address", "締め日":"closingDay", "支払サイト":"paymentSite", "振込名義カナ":"payer_kana", "メモ":"notes" },
-                            drivers:   { "ID":"id", "氏名":"name", "電話":"phone", "メール":"email", "住所":"address", "契約形態":"contractType", "状態":"status", "メモ":"notes" },
-                            vehicles:  { "ID":"id", "車両番号":"plateNumber", "車種":"model", "状態":"status", "メモ":"notes" },
-                            orders:    { "ID":"id", "顧客":"customerName", "配達日":"deliveryDate", "金額":"amount", "状態":"status", "備考":"notes" },
+                          // 数値として扱う項目。文字列のまま入ると、集計や比較で
+                          // 「¥1,000」と「1000」が別物になるなどの不具合につながる。
+                          const numericFields = new Set(["amount", "closingDay", "year"]);
+                          // 【重要】Excelで開いて保存すると「¥330,000」「1,000」のように
+                          // 書式が付いたまま出てくることがある。
+                          // そのまま Number() に渡すと 0 になり、金額が消えたことに
+                          // 誰も気づけないまま取り込まれてしまう。
+                          // 通貨記号・カンマ・空白を取り除いてから数値にする。
+                          const toNumber = (raw) => {
+                            const cleaned = String(raw).replace(/[¥￥,，\s]/g, "");
+                            const n = Number(cleaned);
+                            return Number.isFinite(n) ? n : null;
                           };
-                          const fieldMap = fieldMapByKey[key];
-                          if (!fieldMap) {
-                            window.alert(`${label} の取り込みには対応していません。\n顧客・ドライバー・車両・受注のみ取り込めます。`);
+
+                          // 取り込む前に、おかしな値がないか調べて知らせる。
+                          // 「取り込んだ後に気づく」では手遅れになる。
+                          const problems = [];
+                          body.forEach((r, ri) => {
+                            head.forEach((h, ci) => {
+                              const field = fieldMap[h];
+                              if (!field || !numericFields.has(field)) return;
+                              const raw = String(r[ci] ?? "").trim();
+                              if (raw === "") return;
+                              const n = toNumber(raw);
+                              if (n === null) {
+                                problems.push(`${ri + 2}行目「${h}」： ${raw} は数値として読めません`);
+                              } else if (field === "closingDay" && (n < 1 || n > 31)) {
+                                problems.push(`${ri + 2}行目「${h}」： ${raw} は締め日として使えません（1〜31）`);
+                              }
+                            });
+                          });
+                          if (problems.length > 0) {
+                            window.alert(
+                              `取り込めない値があります。CSVを直してから、もう一度お試しください。\n\n` +
+                              problems.slice(0, 10).join("\n") +
+                              (problems.length > 10 ? `\n…他 ${problems.length - 10}件` : "") +
+                              `\n\n※Excelで編集した場合、「¥」やカンマが付いていないかご確認ください。`
+                            );
                             return;
                           }
-                          const numericFields = new Set(["amount", "closingDay"]);
+
                           setData(d => {
                             const list = Array.isArray(d?.[key]) ? [...d[key]] : [];
                             const indexById = new Map(list.map((x, i) => [String(x?.id ?? ""), i]));
@@ -16052,24 +16568,36 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                                 const field = fieldMap[h];
                                 if (!field) return;
                                 const raw = String(r[ci] ?? "").trim();
-                                obj[field] = numericFields.has(field) ? (Number(raw) || 0) : raw;
+                                obj[field] = numericFields.has(field) ? (toNumber(raw) ?? 0) : raw;
                               });
                               const id = String(obj.id ?? "").trim();
                               if (!id) return;
                               const at = indexById.get(id);
                               // 既にあるものは上書き。CSVに無い項目は消さずに残す。
-                              if (at != null) list[at] = { ...list[at], ...obj };
-                              else list.push(obj);
+                              if (at != null) {
+                                list[at] = { ...list[at], ...obj };
+                              } else {
+                                // 【重要】新しく追加した行も、必ず索引に登録すること。
+                                // これをしないと、CSV内に同じIDが2回書かれていた場合
+                                // （Excelでコピペしたときによく起きる）、
+                                // 同じIDのデータが2件できてしまい、
+                                // 後から編集・削除しても片方しか直らなくなる。
+                                indexById.set(id, list.length);
+                                list.push(obj);
+                              }
                             });
                             return { ...d, [key]: list };
                           });
                           window.alert(`${label} を取り込みました。\n上書き ${willUpdate}件 / 追加 ${willAdd}件`);
                         } catch (e) {
                           window.alert("CSVの読み込みに失敗しました：" + (e?.message || e));
+                        } finally {
+                          isImportingRef.current = false;
                         }
                       };
                       input.click();
                     }} style={{ background:"#fff", color:"#7b1fa2", borderColor:"#7b1fa2" }}>取り込み</RetroBtn>
+                    )}
                   </div>
                 </div>
               );
