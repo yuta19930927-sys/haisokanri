@@ -1036,7 +1036,7 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
   // 何時配達か」が分からなかった。現場では時間こそが最も重要な情報なので、
   // 開始・終了（チャーターなら引取・配達）の時刻を持てるようにする。
   const [editEvent, setEditEvent] = useState({ id:"", date:"", type:"task", title:"", note:"", startTime:"", endTime:"" });
-  const [editOrder, setEditOrder] = useState({ id:"", customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", driverPayAmount:"", notes:"", status:"pending" });
+  const [editOrder, setEditOrder] = useState({ id:"", customerId:"", deliveryType:"route", deliveryDate:"", from:"", to:"", cargo:"", weight:"", amount:"", driverPayAmount:"", notes:"", status:"pending", pickupTime:"", deliveryTime:"" });
   const [addFormError, setAddFormError] = useState("");
 
   const firstDay = new Date(calYear, calMonth, 1).getDay();
@@ -1377,6 +1377,11 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
         driverPayAmount: order?.driverPayAmount != null ? String(order.driverPayAmount) : "",
         notes: order?.notes || "",
         status: order?.status || "pending",
+        // 【重要】配送予定に時刻が表示されるようになったのに、
+        // その予定をクリックした編集画面には時刻の入力欄が無く、
+        // 直す手段が無かった。受注に入力された集荷・配達時刻を読み込む。
+        pickupTime: order?.pickupTime || "",
+        deliveryTime: order?.deliveryTime || "",
       });
     } else if (item?.source === "event") {
       const event = item.raw || {};
@@ -1416,6 +1421,8 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
                 driverPayAmount: editOrder.driverPayAmount !== "" && editOrder.driverPayAmount != null ? (parseInt(editOrder.driverPayAmount, 10) || 0) : null,
                 notes: editOrder.notes,
                 status: editOrder.status,
+                pickupTime: editOrder.pickupTime || "",
+                deliveryTime: editOrder.deliveryTime || "",
               }
             : order
         ),
@@ -1680,6 +1687,12 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
                 </RetroSelect>
               </Fl>
               <Fl label="配達日"><RetroInput type="date" value={editOrder.deliveryDate} onChange={(e)=>setEditOrder((v)=>({...v, deliveryDate:e.target.value}))}/></Fl>
+              {/* 【重要】カレンダーに集荷・配達の時刻を表示するようにしたが、
+                  この編集画面から時刻を直す手段が無かった。追加する。 */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
+                <Fl label="集荷時刻"><RetroInput type="time" value={editOrder.pickupTime||""} onChange={(e)=>setEditOrder((v)=>({...v, pickupTime:e.target.value}))}/></Fl>
+                <Fl label="配達時刻"><RetroInput type="time" value={editOrder.deliveryTime||""} onChange={(e)=>setEditOrder((v)=>({...v, deliveryTime:e.target.value}))}/></Fl>
+              </div>
               <Fl label="出発地"><RetroInput value={editOrder.from} onChange={(e)=>setEditOrder((v)=>({...v, from:e.target.value}))}/></Fl>
               <Fl label="配送先"><RetroInput value={editOrder.to} onChange={(e)=>setEditOrder((v)=>({...v, to:e.target.value}))}/></Fl>
               <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 10px" }}>
@@ -1785,6 +1798,10 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const fileInputRef = useRef(null);
   const [addTx, setAddTx] = useState(false);
   const [form, setForm] = useState({ date:todayStr, amount:"", description:"", direction:"in" });
+  // 【重要】入出金は手動で追加できるのに、間違えて入力しても直す・消す手段が
+  // 無かった。金額や日付を打ち間違えたとき、取り消して入れ直すしかなく
+  // 不便だった。編集・削除できるようにする。
+  const [editingTxId, setEditingTxId] = useState(null);
   const [addPayable, setAddPayable] = useState(false);
   const [editingPayableId, setEditingPayableId] = useState(null);
   const [payableForm, setPayableForm] = useState({ vendor:"", category:"", dueDate:"", amount:"" });
@@ -1887,11 +1904,24 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       tenant_id: tenantId,
     };
     try {
-      const { data: inserted, error } = await supabase
-        .from("bank_transactions")
-        .insert([newRow])
-        .select("*")
-        .single();
+      // 【重要】編集中なら insert ではなく update を使う。
+      // insert しかできないと「間違えたら新しい行を足す」しかなく、
+      // 誤入力の行がいつまでも残ってしまう。
+      let inserted, error;
+      if (editingTxId) {
+        ({ data: inserted, error } = await supabase
+          .from("bank_transactions")
+          .update(newRow)
+          .eq("id", editingTxId)
+          .select("*")
+          .single());
+      } else {
+        ({ data: inserted, error } = await supabase
+          .from("bank_transactions")
+          .insert([newRow])
+          .select("*")
+          .single());
+      }
       if (error) throw error;
       const mappedTx = {
         id: inserted?.id,
@@ -1907,12 +1937,58 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         matchedInvoice: inserted?.matched_invoice_id || null,
         matched_invoice_id: inserted?.matched_invoice_id || null,
       };
-      setBankTransactions((prev) => [mappedTx, ...prev]);
-      setData((d) => ({ ...d, bankTransactions: [mappedTx, ...(Array.isArray(d?.bankTransactions) ? d.bankTransactions : [])] }));
+      setBankTransactions((prev) =>
+        editingTxId
+          ? prev.map((t) => t?.id === editingTxId ? mappedTx : t)
+          : [mappedTx, ...prev]
+      );
+      setData((d) => ({
+        ...d,
+        bankTransactions: editingTxId
+          ? (Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).map((t) => t?.id === editingTxId ? mappedTx : t)
+          : [mappedTx, ...(Array.isArray(d?.bankTransactions) ? d.bankTransactions : [])],
+      }));
       setAddTx(false);
+      setEditingTxId(null);
       setForm({ date:todayStr2, amount:"", description:"", direction:"in" });
     } catch (err) {
-      window.alert("入出金の追加に失敗しました：" + (err?.message || String(err)));
+      window.alert((editingTxId ? "入出金の更新に失敗しました：" : "入出金の追加に失敗しました：") + (err?.message || String(err)));
+    }
+  };
+
+  /** 入出金を編集用フォームに読み込む */
+  const openEditTx = (tx) => {
+    setEditingTxId(tx?.id);
+    setForm({
+      date: tx?.date || tx?.transaction_date || todayStr2,
+      amount: String(Number(tx?.deposit_amount) > 0 ? tx.deposit_amount : Number(tx?.withdrawal_amount) || 0),
+      description: tx?.description || "",
+      direction: Number(tx?.withdrawal_amount) > 0 ? "out" : "in",
+    });
+    setAddTx(true);
+  };
+
+  /** 手動入力した入出金を削除する（照合済みは対象外にする） */
+  const deleteTx = async (tx) => {
+    if (!tx?.id) return;
+    // 【重要】既に請求書と照合済みの入出金を消すと、
+    // 「入金があったはず」という記録ごと消えてしまい、
+    // 未回収の判定が実態と食い違う。照合済みは先に照合を外してもらう。
+    if (tx?.matchedInvoice || tx?.matched_invoice_id) {
+      window.alert("この入出金は請求書と照合済みです。\n先に照合を解除してから削除してください。");
+      return;
+    }
+    if (!window.confirm(`${tx.date || ""} の入出金（${(Number(tx.amount)||0).toLocaleString()}円）を削除しますか？\nこの操作は取り消せません。`)) return;
+    try {
+      const { error } = await supabase.from("bank_transactions").delete().eq("id", tx.id);
+      if (error) throw error;
+      setBankTransactions((prev) => prev.filter((t) => t?.id !== tx.id));
+      setData((d) => ({
+        ...d,
+        bankTransactions: (Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).filter((t) => t?.id !== tx.id),
+      }));
+    } catch (err) {
+      window.alert("削除に失敗しました：" + (err?.message || String(err)));
     }
   };
 
@@ -2584,7 +2660,7 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           <RetroBtn onClick={()=>setAddTx(true)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}入出金を手動追加</RetroBtn>
         </div>
         <RetroTable
-          headers={["日付","内容（振込名義等）","金額","照合状況","照合先"]}
+          headers={["日付","内容（振込名義等）","金額","照合状況","照合先","操作"]}
           rows={bankTransactions.map((b) => {
             const matchedInv = invoices.find(
               (i) => getInvoiceDbId(i) === b.matchedInvoice || getEntityPayload(i).id === b.matchedInvoice
@@ -2600,6 +2676,15 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                   {b.matchedInvoice} / {matchedName}
                 </span>
               ) : "—",
+              // 【重要】銀行明細から自動取込した行は編集・削除させない。
+              // 実際の入出金の記録であり、勝手に書き換えると通帳と食い違う。
+              // 手動で追加した行（bank_name: "手動入力"）だけを対象にする。
+              b?.bank_name === "手動入力" || b?.bankName === "手動入力" ? (
+                <div style={{ display:"flex", gap:"4px" }}>
+                  <RetroBtn small onClick={()=>openEditTx(b)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
+                  <RetroBtn small onClick={()=>deleteTx(b)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+                </div>
+              ) : <span style={{ fontSize:"10px", color:"#999" }}>明細取込</span>,
             ];
           })}
         />
@@ -2656,13 +2741,13 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       )}
 
       {addTx&&(
-        <Modal title="入出金を手動追加" icon={bankIcon} onClose={()=>setAddTx(false)} width={400}>
+        <Modal title={editingTxId ? "入出金を編集" : "入出金を手動追加"} icon={bankIcon} onClose={()=>{ setAddTx(false); setEditingTxId(null); setForm({ date:todayStr2, amount:"", description:"", direction:"in" }); }} width={400}>
           <Fl label="日付"><RetroInput type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/></Fl>
           <Fl label="金額（円）"><RetroInput type="number" min="0" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="50000"/></Fl>
           <Fl label="摘要・振込名義"><RetroInput value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="タナカシヨウジ　カブ"/></Fl>
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"10px" }}>
-            <RetroBtn onClick={()=>setAddTx(false)}>キャンセル</RetroBtn>
-            <RetroBtn onClick={addTxn} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>追加する</RetroBtn>
+            <RetroBtn onClick={()=>{ setAddTx(false); setEditingTxId(null); setForm({ date:todayStr2, amount:"", description:"", direction:"in" }); }}>キャンセル</RetroBtn>
+            <RetroBtn onClick={addTxn} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{editingTxId ? "更新する" : "追加する"}</RetroBtn>
           </div>
         </Modal>
       )}
@@ -9826,9 +9911,11 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
     return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
   });
   const [showJobTypeModal, setShowJobTypeModal] = useState(false);
+  // デカ宅のサイズ区分。ドライバー編集の担当ルート表と共通の並び。
+  const dekaStyles = ["100以下","140","160","180","200","220","240","260"];
   const [editingJobType, setEditingJobType] = useState(null);
   const [showJobTypeHistory, setShowJobTypeHistory] = useState(false);
-  const [jobTypeForm, setJobTypeForm] = useState({ name:"", calcPattern:"count", taxable:true, unitPrice:"", driverUnitPrice:"", note:"" });
+  const [jobTypeForm, setJobTypeForm] = useState({ name:"", calcPattern:"count", taxable:true, unitPrice:"", driverUnitPrice:"", note:"", dekaRates:null });
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null);
   const [recordForm, setRecordForm] = useState(createEmptyRecordForm);
@@ -10849,6 +10936,48 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
             <Fl label="売上単価（円）"><RetroInput type="number" min="0" value={jobTypeForm.unitPrice} onChange={e=>setJobTypeForm(v=>({...v,unitPrice:e.target.value}))} placeholder="例：180"/></Fl>
             <Fl label="ドライバー支払単価（円）"><RetroInput type="number" min="0" value={jobTypeForm.driverUnitPrice} onChange={e=>setJobTypeForm(v=>({...v,driverUnitPrice:e.target.value}))} placeholder="例：150"/></Fl>
+          {/* 【重要】「デカ宅」はサイズ（荷物の大きさ）によって単価が変わる。
+              ドライバーの担当ルート側では、サイズ別の単価表がすでにあったが、
+              仕事種別マスタ側では単一の単価しか設定できず、
+              「マスタで基準値を決めておきたい」という要望に応えられなかった。
+              担当ルートと同じ形式の表を、マスタ側にも用意する。 */}
+          {jobTypeForm.name === "デカ宅" && (
+            <div style={{ marginTop:"8px" }}>
+              <div style={{ fontSize:"11px", fontWeight:700, color:"#555", marginBottom:"6px" }}>
+                サイズ別単価（マスタの基準値。ドライバーごとに個別単価を設定していない場合に使われます）
+              </div>
+              <div style={{ border:"1px solid #e8e8e8", borderRadius:"6px", overflow:"auto" }}>
+                <table style={{ minWidth:"100%", width:"max-content", borderCollapse:"collapse" }}>
+                  <thead>
+                    <tr style={{ background:"#f0f2f5" }}>
+                      <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, color:"#555", fontSize:"11px" }}>サイズ</th>
+                      <th style={{ padding:"6px 10px", textAlign:"center", fontWeight:700, color:"#555", fontSize:"11px" }}>売上単価</th>
+                      <th style={{ padding:"6px 10px", textAlign:"center", fontWeight:700, color:"#555", fontSize:"11px" }}>支払単価</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(jobTypeForm.dekaRates || dekaStyles.map(s=>({size:s,unitPrice:"",driverUnitPrice:""}))).map((dr) => (
+                      <tr key={dr.size} style={{ borderBottom:"1px solid #f0f0f0" }}>
+                        <td style={{ padding:"6px 10px", fontWeight:700, color:"#007a74" }}>{dr.size}</td>
+                        <td style={{ padding:"4px 8px" }}>
+                          <RetroInput type="number" min="0" value={dr.unitPrice} onChange={(e)=>{
+                            const base = jobTypeForm.dekaRates || dekaStyles.map(s=>({size:s,unitPrice:"",driverUnitPrice:""}));
+                            setJobTypeForm(v=>({ ...v, dekaRates: base.map(x => x.size===dr.size ? {...x, unitPrice:e.target.value} : x) }));
+                          }}/>
+                        </td>
+                        <td style={{ padding:"4px 8px" }}>
+                          <RetroInput type="number" min="0" value={dr.driverUnitPrice} onChange={(e)=>{
+                            const base = jobTypeForm.dekaRates || dekaStyles.map(s=>({size:s,unitPrice:"",driverUnitPrice:""}));
+                            setJobTypeForm(v=>({ ...v, dekaRates: base.map(x => x.size===dr.size ? {...x, driverUnitPrice:e.target.value} : x) }));
+                          }}/>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
           </div>
           <Fl label="課税区分">
             <label style={{ display:"inline-flex", alignItems:"center", gap:"6px", fontSize:"12px", cursor:"pointer" }}>
@@ -13233,7 +13362,28 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       };
 
       const updateRoute = (id, key, value) => {
-        setForm(f => ({ ...f, routes: (f.routes||[]).map(r => r?.id === id ? { ...r, [key]: value } : r) }));
+        setForm(f => ({ ...f, routes: (f.routes||[]).map(r => {
+          if (r?.id !== id) return r;
+          const next = { ...r, [key]: value };
+          // 【重要】仕事種別を選んだ瞬間、まだ何も単価を入力していなければ
+          // 仕事種別マスタの基準値をコピーしておく。
+          // 「マスタで基準を決めておけば、担当ルート登録が楽になる」という
+          // 目的のための連携で、ドライバーごとに単価を変えたい場合は
+          // そのままこの欄で上書きできる（マスタ側は変わらない）。
+          if (key === "jobTypeId") {
+            const jt = jobTypes.find(j => j?.id === value);
+            const untouched = (r.unitPrice === "" || r.unitPrice == null) && (r.driverUnitPrice === "" || r.driverUnitPrice == null);
+            if (jt && untouched) {
+              next.unitPrice = jt.unitPrice != null ? String(jt.unitPrice) : "";
+              next.driverUnitPrice = jt.driverUnitPrice != null ? String(jt.driverUnitPrice) : "";
+              // デカ宅はサイズ別単価もマスタからコピーする
+              if (jt.name === "デカ宅" && Array.isArray(jt.dekaRates)) {
+                next.dekaRates = jt.dekaRates.map(dr => ({ ...dr }));
+              }
+            }
+          }
+          return next;
+        }) }));
       };
 
       const updateDekaRate = (routeId, size, key, value) => {
