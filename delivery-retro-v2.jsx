@@ -1860,6 +1860,11 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         match_status: row?.match_status || "unmatched",
         matchedInvoice: row?.matched_invoice_id || null,
         matched_invoice_id: row?.matched_invoice_id || null,
+        // 【重要】これが無いと、ページを再読み込みした瞬間に「手動入力かどうか」の
+        // 判定が失われ、編集・削除ボタンが二度と出なくなる。
+        // 追加した直後は直せても、リロード後は永久に浮いたままになっていた。
+        bank_name: row?.bank_name || "",
+        bankName: row?.bank_name || "",
       }));
       setBankTransactions(mapped);
       // ダッシュボード（DashboardPage）は data?.bankTransactions を参照しているが、
@@ -1936,6 +1941,11 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         match_status: inserted?.match_status || "unmatched",
         matchedInvoice: inserted?.matched_invoice_id || null,
         matched_invoice_id: inserted?.matched_invoice_id || null,
+        // 【重要】この項目が無いと、一覧側の「手動入力かどうか」の判定に
+        // 引っかからず、せっかく実装した編集・削除ボタンが一切表示されない。
+        // 追加した直後の入出金が、二度と直せないまま浮き続けてしまっていた。
+        bank_name: inserted?.bank_name || "手動入力",
+        bankName: inserted?.bank_name || "手動入力",
       };
       setBankTransactions((prev) =>
         editingTxId
@@ -4764,7 +4774,9 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             setForm((f)=>({ ...f, payer_kana:normalizePayerKana(e.target.value) }));
           }}
         /></Fl>
-        <Fl label="住所"><RetroInput value={form.address} onChange={e=>setForm(f=>({...f,address:e.target.value}))}/></Fl>
+        <Fl label="住所（1行目に郵便番号を入れると、請求書に〒として印字されます）">
+          <RetroTextarea value={form.address} onChange={e=>setForm(f=>({...f,address:e.target.value}))} placeholder={"〒000-0000\n大阪府大阪市北区梅田1-1-1"} style={{ minHeight:"56px" }}/>
+        </Fl>
         {/* 【削除】以前はここに顧客ごとの「単価」欄があったが、
             実務では1社に対して単価が1つということはほとんど無く
             （チビ宅・デカ宅・ルートなど案件ごとに単価が違う）、
@@ -4814,7 +4826,9 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                   setCustomerDraft((prev)=>({ ...(prev||{}), payer_kana:normalizePayerKana(e.target.value) }));
                 }}
               /></Fl>
-              <Fl label="住所"><RetroInput value={customerDraft?.address || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), address:e.target.value }))}/></Fl>
+              <Fl label="住所（1行目に郵便番号を入れると、請求書に〒として印字されます）">
+                <RetroTextarea value={customerDraft?.address || ""} onChange={(e)=>setCustomerDraft((prev)=>({ ...(prev||{}), address:e.target.value }))} placeholder={"〒000-0000\n大阪府大阪市北区梅田1-1-1"} style={{ minHeight:"56px" }}/>
+              </Fl>
               {/* 単価は仕事種別マスタで管理するため、ここでは扱わない */}
               <div style={{display:"grid",gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",gap:"6px 12px"}}>
                 <Fl label="締め日">
@@ -9911,6 +9925,10 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
     return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
   });
   const [showJobTypeModal, setShowJobTypeModal] = useState(false);
+  // 【重要】単価変更時の確認メッセージで yen() を使っているのに、
+  // この画面には定義が無かった。単価を変えて保存を押すと
+  // 「yen is not defined」で処理が止まり、ボタンが無反応に見えていた。
+  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
   // デカ宅のサイズ区分。ドライバー編集の担当ルート表と共通の並び。
   const dekaStyles = ["100以下","140","160","180","200","220","240","260"];
   const [editingJobType, setEditingJobType] = useState(null);
@@ -10405,7 +10423,19 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
               </thead>
               <tbody>
                 {monthRecords.length === 0 && qualityDailyRows.length === 0 && <tr><td colSpan={11} style={{ padding:"16px", textAlign:"center", color:"#999" }}>この月の記録はありません</td></tr>}
-                {[...monthRecords].sort((a,b)=>b.date?.localeCompare(a.date||"")).map(rec => {
+                {/* 【重要】日付だけで並べると、同じ日に複数件あるとき
+                    「今しがた配送完了で追加されたもの」が一番上に来ない。
+                    受注完了で作られる実績のIDには作成時刻（ミリ秒）が
+                    埋め込まれているため、同じ日付ならその時刻の新しい順にする。 */}
+                {[...monthRecords].sort((a,b)=>{
+                  const byDate = b.date?.localeCompare(a.date||"");
+                  if (byDate !== 0) return byDate;
+                  const tsOf = (r) => {
+                    const m = String(r?.id||"").match(/(\d{10,})/);
+                    return m ? Number(m[1]) : 0;
+                  };
+                  return tsOf(b) - tsOf(a);
+                }).map(rec => {
                   const driver = drivers.find(d=>d?.id===rec?.driverId);
                   const customer = customers.find(c=>c?.id===rec?.customerId);
                   const jt = jobTypes.find(j=>j?.id===rec?.jobTypeId);
@@ -10766,19 +10796,38 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
           </div>
           <RetroTable
             headers={["ID","種別名","計算パターン","売上単価","支払単価","課税","メモ","操作"]}
-            rows={jobTypes.map(jt => [
+            rows={jobTypes.map(jt => {
+              // 【重要】デカ宅は個数×単価ではなく「サイズごとに単価が違う」。
+              // 一覧に単一の金額をそのまま出すと、それが正しい単価だと
+              // 誤解される（実際に使われるのはサイズ別の値）。
+              // サイズ別に設定していることが一目で分かる表示にする。
+              const isDekaRow = jt?.name === "デカ宅";
+              const rates = Array.isArray(jt?.dekaRates) ? jt.dekaRates : [];
+              const saleVals = rates.map(r => Number(r?.unitPrice) || 0).filter(v => v > 0);
+              const payVals = rates.map(r => Number(r?.driverUnitPrice) || 0).filter(v => v > 0);
+              const saleCell = isDekaRow
+                ? (saleVals.length > 0
+                    ? <span style={{ color:"#007a74", fontSize:"11px" }}>サイズ別（¥{Math.min(...saleVals).toLocaleString()}〜¥{Math.max(...saleVals).toLocaleString()}）</span>
+                    : <span style={{ color:"#999", fontSize:"11px" }}>サイズ別（未設定）</span>)
+                : <span style={{ color:"#007a74" }}>¥{(Number(jt?.unitPrice)||0).toLocaleString()}</span>;
+              const payCell = isDekaRow
+                ? (payVals.length > 0
+                    ? <span style={{ color:"#e65100", fontSize:"11px" }}>サイズ別（¥{Math.min(...payVals).toLocaleString()}〜¥{Math.max(...payVals).toLocaleString()}）</span>
+                    : <span style={{ color:"#999", fontSize:"11px" }}>サイズ別（未設定）</span>)
+                : <span style={{ color:"#e65100" }}>¥{(Number(jt?.driverUnitPrice)||0).toLocaleString()}</span>;
+              return [
               <span style={{ color:"#007a74", fontWeight:700 }}>{jt?.id}</span>,
               <span style={{ fontWeight:700 }}>{jt?.name}</span>,
               calcPatternLabel[jt?.calcPattern]||jt?.calcPattern,
-              <span style={{ color:"#007a74" }}>¥{(Number(jt?.unitPrice)||0).toLocaleString()}</span>,
-              <span style={{ color:"#e65100" }}>¥{(Number(jt?.driverUnitPrice)||0).toLocaleString()}</span>,
+              saleCell,
+              payCell,
               jt?.taxable ? <span style={{ color:"#2e7d32", fontWeight:700 }}>課税</span> : <span style={{ color:"#888" }}>非課税</span>,
               <span style={{ fontSize:"11px", color:"#888" }}>{jt?.note||"—"}</span>,
               <div style={{ display:"flex", gap:"4px" }}>
                 <RetroBtn small onClick={()=>{ setEditingJobType(jt); setJobTypeForm({ ...jt, unitPrice: String(jt?.unitPrice||""), driverUnitPrice: String(jt?.driverUnitPrice||"") }); setShowJobTypeModal(true); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
                 <RetroBtn small onClick={()=>deleteJobType(jt?.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
               </div>
-            ])}
+            ];})}
           />
         </div>
       )}
@@ -10923,7 +10972,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
       )}
 
       {showJobTypeModal && (
-        <Modal title={editingJobType ? "仕事種別編集" : "仕事種別追加"} icon={salesIcon} onClose={()=>{ setShowJobTypeModal(false); setShowJobTypeHistory(false); }} width={480}>
+        <Modal title={editingJobType ? "仕事種別編集" : "仕事種別追加"} icon={salesIcon} onClose={()=>{ setShowJobTypeModal(false); setShowJobTypeHistory(false); }} width={jobTypeForm.name === "デカ宅" ? 640 : 480}>
           <Fl label="種別名"><RetroInput value={jobTypeForm.name} onChange={e=>setJobTypeForm(v=>({...v,name:e.target.value}))} placeholder="例：ルート、チビ宅"/></Fl>
           <Fl label="計算パターン">
             <RetroSelect value={jobTypeForm.calcPattern} onChange={e=>setJobTypeForm(v=>({...v,calcPattern:e.target.value}))}>
@@ -10933,9 +10982,15 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
               <option value="time">時間制（時間×単価）</option>
             </RetroSelect>
           </Fl>
+          {/* 【重要】デカ宅は単価がサイズごとに違うため、下の単一の単価欄は使わない。
+              両方を同時に表示すると「結局どっちが使われるのか」分かりにくいため、
+              デカ宅を選んだら単一の単価欄は隠し、サイズ別の表だけを見せる。 */}
+          {jobTypeForm.name !== "デカ宅" && (
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
             <Fl label="売上単価（円）"><RetroInput type="number" min="0" value={jobTypeForm.unitPrice} onChange={e=>setJobTypeForm(v=>({...v,unitPrice:e.target.value}))} placeholder="例：180"/></Fl>
             <Fl label="ドライバー支払単価（円）"><RetroInput type="number" min="0" value={jobTypeForm.driverUnitPrice} onChange={e=>setJobTypeForm(v=>({...v,driverUnitPrice:e.target.value}))} placeholder="例：150"/></Fl>
+          </div>
+          )}
           {/* 【重要】「デカ宅」はサイズ（荷物の大きさ）によって単価が変わる。
               ドライバーの担当ルート側では、サイズ別の単価表がすでにあったが、
               仕事種別マスタ側では単一の単価しか設定できず、
@@ -10978,7 +11033,6 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
               </div>
             </div>
           )}
-          </div>
           <Fl label="課税区分">
             <label style={{ display:"inline-flex", alignItems:"center", gap:"6px", fontSize:"12px", cursor:"pointer" }}>
               <input type="checkbox" checked={!!jobTypeForm.taxable} onChange={e=>setJobTypeForm(v=>({...v,taxable:e.target.checked}))}/>
@@ -11774,7 +11828,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   .to .company { font-size:15pt; margin-top:8px; }
   .to .dept { font-size:12pt; margin-top:4px; }
   .from { width:46%; position:relative; font-size:10pt; line-height:1.85; }
-  .seal { position:absolute; right:0; top:26px; width:62px; height:62px; }
+  .seal { position:absolute; right:0; top:44px; width:62px; height:62px; }
   .lead { margin:10px 0 4px; }
   .metaR { text-align:left; font-size:10pt; line-height:1.8; }
   .sumbox { display:flex; border:1px solid #111; margin:10px 0 6px; }
@@ -11810,14 +11864,14 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
 
 <div class="head">
   <div class="to">
-    <div>${esc(customer?.address || "")}</div>
+    ${esc(customer?.address || "").split("\n").map((l) => `<div>${l}</div>`).join("")}
     <div class="company">${esc(inv?.customerName || customer?.name || "")}</div>
     <div class="dept">御中</div>
   </div>
   <div class="from">
     ${co.sealImage ? `<img class="seal" src="${co.sealImage}" alt="社印">` : ""}
     <div>発行日：${esc(inv?.issueDate || "")}</div>
-    <div>${esc(co.address)}</div>
+    ${esc(co.address).split("\n").map((l) => `<div>${l}</div>`).join("")}
     <div>${esc(co.name)}</div>
     ${co.invoiceRegNo ? `<div>登録番号：${esc(co.invoiceRegNo)}</div>` : ""}
     ${co.phone ? `<div>TEL：${esc(co.phone)}</div>` : ""}
@@ -12701,7 +12755,9 @@ ${inv?.note ? `<div style="margin-top:14px;font-size:10pt;">備考：${esc(inv.n
       {showCompanyModal && (
         <Modal title="会社情報設定" icon={companyIcon} onClose={()=>{ setShowCompanyModal(false); setShowCompanyHistory(false); }} width={620}>
           <Fl label="会社名"><RetroInput value={companyDraft.name} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), name:e.target.value }))}/></Fl>
-          <Fl label="住所"><RetroInput value={companyDraft.address} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), address:e.target.value }))}/></Fl>
+          <Fl label="住所（1行目に郵便番号を入れると、請求書に〒として印字されます）">
+            <RetroTextarea value={companyDraft.address} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), address:e.target.value }))} placeholder={"〒000-0000\n大阪府大阪市北区曽根崎2-2-2"} style={{ minHeight:"56px" }}/>
+          </Fl>
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"8px 12px" }}>
             <Fl label="電話番号"><RetroInput value={companyDraft.phone} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), phone:e.target.value }))}/></Fl>
             <Fl label="メール"><RetroInput value={companyDraft.email} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), email:e.target.value }))}/></Fl>
@@ -12775,7 +12831,8 @@ const DriversAccidentFormTab = ({ form, setForm, isMobile, tenantId }) => {
         <Fl label="内容"><RetroTextarea value={newAcc.detail} onChange={e=>setNewAcc(v=>({...v,detail:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
         <Fl label="処理結果"><RetroInput value={newAcc.result} onChange={e=>setNewAcc(v=>({...v,result:e.target.value}))}/></Fl>
         <RetroBtn onClick={async () => {
-          if (!newAcc.date) return;
+          // 日付が空のまま静かに終了すると「ボタンが反応しない」ように見えるため、必ず伝える。
+          if (!newAcc.date) { window.alert("発生日を入力してください。"); return; }
           const updated = [...(form.accidentLogs || []), { ...newAcc, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }];
           setForm(prev => ({ ...prev, accidentLogs: updated }));
           const { error } = await supabase
@@ -12820,7 +12877,7 @@ const DriversAccidentFormTab = ({ form, setForm, isMobile, tenantId }) => {
         </div>
         <Fl label="事故内容"><RetroTextarea value={newInt.detail} onChange={e=>setNewInt(v=>({...v,detail:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
         <RetroBtn onClick={async () => {
-          if (!newInt.date) return;
+          if (!newInt.date) { window.alert("発生日を入力してください。"); return; }
           const updated = [...(form.internalLogs || []), { ...newInt, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }];
           setForm(prev => ({ ...prev, internalLogs: updated }));
           const { error } = await supabase
@@ -12873,7 +12930,7 @@ const DriversHealthFormTab = ({ form, setForm, isMobile }) => {
         </div>
         <Fl label="特記事項"><RetroTextarea value={newHealth.note} onChange={e=>setNewHealth(v=>({...v,note:e.target.value}))} placeholder="高血圧・糖尿病など" style={{ minHeight:"60px" }}/></Fl>
         <RetroBtn onClick={() => {
-          if (!newHealth.date) return;
+          if (!newHealth.date) { window.alert("実施日を入力してください。"); return; }
           const updated = [...(form.healthLogs || []), { ...newHealth, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }];
           setForm(prev => ({ ...prev, healthLogs: updated }));
           setNewHealth({ date:"", org:"", note:"" });
@@ -12966,7 +13023,10 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [activeTab, setActiveTab] = useState("basic");
   // 安全教育履歴の入力欄。以前は健康・教育タブ側のコンポーネントにあったが、
   // 記録を「③適性診断」タブへ移動したため、こちらで持つ。
-  const [newTraining, setNewTraining] = useState({ date:"", content:"", sign:"" });
+  // 【重要】これまで何度か「実施日が空のまま押すと反応しない」という
+  // 報告があった。エラー表示を出す対策はしたが、そもそも空欄にならないよう
+  // 今日の日付を最初から入れておく（変更したければ普通に上書きできる）。
+  const [newTraining, setNewTraining] = useState({ date: getTodayLocalStr(), content:"", sign:"" });
   const [form, setForm] = useState(createEmptyDriverForm);
   const [newPassword, setNewPassword] = useState("");
   const [pwSaving, setPwSaving] = useState(false);
@@ -13288,10 +13348,17 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         </div>
         <Fl label="指導内容"><RetroTextarea value={newTraining.content} onChange={e=>setNewTraining(v=>({...v,content:e.target.value}))} style={{ minHeight:"60px" }}/></Fl>
         <RetroBtn onClick={() => {
-          if (!newTraining.date) return;
+          // 【重要】実施日を入れずに押すと、これまでは何も起きず終了していた。
+          // エラーも表示も出ないため、内容・署名だけ入力して押した人には
+          // 「ボタンが反応しない」ように見えてしまっていた。
+          // 何が足りないかを必ず伝える。
+          if (!newTraining.date) {
+            window.alert("実施日を入力してください。");
+            return;
+          }
           const updated = [...(form.trainingLogs || []), { ...newTraining, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }];
           setForm(prev => ({ ...prev, trainingLogs: updated }));
-          setNewTraining({ date:"", content:"", sign:"" });
+          setNewTraining({ date: getTodayLocalStr(), content:"", sign:"" });
         }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
           <Icon size={12}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>記録を追加
         </RetroBtn>
@@ -14122,7 +14189,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     setSelectedVehicleId(null);
   };
   const addInspection = async () => {
-    if (!newInspection.date) return;
+    if (!newInspection.date) { window.alert("実施日を入力してください。"); return; }
     setForm(f => {
       const updated = { ...f, inspectionHistory: [...(f.inspectionHistory||[]), { ...newInspection, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }] };
       return updated;
@@ -14171,7 +14238,7 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   };
   const removeAccident = (id) => { if (!window.confirm("この記録を削除しますか？")) return; setForm(f => ({ ...f, accidentHistory: (f.accidentHistory||[]).filter(x => x?.id !== id) })); };
   const addViolation = async () => {
-    if (!newViolation.date) return;
+    if (!newViolation.date) { window.alert("発生日を入力してください。"); return; }
     setForm(f => ({ ...f, violationHistory: [...(f.violationHistory||[]), { ...newViolation, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }] }));
     const penaltyAmount = Number(newViolation.penalty);
     const hasPenaltyAmount = newViolation.penalty !== "" && Number.isFinite(penaltyAmount);
