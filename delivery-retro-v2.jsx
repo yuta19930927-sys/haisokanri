@@ -11783,14 +11783,11 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
       address: companyInfo?.address || "",
       phone: companyInfo?.phone || "",
       email: companyInfo?.email || "",
-      // 【重要】会社情報の項目名は、会社情報設定の画面と必ず合わせること。
-      // 名前が違うと、入力しても請求書に出てこない（実際に食い違っていた）。
       invoiceRegNo: companyInfo?.invoiceRegistrationNumber || "",
       sealImage: companyInfo?.stampImage || "",
       // 【重要】振込先は会社情報の画面で「複数行のテキスト」として入力される。
-      // ここでオブジェクトとして扱うと、項目が全部 undefined になり
-      // 請求書の振込口座欄が空になってしまう（実際にそうなっていた）。
-      // 文字列でもオブジェクトでも表示できるようにしておく。
+      // 過去に別の形式（オブジェクト）で保存されていた場合でも空欄にならないよう、
+      // 文字列・オブジェクトのどちらでも読み取れるようにしておく。
       bankText: typeof companyInfo?.bankInfo === "string"
         ? companyInfo.bankInfo
         : [companyInfo?.bankInfo?.bankName, companyInfo?.bankInfo?.branch,
@@ -11803,11 +11800,12 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     const taxRatePct = Math.round(TAX_RATE * 100);
     const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const yenStr = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+    const asLines = (s) => esc(s).split("\n").map((l) => `<div>${l || "&nbsp;"}</div>`).join("");
 
     const rows = items.map((it) => `
       <tr>
-        <td class="c">${esc(it.date || inv?.issueDate || "")}</td>
-        <td>${esc(it.name || "")}</td>
+        <td class="c date">${esc(it.date || inv?.issueDate || "")}</td>
+        <td class="name">${esc(it.name || "")}</td>
         <td class="r">${Number(it.qty) || 0}</td>
         <td class="c">${esc(it.unit || "式")}</td>
         <td class="r">${yenStr(it.unitPrice)}</td>
@@ -11815,63 +11813,131 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         <td class="r">${yenStr(it.subtotal)}</td>
       </tr>`).join("");
 
+    // 【重要】ここから先は「印刷レイアウトを優先」という明確な指示に沿って作る。
+    // 画面幅に応じて伸び縮みするレスポンシブな設計ではなく、
+    // A4用紙（210mm×297mm）にそのまま収まる寸法（mm単位）で固定する。
+    // これにより、ブラウザでプレビューしたときの見た目と、
+    // 実際に印刷（Ctrl+P）したときの見た目が一致する。
     return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <title>請求書 ${esc(inv?.id || "")}</title>
 <style>
-  @page { size: A4; margin: 16mm 14mm; }
+  /* A4縦、上下左右15mmの余白。印刷時はこの指定がそのまま使われる。 */
+  @page { size: A4 portrait; margin: 13mm; }
+
   * { box-sizing: border-box; }
-  body { font-family: 'Noto Sans JP','Hiragino Sans','Meiryo',sans-serif; color:#111; font-size:11pt; margin:0; }
-  h1 { font-size:22pt; margin:0 0 6px; letter-spacing:4px; }
-  .hr { border-bottom:2.5px solid #111; margin-bottom:14px; }
-  .head { display:flex; justify-content:space-between; gap:20px; margin-bottom:18px; }
-  .to { flex:1; }
-  .to .company { font-size:15pt; margin-top:8px; }
-  .to .dept { font-size:12pt; margin-top:4px; }
-  .from { width:46%; position:relative; font-size:10pt; line-height:1.85; }
-  .seal { position:absolute; right:0; top:44px; width:62px; height:62px; }
-  .lead { margin:10px 0 4px; }
-  .metaR { text-align:left; font-size:10pt; line-height:1.8; }
-  .sumbox { display:flex; border:1px solid #111; margin:10px 0 6px; }
-  .sumbox .lbl { background:#4a4a4a; color:#fff; padding:8px 10px; font-size:10pt; font-weight:700; width:88px; display:flex; align-items:center; justify-content:center; text-align:center; }
-  .sumbox .val { flex:1; padding:8px 12px; text-align:right; font-size:17pt; font-weight:700; display:flex; align-items:center; justify-content:flex-end; }
-  .sumbox .val.small { font-size:11pt; font-weight:400; }
-  .sumbox .cell { border-left:1px solid #111; }
-  .bankttl { background:#eee; padding:8px 10px; font-size:10pt; font-weight:700; width:88px; display:flex; align-items:center; justify-content:center; }
-  .bankbody { flex:1; padding:6px 10px; font-size:10pt; line-height:1.7; }
-  .lcol { width:56%; display:flex; flex-direction:column; }
-  .rcol { width:44%; display:flex; }
-  .row2 { display:flex; border-top:1px solid #111; }
-  .note { font-size:9.5pt; margin:2px 0; }
-  table.items { width:100%; border-collapse:collapse; margin-top:14px; font-size:10pt; }
-  table.items th { background:#e6e6e6; border-top:1.5px solid #111; border-bottom:1.5px solid #111; padding:7px 8px; font-weight:700; letter-spacing:1px; }
-  table.items td { border-bottom:1px solid #ddd; padding:7px 8px; }
-  table.items tr:nth-child(even) td { background:#f7f7f7; }
+  html, body { margin:0; padding:0; background:#ddd; }
+  @media print { html, body { background:#fff; } }
+
+  /* 画面表示のときも、印刷したときと同じ幅（A4横幅から余白を引いた180mm）で
+     固定する。ウィンドウ幅に合わせて伸び縮みさせない。 */
+  body {
+    font-family: 'Noto Sans JP','Hiragino Kaku Gothic ProN','Meiryo',sans-serif;
+    color:#111;
+    display:flex; justify-content:center;
+  }
+  .page {
+    width:184mm;
+    min-height:271mm;
+    background:#fff;
+    padding:0;
+    margin:8mm 0;
+    box-shadow:0 0 6px rgba(0,0,0,0.15);
+  }
+  @media print {
+    .page { width:auto; min-height:0; margin:0; box-shadow:none; }
+  }
+
+  h1 { font-size:26pt; margin:0 0 4mm; letter-spacing:3px; font-weight:700; }
+  .hr { border-bottom:2.2pt solid #111; margin-bottom:5mm; }
+
+  .head { display:flex; justify-content:space-between; margin-bottom:4mm; }
+  .to, .from { width:48%; font-size:10.5pt; line-height:1.55; }
+  .to .company { font-size:15pt; font-weight:700; margin-top:2mm; }
+  .to .dept { font-size:10.5pt; margin-top:1mm; }
+  .from { position:relative; }
+  .seal { position:absolute; right:0; top:9mm; width:20mm; height:20mm; object-fit:contain; }
+
+  .leadrow { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:3mm; }
+  .lead { font-size:10.5pt; }
+  .meta { font-size:10.5pt; line-height:1.6; text-align:left; }
+
+  .summary { display:flex; border:1pt solid #111; margin-bottom:2mm; }
+  .summary .left { width:56%; display:flex; flex-direction:column; }
+  .summary .row { display:flex; flex:1; border-bottom:1pt solid #111; }
+  .summary .row:last-child { border-bottom:none; }
+  .summary .label {
+    background:#4a4a4a; color:#fff; width:30mm; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; text-align:center;
+    font-size:9.5pt; font-weight:700; padding:2mm;
+  }
+  .summary .value {
+    flex:1; display:flex; align-items:center; justify-content:flex-end;
+    padding:2mm 4mm; font-size:9.5pt;
+  }
+  .summary .row:first-child .value { font-size:16pt; font-weight:700; }
+  .summary .right { width:44%; display:flex; border-left:1pt solid #111; }
+  .summary .banklabel {
+    background:#e8e8e8; width:22mm; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; text-align:center;
+    font-size:9.5pt; font-weight:700; padding:2mm;
+  }
+  .summary .bankbody { flex:1; padding:2mm 3mm; font-size:9.5pt; line-height:1.6; display:flex; flex-direction:column; justify-content:center; }
+  .bankempty { color:#999; }
+
+  .note { font-size:8.5pt; margin:1mm 0; color:#333; }
+
+  table.items { width:100%; border-collapse:collapse; margin-top:5mm; table-layout:fixed; font-size:9.5pt; }
+  table.items col.date   { width:23mm; }
+  table.items col.name   { width:auto; }
+  table.items col.qty    { width:12mm; }
+  table.items col.unit   { width:12mm; }
+  table.items col.price  { width:21mm; }
+  table.items col.taxp   { width:12mm; }
+  table.items col.amount { width:23mm; }
+  table.items th, table.items td { font-size:9pt; }
+  table.items td.date, table.items th:first-child { white-space:nowrap; }
+  table.items th {
+    background:#e7e7e7; border-top:1.3pt solid #111; border-bottom:1.3pt solid #111;
+    padding:2mm 1.5mm; font-weight:700; letter-spacing:0.5px;
+  }
+  table.items td { border-bottom:0.5pt solid #ddd; padding:1.2mm 1.5mm; overflow-wrap:break-word; }
+  table.items td.name { word-break:break-all; }
+  table.items tr:nth-child(even) td { background:#f6f6f6; }
   .c { text-align:center; } .r { text-align:right; }
-  .totals { display:flex; justify-content:space-between; margin-top:12px; gap:24px; }
-  .taxbreak { font-size:9.5pt; }
+
+  .bottom { display:flex; justify-content:space-between; margin-top:3mm; }
+  .taxbreak { font-size:8.8pt; }
   .taxbreak table { border-collapse:collapse; }
-  .taxbreak th { text-align:left; font-weight:700; padding:4px 22px 4px 0; border-bottom:1px solid #111; }
-  .taxbreak td { padding:4px 22px 4px 0; text-align:right; }
-  .grand { min-width:260px; font-size:10.5pt; }
-  .grand div { display:flex; justify-content:space-between; padding:5px 0; }
-  .grand .line { border-top:1px solid #111; }
-  .grand .final { border:2px solid #111; padding:7px 10px; font-weight:700; font-size:12pt; margin-top:4px; }
-  @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+  .taxbreak th { text-align:left; font-weight:700; padding:1mm 6mm 1.5mm 0; border-bottom:1pt solid #111; }
+  .taxbreak td { padding:1mm 6mm 1mm 0; text-align:right; }
+  .taxbreak td:first-child { text-align:left; }
+
+  .grand { min-width:60mm; font-size:9.8pt; }
+  .grand .line { display:flex; justify-content:space-between; padding:1.3mm 2mm; }
+  .grand .final { display:flex; justify-content:space-between; border:1.3pt solid #111; padding:2mm 3mm; font-weight:700; font-size:11.5pt; margin-top:1mm; }
+
+  .footnote { margin-top:6mm; font-size:9pt; }
+
+  /* 行数が多い請求書でも、見出し行が各ページの先頭に繰り返し出るようにする。
+     用紙1枚に収まらない場合でも、2ページ目以降で列の意味が分かるようにするため。 */
+  table.items thead { display: table-header-group; }
+  tr { page-break-inside: avoid; }
 </style></head><body>
+<div class="page">
 
 <h1>請求書</h1>
 <div class="hr"></div>
 
 <div class="head">
   <div class="to">
-    ${esc(customer?.address || "").split("\n").map((l) => `<div>${l}</div>`).join("")}
+    ${asLines(customer?.address || "")}
     <div class="company">${esc(inv?.customerName || customer?.name || "")}</div>
     <div class="dept">御中</div>
   </div>
   <div class="from">
     ${co.sealImage ? `<img class="seal" src="${co.sealImage}" alt="社印">` : ""}
     <div>発行日：${esc(inv?.issueDate || "")}</div>
-    ${esc(co.address).split("\n").map((l) => `<div>${l}</div>`).join("")}
+    ${asLines(co.address)}
     <div>${esc(co.name)}</div>
     ${co.invoiceRegNo ? `<div>登録番号：${esc(co.invoiceRegNo)}</div>` : ""}
     ${co.phone ? `<div>TEL：${esc(co.phone)}</div>` : ""}
@@ -11879,29 +11945,29 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   </div>
 </div>
 
-<div class="head" style="margin-bottom:6px;">
+<div class="leadrow">
   <div class="lead">下記の通りご請求申し上げます。</div>
-  <div class="from metaR">
+  <div class="meta">
     <div>請求書番号：${esc(inv?.id || "")}</div>
     <div>請求日：${esc(inv?.issueDate || "")}</div>
   </div>
 </div>
 
-<div style="display:flex; border:1px solid #111;">
-  <div class="lcol">
-    <div style="display:flex;">
-      <div class="lbl" style="background:#4a4a4a;color:#fff;padding:8px 10px;font-size:10pt;font-weight:700;width:96px;display:flex;align-items:center;justify-content:center;text-align:center;">ご請求金額<br>（税込）</div>
-      <div style="flex:1;padding:8px 12px;text-align:right;font-size:17pt;font-weight:700;display:flex;align-items:center;justify-content:flex-end;">${yenStr(inv?.total)}</div>
+<div class="summary">
+  <div class="left">
+    <div class="row">
+      <div class="label">ご請求金額<br>（税込）</div>
+      <div class="value">${yenStr(inv?.total)}</div>
     </div>
-    <div class="row2" style="flex:1;">
-      <div class="lbl" style="background:#4a4a4a;color:#fff;padding:8px 10px;font-size:10pt;font-weight:700;width:96px;display:flex;align-items:center;justify-content:center;">お支払い期限</div>
-      <div style="flex:1;padding:8px 12px;text-align:right;font-size:11pt;display:flex;align-items:center;justify-content:flex-end;">${esc(inv?.dueDate || "")}</div>
+    <div class="row">
+      <div class="label">お支払い期限</div>
+      <div class="value">${esc(inv?.dueDate || "")}</div>
     </div>
   </div>
-  <div class="rcol" style="border-left:1px solid #111;">
-    <div class="bankttl">振込口座</div>
+  <div class="right">
+    <div class="banklabel">振込口座</div>
     <div class="bankbody">
-      ${esc(co.bankText).split("\n").map((l) => `<div>${l}</div>`).join("")}
+      ${co.bankText ? asLines(co.bankText) : `<div class="bankempty">（振込先未登録）</div>`}
     </div>
   </div>
 </div>
@@ -11909,35 +11975,39 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
 <div class="note">※お振込み手数料は御社ご負担にてお願いいたします。</div>
 
 <table class="items">
+  <colgroup>
+    <col class="date"><col class="name"><col class="qty"><col class="unit"><col class="price"><col class="taxp"><col class="amount">
+  </colgroup>
   <thead><tr>
-    <th style="width:11%">日 付</th>
+    <th class="c">日付</th>
     <th>品番・品名</th>
-    <th style="width:7%">数 量</th>
-    <th style="width:7%">単 位</th>
-    <th style="width:12%">単 価</th>
-    <th style="width:7%">税 率</th>
-    <th style="width:14%">金 額</th>
+    <th class="c">数量</th>
+    <th class="c">単位</th>
+    <th class="c">単価</th>
+    <th class="c">税率</th>
+    <th class="c">金額</th>
   </tr></thead>
   <tbody>${rows}</tbody>
 </table>
 
-<div class="totals">
+<div class="bottom">
   <div class="taxbreak">
     <table>
-      <tr><th>税率内訳</th><th style="text-align:right;">税抜金額</th><th style="text-align:right;">消費税額</th></tr>
+      <tr><th>税率内訳</th><th>税抜金額</th><th>消費税額</th></tr>
       <tr><td>${taxRatePct}%対象</td><td>${yenStr(inv?.amount)}</td><td>${yenStr(inv?.tax)}</td></tr>
       <tr><td>非課税</td><td>¥0</td><td>¥0</td></tr>
     </table>
   </div>
   <div class="grand">
-    <div><span>小計</span><span>${yenStr(inv?.amount)}</span></div>
+    <div class="line"><span>小計</span><span>${yenStr(inv?.amount)}</span></div>
     <div class="line"><span>消費税</span><span>${yenStr(inv?.tax)}</span></div>
     <div class="final"><span>合計金額</span><span>${yenStr(inv?.total)}</span></div>
   </div>
 </div>
 
-${inv?.note ? `<div style="margin-top:14px;font-size:10pt;">備考：${esc(inv.note)}</div>` : ""}
+${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
 
+</div>
 </body></html>`;
   };
 
