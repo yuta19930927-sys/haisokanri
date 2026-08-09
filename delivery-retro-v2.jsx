@@ -15783,6 +15783,37 @@ const defaultLoadCutoff = (monthsBack = 15) => {
   return formatDate(d);
 };
 
+/**
+ * 楽観的ロック用：このテナントの「最後にいつ保存が行われたか」を取得する。
+ * データを読み込むタイミングで一緒に取得しておき、その後の保存時に
+ * 「自分が読み込んだ後に、他の場所で更新されていないか」の判定に使う。
+ *
+ * 【重要】tenant_sync_state テーブルが存在しない（マイグレーション未実行）
+ * 場合や、何らかの理由で読み込みに失敗した場合は null を返す。
+ * その場合、保存時のロックチェックは自動的にスキップされる
+ * （＝今まで通りの、チェック無しの保存になる）。
+ * 「ロック機構自体の不調で保存が一切できなくなる」よりは、
+ * 「ロックが一時的に効かない」ほうが実害が小さいための判断。
+ */
+const fetchTenantSyncState = async (tenantId) => {
+  if (tenantId == null || tenantId === "") return null;
+  try {
+    const { data: row, error } = await supabase
+      .from("tenant_sync_state")
+      .select("updated_at")
+      .eq("tenant_id", tenantId)
+      .maybeSingle();
+    if (error) {
+      console.warn("fetchTenantSyncState: 読み込みに失敗しました（楽観的ロックは今回スキップされます）", error);
+      return null;
+    }
+    return row?.updated_at ?? null;
+  } catch (e) {
+    console.warn("fetchTenantSyncState: 読み込みに失敗しました（楽観的ロックは今回スキップされます）", e);
+    return null;
+  }
+};
+
 const fetchDataFromSupabase = async (tenantId) => {
   // tenantId が指定されていない場合に「絞り込みなし＝全テナントの全データを返す」という
   // 動作になっていると、将来この関数が想定外の場所から呼ばれたときに
@@ -15898,13 +15929,21 @@ const invoiceRowToUpsert = (row, tenantId) => {
   return { id: dbId, payload, tenant_id: tenantId };
 };
 
-const saveDataToSupabase = async (nextData, prevData, tenantId) => {
+const saveDataToSupabase = async (nextData, prevData, tenantId, expectedUpdatedAt) => {
   // テナントが確定していない状態での保存は、tenant_id が null のデータを
   // 作ってしまったり、削除範囲の絞り込みが効かなくなったりするため、
   // ここで明確に拒否する（fetchDataFromSupabase と同じ方針）。
   if (tenantId == null || tenantId === "") {
     throw new Error("saveDataToSupabase: tenantId が指定されていません（テナント未確定の状態での保存は許可されません）");
   }
+  // 【重要・楽観的ロック】expectedUpdatedAt は「呼び出し側が最後に
+  // 読み込んだ時点のサーバー側の最終更新時刻」。これをRPCに渡し、
+  // 実際にDBへ書き込む直前に、DB側で「その時刻から変わっていないか」を
+  // 確認してもらう。もし自分が読み込んだ後に、他の場所（別の担当者、
+  // 別のタブ、SQL Editorからの直接操作など）で更新されていた場合、
+  // 何も書き込まずにエラーとして中断される。
+  // これにより「気づかないまま他人の変更・自分の古い内容で上書きする」
+  // 事故（実際に一度発生した）を、DB側のトランザクション内で確実に防ぐ。
 
   // ============================================================
   // 【重要】以前はテーブルごとに個別のupsert/deleteリクエストを送っており、
@@ -16021,18 +16060,39 @@ const saveDataToSupabase = async (nextData, prevData, tenantId) => {
 
   // upserts・deletesが両方とも空なら、そもそも呼び出す必要が無い
   // （companyInfoが未設定のみ、といった最初の1回などで起こり得る）。
+  // この場合はDBを一切変更しないので、expectedUpdatedAt もそのまま返す
+  // （呼び出し側が持っている「最後に確認した時刻」は変わらず有効）。
   if (upserts.length === 0 && deletes.length === 0) {
     window.__hakomaneLastSyncAt = Date.now();
-    return;
+    return { updatedAt: expectedUpdatedAt ?? null, skipped: true };
   }
 
-  const { error } = await supabase.rpc("save_tenant_data_atomic", {
+  const { data: newUpdatedAt, error } = await supabase.rpc("save_tenant_data_atomic", {
     p_tenant_id: tenantId,
     p_upserts: upserts,
     p_deletes: deletes,
+    p_expected_updated_at: expectedUpdatedAt ?? null,
   });
 
   if (error) {
+    // 【重要・楽観的ロック】DB関数側は、競合を検出した場合、
+    // メッセージの先頭を "CONFLICT:" にして例外を投げる（このときも
+    // 何もDBに書き込まれていない）。ここでその印を見て、
+    // 「通信エラー等による失敗（再試行してよい）」と
+    // 「他の場所で既に更新されている（絶対に古い内容を再送してはいけない）」
+    // を区別できるようにする。呼び出し元（自動保存）は、
+    // isConflict が true のエラーを受け取ったら、自動再試行を止めて
+    // 利用者に再読み込みを促す。
+    const isConflict = typeof error.message === "string" && error.message.includes("CONFLICT:");
+    if (isConflict) {
+      const conflictError = new Error(
+        "他の場所でこのデータが更新されているため、保存を中断しました。画面を再読み込みしてから、もう一度操作してください。"
+      );
+      conflictError.isConflict = true;
+      conflictError.cause = error;
+      throw conflictError;
+    }
+
     // 【重要】以前はここで「一部のテーブルだけ失敗」という中途半端な
     // 状態がそのままDBに残っていた。今はRPCが1つのトランザクションで
     // 実行されるため、エラーになった場合は「何も保存されていない」
@@ -16043,9 +16103,12 @@ const saveDataToSupabase = async (nextData, prevData, tenantId) => {
     throw new Error(`データの保存に失敗しました（トランザクション全体が取り消されました。DB側の内容は変更されていません）: ${error.message || error}`);
   }
 
-  // 保存が完了した時刻を記録しておく。次回の保存時、サーバー側に
-  // この時刻より新しい更新があれば「他の人が編集した」と判定できる。
+  // 保存が完了した時刻を記録しておく。
   window.__hakomaneLastSyncAt = Date.now();
+  // DB関数が返した「実際に書き込まれた時刻」を呼び出し元に返す。
+  // 次回の保存では、これを expectedUpdatedAt として渡してもらうことで、
+  // 「自分のこの保存の後に、誰かが更新していないか」を検出できる。
+  return { updatedAt: newUpdatedAt ?? null, skipped: false };
 };
 
 const cloneData = (value) => {
@@ -16145,6 +16208,12 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   // 「対応せず放置される」という元々の安全設計も両立させる。
   const [dismissedAlertIds, setDismissedAlertIds] = useState(() => new Set());
   const [saveErrorBanner, setSaveErrorBanner] = useState(null);
+  // 【楽観的ロック】この画面が最後に確認した「サーバー側の最終更新時刻」。
+  // 保存のたびにDBへ渡し、これより新しい更新がDB側に無いことを確認する。
+  // 競合が検出された場合は setSaveConflictBanner で警告を表示する
+  // （saveErrorBanner とは別扱い：自動再試行させないため）。
+  const lastKnownUpdatedAtRef = useRef(null);
+  const [saveConflictBanner, setSaveConflictBanner] = useState(false);
   const previousDataRef = useRef(createEmptyData());
   const latestDataRef = useRef(initialData);
   const saveGenerationRef = useRef(0);
@@ -16237,6 +16306,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
       setIsLoaded(true);
       previousDataRef.current = cloneData(initialData);
       latestDataRef.current = initialData;
+      lastKnownUpdatedAtRef.current = null;
       return;
     }
 
@@ -16246,6 +16316,10 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     // ギャップがあったため、ロード開始時点で即座にクリアする。
     setIsLoaded(false);
     setData(createEmptyData());
+    // 前のテナントの「最終更新時刻」を持ち越さない
+    // （別のテナントの時刻と比較してしまうのを防ぐ）。
+    lastKnownUpdatedAtRef.current = null;
+    setSaveConflictBanner(false);
 
     const load = async () => {
       try {
@@ -16256,8 +16330,11 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         // 利用者はブラウザを強制終了するしかなかった。
         // 一定時間で必ず「失敗」として扱い、再読み込みを促せるようにする。
         const LOAD_TIMEOUT_MS = 20000;
-        const remoteData = await Promise.race([
-          fetchDataFromSupabase(tenantId),
+        // データ本体と、楽観的ロック用の「最終更新時刻」を同時に取得する。
+        // どちらも同じ tenantId に対する読み取りで、互いに依存しないため
+        // 並行して取得してよい。
+        const [remoteData, syncUpdatedAt] = await Promise.race([
+          Promise.all([fetchDataFromSupabase(tenantId), fetchTenantSyncState(tenantId)]),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error("timeout")), LOAD_TIMEOUT_MS)
           ),
@@ -16273,11 +16350,13 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           setData(merged);
           previousDataRef.current = cloneData(merged);
           latestDataRef.current = merged;
+          lastKnownUpdatedAtRef.current = syncUpdatedAt;
         } else {
-          await saveDataToSupabase(initialData, createEmptyData(), tenantId);
+          const result = await saveDataToSupabase(initialData, createEmptyData(), tenantId, syncUpdatedAt);
           setData(initialData);
           previousDataRef.current = cloneData(initialData);
           latestDataRef.current = initialData;
+          lastKnownUpdatedAtRef.current = result?.updatedAt ?? syncUpdatedAt ?? null;
         }
       } catch (error) {
         // データ取得に失敗した場合、以前は setData を呼んでいなかったため、
@@ -16288,6 +16367,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         setData(createEmptyData());
         previousDataRef.current = cloneData(initialData);
         latestDataRef.current = initialData;
+        lastKnownUpdatedAtRef.current = null;
         setSaveErrorBanner(
           error?.message === "timeout"
             ? "通信に時間がかかっているため、データの読み込みを中断しました。通信状態を確認し、画面を再読み込みしてください。"
@@ -16415,55 +16495,89 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
 
     saveChainRef.current = saveChainRef.current.then(async () => {
       if (saveGenerationRef.current !== gen) return;
+      // 【楽観的ロック】この保存サイクルの開始時点で、自分が知っている
+      // 「サーバー側の最終更新時刻」を確定させておく（後で再試行する際も
+      // この時点の値を基準にする。再試行の直前に最新化してしまうと、
+      // 「本当は競合していたのに、いつの間にか基準がズレて見逃す」
+      // ことになりかねないため、1回の保存サイクルの中では固定する）。
+      const expectedUpdatedAt = lastKnownUpdatedAtRef.current;
       try {
-        await saveDataToSupabase(snapshot, previousDataRef.current, tenantId);
+        const result = await saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt);
         if (saveGenerationRef.current === gen) {
           previousDataRef.current = cloneData(snapshot);
+          lastKnownUpdatedAtRef.current = result?.updatedAt ?? expectedUpdatedAt;
           setSaveErrorBanner(null);
+          setSaveConflictBanner(false);
           // これ以降に新しい変更が無ければ、未保存は解消したとみなす。
-          if (saveGenerationRef.current === gen) hasUnsavedChangesRef.current = false;
+          hasUnsavedChangesRef.current = false;
         }
       } catch (error) {
         console.warn("Failed to save data to Supabase:", error);
         // 保存に失敗した場合は「未保存のまま」として扱い、
         // 閉じようとしたら必ず警告が出るようにする。
         hasUnsavedChangesRef.current = true;
-        setSaveErrorBanner(
-          "データの保存に失敗しました。自動で再試行します（このまま画面を閉じると変更が失われる可能性があります）。"
-        );
-        // 【重要】以前は、保存に失敗しても「次に何か操作するまで」
-        // 再送されなかった。例えば「受注を配送完了にする」操作で
-        // orders は保存できたが daily_records（実績）だけ失敗した場合、
-        // 利用者が何も気づかずページを閉じたりリロードしたりすると、
-        // orders は「完了」のままDBに残るのに、実績（売上）だけが
-        // 一度も保存されず消えてしまう――という事故が起こり得た。
-        // 一時的な通信不調が原因であることが多いため、数秒後に
-        // 同じ内容（snapshot）で自動的に再試行する。
-        // ここで再試行するのは「このタイミングのデータ」で十分。
-        // 再試行までの間に別の変更があれば、そちらが新しい保存
-        // サイクル（gen）として動くため、二重に保存されることはない。
-        if (saveGenerationRef.current === gen) {
-          setTimeout(() => {
-            // 再試行する時点で、すでに新しい保存が始まっていたり
-            // 既に成功していたりする場合は、古い内容で上書きしない。
-            if (saveGenerationRef.current !== gen) return;
-            saveDataToSupabase(snapshot, previousDataRef.current, tenantId)
-              .then(() => {
-                if (saveGenerationRef.current === gen) {
-                  previousDataRef.current = cloneData(snapshot);
-                  setSaveErrorBanner(null);
-                  hasUnsavedChangesRef.current = false;
-                }
-              })
-              .catch((retryError) => {
-                console.warn("Retry failed to save data to Supabase:", retryError);
-                if (saveGenerationRef.current === gen) {
-                  setSaveErrorBanner(
-                    "データの保存に失敗しています。通信状態をご確認のうえ、画面を閉じずに何か操作を行ってください（保存を再試行します）。"
-                  );
-                }
-              });
-          }, 8000);
+
+        if (error?.isConflict) {
+          // 【重要・事故防止】他の場所（別の担当者、別のタブ、SQL Editorから
+          // の直接操作など）で、既にこのテナントのデータが更新されている。
+          // ここで同じ古い内容（snapshot）を自動的に再送してしまうと、
+          // その更新を無警告で消してしまう――実際に一度発生した事故と
+          // 全く同じ構図になる。そのため、競合を検出した場合は
+          // 絶対に自動再試行しない。利用者に再読み込みを促し、
+          // 最新の内容を取り込んでから改めて編集してもらう。
+          if (saveGenerationRef.current === gen) {
+            setSaveConflictBanner(true);
+          }
+        } else {
+          setSaveErrorBanner(
+            "データの保存に失敗しました。自動で再試行します（このまま画面を閉じると変更が失われる可能性があります）。"
+          );
+          // 【重要】以前は、保存に失敗しても「次に何か操作するまで」
+          // 再送されなかった。例えば「受注を配送完了にする」操作で
+          // orders は保存できたが daily_records（実績）だけ失敗した場合、
+          // 利用者が何も気づかずページを閉じたりリロードしたりすると、
+          // orders は「完了」のままDBに残るのに、実績（売上）だけが
+          // 一度も保存されず消えてしまう――という事故が起こり得た。
+          // 一時的な通信不調が原因であることが多いため、数秒後に
+          // 同じ内容（snapshot）で自動的に再試行する。
+          // ここで再試行するのは「このタイミングのデータ」で十分。
+          // 再試行までの間に別の変更があれば、そちらが新しい保存
+          // サイクル（gen）として動くため、二重に保存されることはない。
+          //
+          // 【楽観的ロック】この再試行も expectedUpdatedAt（この保存
+          // サイクル開始時点の値）をそのまま使う。もし再試行までの間に
+          // 本当に他の場所で更新されていれば、DB側が今度こそ検出して
+          // 弾いてくれるため、ここで見逃しても安全側に倒れる。
+          if (saveGenerationRef.current === gen) {
+            setTimeout(() => {
+              // 再試行する時点で、すでに新しい保存が始まっていたり
+              // 既に成功していたりする場合は、古い内容で上書きしない。
+              if (saveGenerationRef.current !== gen) return;
+              saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt)
+                .then((retryResult) => {
+                  if (saveGenerationRef.current === gen) {
+                    previousDataRef.current = cloneData(snapshot);
+                    lastKnownUpdatedAtRef.current = retryResult?.updatedAt ?? expectedUpdatedAt;
+                    setSaveErrorBanner(null);
+                    hasUnsavedChangesRef.current = false;
+                  }
+                })
+                .catch((retryError) => {
+                  console.warn("Retry failed to save data to Supabase:", retryError);
+                  if (saveGenerationRef.current === gen) {
+                    if (retryError?.isConflict) {
+                      // 再試行の時点で競合が判明した場合も同様に、
+                      // それ以上は自動再試行せず、再読み込みを促す。
+                      setSaveConflictBanner(true);
+                    } else {
+                      setSaveErrorBanner(
+                        "データの保存に失敗しています。通信状態をご確認のうえ、画面を閉じずに何か操作を行ってください（保存を再試行します）。"
+                      );
+                    }
+                  }
+                });
+            }, 8000);
+          }
         }
       } finally {
         // 最新の保存サイクルだけが「保存完了」を反映する。
@@ -16496,11 +16610,17 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
 
     const flush = () => {
       const snapshot = cloneData(latestDataRef.current);
+      const expectedUpdatedAt = lastKnownUpdatedAtRef.current;
       saveChainRef.current = saveChainRef.current.then(async () => {
         try {
-          await saveDataToSupabase(snapshot, previousDataRef.current, tenantId);
+          const result = await saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt);
           previousDataRef.current = cloneData(snapshot);
+          lastKnownUpdatedAtRef.current = result?.updatedAt ?? expectedUpdatedAt;
         } catch (error) {
+          // ページを離れる際の最後のダメ押し保存。競合していた場合も
+          // （画面を離れる最中のため）ここでは静かに諦める。
+          // すでに他の場所で更新済みなら、それを上書きせずに済んでいるので、
+          // 何もしないこと自体が正しい振る舞い。
           console.warn("Failed to flush save to Supabase:", error);
         }
       });
@@ -16718,7 +16838,48 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         </div>
       )}
 
-      {saveErrorBanner && (
+      {saveConflictBanner ? (
+        // 【楽観的ロック】競合（他の場所での更新）を検出した場合の専用バナー。
+        // 通常のエラーバナー（saveErrorBanner）とはあえて分けている：
+        // ・×ボタンだけで消せてしまうと、利用者が気づかないまま
+        // 　編集を続け、また保存を試みてしまう可能性があるため、
+        // 　「再読み込み」の導線を常に太く出しておく。
+        // ・自動再試行は行わない（行うと、今度は自分の側の変更で
+        // 　相手の更新を上書きしてしまう）。
+        <div
+          style={{
+            background: "#fff3e0",
+            borderBottom: "1px solid #e65100",
+            color: "#e65100",
+            fontSize: "12px",
+            fontWeight: 700,
+            padding: "8px 14px",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            ⚠ 他の場所でこのデータが更新されたため、自動保存を中断しました。このまま編集を続けても保存されません。画面を再読み込みして、最新の内容を確認してください。
+          </span>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              border: "1px solid #e65100",
+              background: "#e65100",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 700,
+              padding: "4px 10px",
+              borderRadius: "4px",
+              whiteSpace: "nowrap",
+            }}
+          >
+            今すぐ再読み込み
+          </button>
+        </div>
+      ) : saveErrorBanner && (
         <div
           style={{
             background: "#ffebee",
