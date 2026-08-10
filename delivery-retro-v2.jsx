@@ -16291,6 +16291,153 @@ const menuVisibleForRole = (m, userRole) => {
   return allowed.includes(m.id);
 };
 
+/**
+ * ===== ユーザー管理（自社内）ページ =====
+ *
+ * 【なぜ必要か】
+ * 以前は「ユーザー招待」機能が super_admin（SaaS運営者）専用の画面
+ * にしかなく、T-LINK自身の管理者が、自社の中で新しいアカウントを
+ * 追加する手段が一切無かった。社長が入院した・パスワードを忘れた等の
+ * 場合、T-LINK自身では誰も対応できず、SaaS運営者への連絡が必須という
+ * 構造的な単一障害点（SPOF）になっていた。
+ *
+ * この画面は admin ロールから使え、以下を安全側に倒して制限する。
+ * ・招待先の会社は、常に自分自身の会社に固定（他社には招待できない）
+ * ・招待できる役割に super_admin は含まれない（自分を昇格できない）
+ * 実際の権限チェックは、クライアント側のこの制限だけでなく、
+ * DB側の assign_new_user_to_my_tenant 関数でも二重に行っている。
+ */
+const USER_MGMT_ROLE_LABEL = { admin: "管理者", office: "事務担当", dispatcher: "配車担当", driver: "ドライバー" };
+
+const UserMgmtPage = ({ tenantId, userRole }) => {
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("office");
+  const [inviting, setInviting] = useState(false);
+
+  const loadMembers = async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      // profiles_same_tenant_read ポリシーにより、自分と同じ会社の
+      // メンバーだけが返ってくる（他社のアカウントは見えない）。
+      const { data: rows, error } = await supabase
+        .from("profiles")
+        .select("id, email, name, role, created_at")
+        .eq("tenant_id", tenantId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      setMembers(Array.isArray(rows) ? rows : []);
+    } catch (err) {
+      console.error("loadMembers:", err);
+      setLoadError(err.message || "読み込みに失敗しました");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (tenantId) loadMembers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
+  const handleInvite = async () => {
+    if (!inviteEmail.trim()) {
+      window.alert("メールアドレスを入力してください。");
+      return;
+    }
+    if (!isValidEmailFormat(inviteEmail)) {
+      window.alert(`メールアドレス「${inviteEmail}」の形式が正しくありません（例：example@company.co.jp）。`);
+      return;
+    }
+    if (inviting) return;
+    setInviting(true);
+    try {
+      const randomBytes = new Uint8Array(16);
+      crypto.getRandomValues(randomBytes);
+      const tempPassword = Array.from(randomBytes, (b) => b.toString(36)).join("").slice(0, 20) + "Aa1!";
+
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: inviteEmail.trim(),
+        password: tempPassword,
+        options: { data: { role: inviteRole, tenant_id: tenantId } },
+      });
+      if (signUpError) throw signUpError;
+
+      if (signUpData?.user?.id) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        // 【重要】以前はここで profiles を直接 .update() していたが、
+        // RLSが「自分の行だけ」しか許可していないため、admin から
+        // 呼んでも本来は失敗する状態だった（サインアップ時のメタデータを
+        // 読むトリガー経由で結果的に動いていた可能性はあるが、明示的な
+        // 経路として保証されていなかった）。権限チェック済みの
+        // DB関数を明示的に呼ぶことで、確実に・安全に反映させる。
+        const { error: assignError } = await supabase.rpc("assign_new_user_to_my_tenant", {
+          p_user_id: signUpData.user.id,
+          p_role: inviteRole,
+        });
+        if (assignError) throw assignError;
+      }
+
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(inviteEmail.trim(), {
+        redirectTo: typeof window !== "undefined" ? window.location.origin : "https://haisokanri.vercel.app",
+      });
+      if (resetError) throw resetError;
+
+      window.alert(`${inviteEmail} に招待メールを送信しました！\nメールのリンクからパスワードを設定してもらってください。`);
+      setInviteEmail("");
+      setInviteRole("office");
+      loadMembers();
+    } catch (err) {
+      window.alert("エラー: " + err.message);
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
+      <div style={{ background:"#f0fbfa", border:"1px solid #b2dfdb", borderRadius:"6px", padding:"10px 12px", fontSize:"12px", color:"#00695c" }}>
+        自社のメンバーを招待・確認できます。招待できる役割は「管理者・事務担当・配車担当・ドライバー」で、
+        他社への招待やシステム管理者権限の付与はできません。
+      </div>
+
+      <Panel title="新しいメンバーを招待" icon={<Icon size={16}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></Icon>}>
+        <Fl label="メールアドレス"><RetroInput type="email" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} placeholder="example@company.co.jp"/></Fl>
+        <Fl label="役割">
+          <RetroSelect value={inviteRole} onChange={e=>setInviteRole(e.target.value)}>
+            {Object.entries(USER_MGMT_ROLE_LABEL).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+          </RetroSelect>
+        </Fl>
+        <RetroBtn onClick={handleInvite} disabled={inviting} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff", marginTop:"8px" }}>
+          {inviting ? "招待中…" : "招待メールを送信"}
+        </RetroBtn>
+      </Panel>
+
+      <Panel title={`メンバー一覧（${members.length}人）`} icon={<Icon size={16}><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></Icon>}>
+        {loading && <div style={{ fontSize:"12px", color:"#999" }}>読み込み中…</div>}
+        {loadError && <div style={{ fontSize:"12px", color:"#c62828" }}>読み込みに失敗しました：{loadError}</div>}
+        {!loading && !loadError && members.length === 0 && <div style={{ fontSize:"12px", color:"#999" }}>メンバーがいません</div>}
+        <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
+          {members.map(m => (
+            <div key={m.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", border:"1px solid #e8e8e8", borderRadius:"6px", padding:"8px 10px", fontSize:"12px" }}>
+              <div>
+                <div style={{ fontWeight:700 }}>{m.name || m.email || m.id}</div>
+                <div style={{ color:"#999", fontSize:"11px" }}>{m.email}</div>
+              </div>
+              <span style={{ background:"#f5f7f8", padding:"3px 8px", borderRadius:"999px", fontSize:"11px", fontWeight:700, color:"#00695c" }}>
+                {USER_MGMT_ROLE_LABEL[m.role] || m.role}
+              </span>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+};
+
 const TenantsPage = ({ tenantId, userRole }) => {
   const isSuper = userRole === "super_admin";
   const [rows, setRows] = useState([]);
@@ -16660,6 +16807,10 @@ const MENU = [
   // アイコンは他のマスタと同じ線画スタイルで揃える（値札＝単価を表す）。
   { id:"jobtypes",  icon:<Icon size={16}><path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0l-7.2-7.2a2 2 0 0 1-.6-1.4V4a1 1 0 0 1 1-1h8a2 2 0 0 1 1.4.6l7.4 7.4a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/></Icon>, label:"仕事種別・単価", section:"マスタ管理" },
   { id:"analytics", icon:<Icon size={16}><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></Icon>, label:"経営分析", section:"admin" },
+  // 【業務監査で追加】自社内のユーザー招待・管理。admin/super_admin から見える
+  // （menuVisibleForRole が admin/super_admin には全画面を許可するため、
+  //  ROLE_VISIBLE_MENUS に個別追加する必要はない）。
+  { id:"user_mgmt", icon:<Icon size={16}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></Icon>, label:"ユーザー管理", section:"admin" },
   { id:"tenants", label:"テナント管理", icon:"🏢", section:"admin" },
 ];
 
@@ -17730,7 +17881,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     // 画面を丸ごと複製すると、片方を直しもう片方を直し忘れる事故につながるため、
     // 中身は共通のまま、開く場所だけを変える。
     jobtypes: SalesMgmtPage,
-    payout: PayoutPage, quality_mgmt: QualityMgmtPage, trouble: TroublePage, change_history: ChangeHistoryPage, tenants: TenantsPage };
+    payout: PayoutPage, quality_mgmt: QualityMgmtPage, trouble: TroublePage, change_history: ChangeHistoryPage, user_mgmt: UserMgmtPage, tenants: TenantsPage };
   const PageComponent = pages[page];
 
   const sectionOrder = [
