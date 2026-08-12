@@ -197,10 +197,25 @@ const sanitizeAddressForGeocoding = (raw) => {
     .trim();
 };
 
+// 【重要・コスト監査で追加】同じ住所を何度もAPIに問い合わせるのは、
+// 無料枠を大事に使いたいという方針に反する無駄が多い。同じ受注の地図を
+// 開き直すたびに、毎回同じ住所を再度APIに問い合わせていた。
+// このセッション中に一度成功した住所は、結果をメモリ上に記憶しておき、
+// 次回以降は再度APIを呼ばずに使い回す。
+// 【重要】失敗した結果は絶対にキャッシュしない。以前 Leaflet の読み込みで
+// 「失敗した結果を永久にキャッシュしてしまい、二度と回復できない」という
+// 不具合を見つけて直した経験から、同じ間違いを繰り返さないようにする
+// （一時的な通信の乱れで失敗しただけかもしれないため、次回は必ず
+// 改めて問い合わせられるようにしておく）。
+const geocodeResultCache = new Map();
+
 const geocodeAddressYahoo = (address, appId) => {
   if (!address || !appId) return Promise.resolve(null);
   const cleanedAddress = sanitizeAddressForGeocoding(address);
   if (!cleanedAddress) return Promise.resolve(null);
+  if (geocodeResultCache.has(cleanedAddress)) {
+    return Promise.resolve(geocodeResultCache.get(cleanedAddress));
+  }
   return new Promise((resolve) => {
     const callbackName = `__yahooGeocodeCb_${Date.now()}_${yahooJsonpCounter++}`;
     const script = document.createElement("script");
@@ -230,7 +245,9 @@ const geocodeAddressYahoo = (address, appId) => {
         if (!coords) { resolve(null); return; }
         const [lon, lat] = coords.split(",").map(Number);
         if (Number.isNaN(lat) || Number.isNaN(lon)) { resolve(null); return; }
-        resolve({ lat, lon });
+        const result = { lat, lon };
+        geocodeResultCache.set(cleanedAddress, result); // 成功した結果だけキャッシュする
+        resolve(result);
       } catch (e) {
         resolve(null);
       }
@@ -271,6 +288,130 @@ const estimateTravelMinutes = (straightKm) => {
   const roadKm = straightKm * 1.3;
   const avgSpeedKmh = 25;
   return Math.round((roadKm / avgSpeedKmh) * 60);
+};
+
+// ===== 複数案件マップ・簡易ルート提案 =====
+// 【設計方針】Yahoo!地図はジオコーダAPI（住所→座標変換）のみ使い続け、
+// 実際の地図描画には Leaflet + OpenStreetMap（無料・APIキー不要・
+// 提供終了のリスクが低い、世界的に広く使われる地図ライブラリ）を使う。
+// Yahoo!地図のJavaScriptマップAPI・スタティックマップAPIは終了予定との
+// 案内があり、新しい機能をその上に作るのはリスクが高いと判断した。
+
+let leafletLoadPromise = null;
+// 【重要】Leaflet はCDNから読み込む唯一のライブラリのインスタンスを
+// 使う必要がある。複数回呼ばれても、実際の読み込みは1回だけにする。
+const loadLeaflet = () => {
+  if (typeof window !== "undefined" && window.L) return Promise.resolve(window.L);
+  if (leafletLoadPromise) return leafletLoadPromise;
+  leafletLoadPromise = new Promise((resolve, reject) => {
+    const cssHref = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    if (!document.querySelector(`link[href="${cssHref}"]`)) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = cssHref;
+      document.head.appendChild(link);
+    }
+    const scriptSrc = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    const existing = document.querySelector(`script[src="${scriptSrc}"]`);
+    if (existing && window.L) { resolve(window.L); return; }
+    const script = existing || document.createElement("script");
+    script.src = scriptSrc;
+    script.onload = () => resolve(window.L);
+    script.onerror = () => reject(new Error("Leafletの読み込みに失敗しました"));
+    if (!existing) document.head.appendChild(script);
+  });
+  // 【重要・不具合修正】以前は、読み込みに失敗した場合でも
+  // leafletLoadPromise に「失敗したPromise」がそのまま残り続けていた。
+  // 次に地図を開こうとしても、if (leafletLoadPromise) return leafletLoadPromise;
+  // が、その失敗したPromiseをそのまま返してしまうため、一時的な通信の
+  // 不調で一度失敗すると、ページを再読み込みするまで二度と地図機能が
+  // 使えなくなる、という不具合があった。失敗した場合はキャッシュを
+  // クリアし、次に呼ばれたときに改めて読み込みを試せるようにする。
+  leafletLoadPromise.catch(() => { leafletLoadPromise = null; });
+  return leafletLoadPromise;
+};
+
+/**
+ * 案件（受注）の集荷先・配達先住所を、Yahoo!ジオコーダAPIでまとめて座標に変換する。
+ * 【重要・拡張性】この関数は「案件の配列から座標付きの地点一覧を作る」という
+ * 単機能に絞ってあるため、地図表示だけでなく、将来のAIルート最適化からも
+ * そのまま呼び出せる（AI側は「地点一覧」と「移動時間の目安」があれば
+ * 動かせるため、ここで作るデータ構造がそのまま土台になる）。
+ * 戻り値: [{ orderId, kind: "pickup"|"delivery", label, address, lat, lon, order }, ...]
+ * 座標が取得できなかった地点は結果に含めない（呼び出し側で欠落数を確認できるよう、
+ * failedOrderIds も一緒に返す）。
+ */
+const geocodeOrderPoints = async (orders, appId) => {
+  // 【重要・不具合修正】以前は for...of ループの中で await していたため、
+  // 案件を1件ずつ順番に処理していた。ジオコーディングは（住所が不正な
+  // 場合など）最大8秒のタイムアウトがあるため、選択した案件の中に
+  // 住所解決に失敗するものが複数あると、それだけ待ち時間が積み重なり、
+  // 案件数が多いと合計で1分以上かかることもあり得る、実用に耐えない
+  // 待ち時間になっていた。全案件を並列で処理するようにし、合計の
+  // 待ち時間を「一番遅い1件分」に抑える。
+  const results = await Promise.all(
+    orders.map(async (order) => {
+      const [pickupCoord, deliveryCoord] = await Promise.all([
+        geocodeAddressYahoo(order?.from, appId),
+        geocodeAddressYahoo(order?.to, appId),
+      ]);
+      return { order, pickupCoord, deliveryCoord };
+    })
+  );
+
+  const points = [];
+  const failedOrderIds = [];
+  results.forEach(({ order, pickupCoord, deliveryCoord }) => {
+    let ok = false;
+    if (pickupCoord) {
+      points.push({ orderId: order.id, kind: "pickup", label: "集荷先", address: order?.from, lat: pickupCoord.lat, lon: pickupCoord.lon, order });
+      ok = true;
+    }
+    if (deliveryCoord) {
+      points.push({ orderId: order.id, kind: "delivery", label: "配達先", address: order?.to, lat: deliveryCoord.lat, lon: deliveryCoord.lon, order });
+      ok = true;
+    }
+    if (!ok) failedOrderIds.push(order.id);
+  });
+  return { points, failedOrderIds };
+};
+
+/**
+ * 簡易ルート提案（最近傍法）。
+ * 【重要】本格的なAIによる最適化ではなく、「今いる場所から一番近い
+ * 未訪問の地点へ、次々に向かう」という単純な方法で、実用的な順番の
+ * たたき台を作る。案件数が少ない・中程度の場合は十分実用的だが、
+ * 理論上の最短ルートを保証するものではないことを、呼び出し側で
+ * 利用者に必ず明示する。
+ * 【重要】集荷先は、対応する配達先より先に訪問する制約を守る
+ * （荷物を集荷する前に配達することはできないため）。
+ */
+const suggestNearestNeighborRoute = (points, startPoint = null) => {
+  const remaining = [...points];
+  const route = [];
+  let current = startPoint || remaining[0];
+  if (!startPoint && remaining.length > 0) {
+    route.push(remaining.shift());
+    current = route[0];
+  }
+  const pickedUpOrderIds = new Set(route.filter(p => p.kind === "pickup").map(p => p.orderId));
+
+  while (remaining.length > 0) {
+    // 配達先は、対応する集荷先が訪問済みでなければ候補にしない。
+    const candidates = remaining.filter(p => p.kind === "pickup" || pickedUpOrderIds.has(p.orderId));
+    const pool = candidates.length > 0 ? candidates : remaining; // 万一候補が無ければ制約を諦めて続行する
+    let nearest = null;
+    let nearestDist = Infinity;
+    for (const p of pool) {
+      const d = haversineDistanceKm(current, p);
+      if (d < nearestDist) { nearestDist = d; nearest = p; }
+    }
+    route.push(nearest);
+    if (nearest.kind === "pickup") pickedUpOrderIds.add(nearest.orderId);
+    remaining.splice(remaining.indexOf(nearest), 1);
+    current = nearest;
+  }
+  return route;
 };
 
 const isValidPhoneFormat = (v) => {
@@ -1736,7 +1877,12 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
 
   return (
     <div style={{ display:"flex", flexDirection:isMobile?"column":"row", gap:"12px" }}>
-      <div style={{ flex:"0 0 auto", width:isMobile?"100%":"440px" }}>
+      {/* 【利用者フィードバックで修正】カレンダー側が固定440px幅、詳細側が
+          flex:1（残り全部）という組み合わせだったため、画面が広いほど
+          カレンダーが相対的にどんどん小さく見える比率になっていた。
+          両方を flex 比率にして、実際のカレンダーと詳細画面がおよそ
+          50:50になるようにする。 */}
+      <div style={{ flex: isMobile ? "0 0 auto" : "1 1 0", width:isMobile?"100%":"auto", minWidth: isMobile ? "auto" : "420px" }}>
         <Panel title={`${calYear}年${calMonth+1}月`} icon={calendarIcon} style={{ marginBottom:"8px" }}>
           <div style={{ display:"flex", gap:"8px", marginBottom:"10px" }}>
             <button onClick={()=>setCalMode("delivery")} style={{ border:"1px solid #d0d0d0", borderRadius:"3px", padding:"7px 12px", background:calMode==="delivery"?"#00a09a":"#fff", color:calMode==="delivery"?"#fff":"#555", fontSize:"13px", fontWeight:600, cursor:"pointer" }}>配送カレンダー</button>
@@ -3670,6 +3816,214 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
 };
 
 // ===== OTHER PAGES (simplified) =====
+/**
+ * ===== 複数案件マップ =====
+ * 選択された案件の集荷先・配達先をまとめて地図上に表示する。
+ * 🔵集荷先・🔴配達先で色分けし、ピンをクリックすると案件情報を表示する。
+ * 「簡易ルート提案」を押すと、最近傍法による訪問順のたたき台を提示する
+ * （本物のAI最適化ではないことを画面上に必ず明記する）。
+ */
+const MultiOrderMapModal = ({ orders, onClose, yahooAppId, isMobile }) => {
+  const mapContainerRef = useRef(null);
+  const mapInstanceRef = useRef(null);
+  const markersLayerRef = useRef(null);
+  const leafletRef = useRef(null);
+  const [status, setStatus] = useState("loading"); // loading | ready | error
+  const [errorMsg, setErrorMsg] = useState("");
+  const [points, setPoints] = useState([]);
+  const [failedOrderIds, setFailedOrderIds] = useState([]);
+  const [selectedPoint, setSelectedPoint] = useState(null);
+  const [suggestedRoute, setSuggestedRoute] = useState(null);
+
+  // ① 地図ライブラリの読み込み・ジオコーディング（1回だけ行う）。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!yahooAppId) {
+        setStatus("error");
+        setErrorMsg("Yahoo!地図のClient IDが未登録です。会社情報設定から登録してください。");
+        return;
+      }
+      try {
+        const [L, geoResult] = await Promise.all([
+          loadLeaflet(),
+          geocodeOrderPoints(orders, yahooAppId),
+        ]);
+        if (cancelled) return;
+        if (geoResult.points.length === 0) {
+          setStatus("error");
+          setErrorMsg("選択した案件の住所から、位置情報を取得できませんでした。");
+          return;
+        }
+        leafletRef.current = L;
+        setPoints(geoResult.points);
+        setFailedOrderIds(geoResult.failedOrderIds);
+        // 地図の実際の初期化は、下の②のuseEffectに任せる。
+        // 【重要・不具合修正】以前はここで setTimeout(50ms) を使って
+        // 「そろそろDOMができているはず」という決め打ちでコンテナの準備を
+        // 待っていたが、端末の性能や描画の混み具合次第では50msで足りず、
+        // 地図が表示されないことがあり得る、不安定な実装だった。
+        // status を "ready" にした後、React が実際に
+        // <div ref={mapContainerRef}> を描画し終えたタイミングで確実に
+        // 発火する別の useEffect（②）に初期化を任せることで、
+        // 決め打ちの時間待ちを無くす。
+        setStatus("ready");
+      } catch (e) {
+        if (!cancelled) {
+          setStatus("error");
+          setErrorMsg("地図の読み込み中にエラーが発生しました。時間をおいて再度お試しください。");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ② 地図の初期化。status が "ready" になり、コンテナのdivが実際に
+  // 描画された後（ReactのuseEffectは常にDOM更新後に実行される）に行う。
+  useEffect(() => {
+    if (status !== "ready" || !mapContainerRef.current || !leafletRef.current) return;
+    const L = leafletRef.current;
+    if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
+    const map = L.map(mapContainerRef.current);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors",
+      maxZoom: 19,
+    }).addTo(map);
+    mapInstanceRef.current = map;
+    renderMarkers(L, map, points);
+    // 【重要・予防的対応】Leafletは、地図を作った瞬間にコンテナの
+    // 大きさが完全に確定していないと、タイル（地図画像）が
+    // 一部だけ欠けて表示されることがある、よく知られた注意点がある。
+    // モーダル内での表示は特にこの影響を受けやすいため、少し時間を
+    // おいてから一度サイズを再計算させ、崩れを防ぐ。
+    setTimeout(() => { if (mapInstanceRef.current) mapInstanceRef.current.invalidateSize(); }, 100);
+    return () => {
+      if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  const renderMarkers = (L, map, pts) => {
+    if (markersLayerRef.current) map.removeLayer(markersLayerRef.current);
+    const group = L.featureGroup();
+    // 案件ごとに通し番号を振る（同じ案件の集荷・配達で同じ番号を使う）。
+    const orderIdToNumber = new Map();
+    let counter = 0;
+    pts.forEach((p) => {
+      if (!orderIdToNumber.has(p.orderId)) orderIdToNumber.set(p.orderId, ++counter);
+    });
+    pts.forEach((p) => {
+      const num = orderIdToNumber.get(p.orderId);
+      const color = p.kind === "pickup" ? "#1565c0" : "#c62828"; // 🔵集荷 🔴配達
+      const icon = L.divIcon({
+        className: "",
+        html: `<div style="background:${color};color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);">${num}</div>`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+      });
+      const marker = L.marker([p.lat, p.lon], { icon }).addTo(map);
+      marker.on("click", () => setSelectedPoint(p));
+      group.addLayer(marker);
+    });
+    markersLayerRef.current = group;
+    if (pts.length > 0) map.fitBounds(group.getBounds().pad(0.2));
+  };
+
+  const runSuggestRoute = () => {
+    // 【重要・不具合修正】チェックボックスでの選択は状態（ステータス）に
+    // 関わらず地図に含めていたが、「簡易ルート提案」に、キャンセル済みの
+    // 案件がそのまま混ざるのは業務として意味が通らない（実際には
+    // 配送しない場所を経路に含めてしまう）。地図上での確認自体は
+    // キャンセル済みでも参考になるため表示は変えず、ルート提案の
+    // 計算対象からだけ除外する。
+    const routablePoints = points.filter(p => p?.order?.status !== "cancelled");
+    if (routablePoints.length === 0) {
+      window.alert("ルート提案の対象となる案件がありません（選択した案件がすべてキャンセル済みです）。");
+      return;
+    }
+    const excludedCount = points.length - routablePoints.length;
+    if (excludedCount > 0) {
+      window.alert(`キャンセル済みの案件が${excludedCount}件含まれていたため、ルート提案の対象から除外しました。`);
+    }
+    const route = suggestNearestNeighborRoute(routablePoints);
+    setSuggestedRoute(route);
+  };
+
+  return (
+    <Modal title="複数案件マップ" onClose={onClose} width={860}>
+      <div style={{ fontSize: "12px", color: "#666", marginBottom: "8px" }}>
+        選択した{orders.length}件の案件の集荷先・配達先を地図に表示しています。
+        <span style={{ color: "#1565c0", fontWeight: 700 }}> 🔵集荷先</span>
+        ・<span style={{ color: "#c62828", fontWeight: 700 }}>🔴配達先</span>
+        。ピンをクリックすると案件の詳細が見られます。
+      </div>
+
+      {status === "loading" && <div style={{ padding: "40px", textAlign: "center", color: "#999" }}>地図を準備しています…</div>}
+      {status === "error" && <div style={{ padding: "20px", color: "#e65100", fontSize: "13px" }}>{errorMsg}</div>}
+
+      {status === "ready" && (
+        <>
+          {failedOrderIds.length > 0 && (
+            <div style={{ background: "#fff3e0", border: "1px solid #ffcc80", borderRadius: "6px", padding: "8px 10px", fontSize: "12px", color: "#e65100", marginBottom: "8px" }}>
+              ⚠ {failedOrderIds.length}件の案件は、住所から位置情報を取得できず地図に表示されていません（{failedOrderIds.join("、")}）。
+            </div>
+          )}
+          {/* 【利用者フィードバックで修正】以前は高さを420px固定にしていたため、
+              モーダル自体は幅が画面に収まるようになっていても、スマホの
+              狭い画面では地図が縦長に見えて操作しづらかった。isMobile を
+              受け取り、画面サイズに応じて高さも調整する。 */}
+          <div ref={mapContainerRef} style={{ width: "100%", height: isMobile ? "280px" : "420px", borderRadius: "6px", border: "1px solid #e0e0e0" }} />
+
+          {selectedPoint && (
+            <div style={{ marginTop: "8px", border: "1px solid #e0e0e0", borderRadius: "6px", padding: "10px 12px", background: "#fafbfc" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontWeight: 700, fontSize: "13px", color: selectedPoint.kind === "pickup" ? "#1565c0" : "#c62828" }}>
+                  案件 {selectedPoint.orderId}（{selectedPoint.label}）
+                </div>
+                <button onClick={() => setSelectedPoint(null)} style={{ border: "none", background: "transparent", cursor: "pointer", color: "#999" }}>×</button>
+              </div>
+              <div style={{ fontSize: "12px", color: "#333", marginTop: "4px" }}>
+                {selectedPoint.order?.customerName && <div>荷主：{selectedPoint.order.customerName}</div>}
+                <div>住所：{selectedPoint.address}</div>
+                {selectedPoint.kind === "pickup" && selectedPoint.order?.pickupTime && <div>集荷時間：{selectedPoint.order.pickupTime}</div>}
+                {selectedPoint.kind === "delivery" && selectedPoint.order?.deliveryTime && <div>配達時間：{selectedPoint.order.deliveryTime}</div>}
+                {selectedPoint.order?.cargo && <div>荷物：{selectedPoint.order.cargo}</div>}
+                {selectedPoint.order?.status === "cancelled" && (
+                  <div style={{ color:"#e63946", fontWeight:700, marginTop:"4px" }}>⚠ この案件はキャンセル済みです</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "10px" }}>
+            <RetroBtn small onClick={runSuggestRoute} style={{ background: "#00a09a", borderColor: "#00a09a", color: "#fff" }}>
+              簡易ルート提案（試作版）
+            </RetroBtn>
+            <div style={{ fontSize: "10px", color: "#999", marginTop: "4px" }}>
+              ※ AIによる本格的な最適化ではなく、「今いる場所から一番近い地点へ順に向かう」という簡易的な計算です。集荷は必ず対応する配達より先になるようにしていますが、実際の道路状況・時間指定などは考慮していません。あくまで叩き台としてご利用ください。
+            </div>
+            {suggestedRoute && (
+              <ol style={{ marginTop: "8px", paddingLeft: "20px", fontSize: "12px" }}>
+                {suggestedRoute.map((p, i) => (
+                  <li key={`${p.orderId}-${p.kind}`} style={{ marginBottom: "4px" }}>
+                    <span style={{ color: p.kind === "pickup" ? "#1565c0" : "#c62828", fontWeight: 700 }}>
+                      {p.kind === "pickup" ? "🔵" : "🔴"} 案件{p.orderId}（{p.label}）
+                    </span>
+                    　{p.address}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+};
+
 const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrderId, onOrderAutoOpenHandled, setPage }) => {
   // 【重要・監査で発見】この関数内では複数箇所で yen(...) を使って金額を
   // 「¥12,345」の形式で表示しているが、この OrdersPage コンポーネント自体には
@@ -3710,6 +4064,11 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   // まとめて処理したい場面が日常的にある。
   // チェックで選んだ複数の受注に、一括で操作できるようにする。
   const [checkedOrderIds, setCheckedOrderIds] = useState([]);
+  // 【機能追加】選択した複数案件をまとめて地図に表示する。
+  const [showMultiOrderMap, setShowMultiOrderMap] = useState(false);
+  // 【機能追加】案件詳細画面から、この1件だけを地図で確認する
+  // （一覧の複数選択とは別の入り口のため、状態も分けておく）。
+  const [showSingleOrderMap, setShowSingleOrderMap] = useState(false);
   // 【重要】1日100件以上を扱う現場では、目当ての案件を探すのに
   // 全件をスクロールするのは現実的でない。
   // 「配達日順」「金額順」など、見出しをクリックするだけで
@@ -3911,6 +4270,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     setShowOrderHistory(false);
     setEditRouteCheck(null);
     editRouteCheckGenRef.current++;
+    setShowSingleOrderMap(false);
   };
 
   const saveOrderDetail = () => {
@@ -4784,6 +5144,10 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
           <RetroBtn small onClick={bulkCancel} style={{ background:"#fff", color:"#546e7a", borderColor:"#90a4ae" }}>
             まとめてキャンセル
           </RetroBtn>
+          {/* 【機能追加】選択した複数案件の集荷先・配達先をまとめて地図に表示する。 */}
+          <RetroBtn small onClick={()=>{ setShowSingleOrderMap(false); setShowMultiOrderMap(true); }} style={{ background:"#fff", color:"#1565c0", borderColor:"#1565c0" }}>
+            📍 地図で表示
+          </RetroBtn>
           {/* キャンセル済みが選ばれているときだけ出す。
               普段は表示しないことで、ボタンが増えすぎて迷うのを防ぐ。 */}
           {filtered.some(o => checkedOrderIds.includes(o?.id) && o?.status === "cancelled") && (
@@ -5285,12 +5649,30 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                   {typeof setPage === "function" && (
                     <RetroBtn onClick={() => setPage("trouble")} style={{ background:"#fff", color:"#e65100", borderColor:"#e65100" }}>⚠ トラブルを記録</RetroBtn>
                   )}
+                  {/* 【機能追加】案件確定後も、集荷先・配達先を地図で確認できるようにする。 */}
+                  <RetroBtn onClick={()=>{ setShowMultiOrderMap(false); setShowSingleOrderMap(true); }} style={{ background:"#fff", color:"#1565c0", borderColor:"#1565c0" }}>📍 地図で見る</RetroBtn>
                   <RetroBtn onClick={()=>{ setOrderDraft(selectedOrder ? { ...selectedOrder } : null); setOrderEditMode(true); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
                 </div>
               </div>
             </>
           )}
         </Modal>
+      )}
+      {showMultiOrderMap && (
+        <MultiOrderMapModal
+          orders={filtered.filter(o => checkedOrderIds.includes(o?.id))}
+          onClose={() => setShowMultiOrderMap(false)}
+          yahooAppId={data?.companyInfo?.yahooMapAppId}
+          isMobile={isMobile}
+        />
+      )}
+      {showSingleOrderMap && selectedOrder && (
+        <MultiOrderMapModal
+          orders={[selectedOrder]}
+          onClose={() => setShowSingleOrderMap(false)}
+          yahooAppId={data?.companyInfo?.yahooMapAppId}
+          isMobile={isMobile}
+        />
       )}
     </div>
   );
@@ -18007,7 +18389,12 @@ const MenuBtn = ({ icon, label, onClick, active, badge, alertMessages = [] }) =>
         <div
           onClick={(e) => e.stopPropagation()}
           style={{
-            position:"absolute", top:"100%", right:0, marginTop:"4px", zIndex:20,
+            // 【利用者フィードバックで修正】サイドバーの幅は210pxしかなく、
+            // このポップオーバーの幅（280px）より狭い。right:0 で右端を
+            // 揃えると、はみ出した分が左（画面外）に流れてしまい、
+            // 文字が切れて読めなくなっていた。left:0 にして、
+            // サイドバーより広い本文エリア側（右）に広がるようにする。
+            position:"absolute", top:"100%", left:0, marginTop:"4px", zIndex:20,
             background:"#fff", border:"1px solid #e0e0e0", borderRadius:"6px",
             boxShadow:"0 4px 12px rgba(0,0,0,0.15)", padding:"8px", width:"280px",
             maxHeight:"260px", overflowY:"auto",
