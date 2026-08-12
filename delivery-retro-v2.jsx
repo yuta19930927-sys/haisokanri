@@ -173,20 +173,78 @@ const lookupAddressByPostalCode = async (zipRaw) => {
 // （住所→座標の変換）自体は本稿執筆時点でまだ利用できる。
 // 将来的にこれも使えなくなった場合は、この関数だけ差し替えれば済むように、
 // 呼び出し側とは独立したヘルパーとして切り出しておく。
-const geocodeAddressYahoo = async (address, appId) => {
-  if (!address || !appId) return null;
-  try {
-    const url = `https://map.yahooapis.jp/geocode/V1/geoCoder?appid=${encodeURIComponent(appId)}&query=${encodeURIComponent(address)}&output=json`;
-    const res = await fetch(url);
-    const json = await res.json();
-    const coords = json?.Feature?.[0]?.Geometry?.Coordinates; // "経度,緯度" の形式
-    if (!coords) return null;
-    const [lon, lat] = coords.split(",").map(Number);
-    if (Number.isNaN(lat) || Number.isNaN(lon)) return null;
-    return { lat, lon };
-  } catch (e) {
-    return null;
-  }
+//
+// 【重要・不具合修正】当初 fetch() で直接呼び出していたが、Yahoo!のAPIは
+// レスポンスに Access-Control-Allow-Origin ヘッダーを付けておらず、
+// ブラウザのCORS制限に阻まれて「位置情報を取得できませんでした」と
+// なる不具合があった。Yahoo!のAPI自体が案内している「JSONP」という
+// 昔ながらの方式（<script>タグでAPIを読み込み、コールバック関数に
+// 結果を渡してもらう）に変更し、CORSの制限を受けずに呼べるようにする。
+let yahooJsonpCounter = 0;
+// 【重要・不具合修正】受注フォームの出発地・配送先は、顧客を選ぶと
+// 顧客の登録住所が自動で入る仕様になっている。その住所は
+// 「〒150-0001\n東京都渋谷区...」のように、郵便番号の行＋改行＋住所、
+// という複数行の形式になっていることがある（郵便番号検索機能で
+// 入力した住所がそのままの形）。これをそのままジオコーダAPIに渡すと、
+// 改行や「〒」の書き方によっては正しく認識されない可能性があるため、
+// 郵便番号だけの行を取り除き、改行をスペースに変えてから渡す。
+const sanitizeAddressForGeocoding = (raw) => {
+  if (!raw) return raw;
+  return String(raw)
+    .split("\n")
+    .filter((line) => !/^〒?\s*\d{3}-?\d{4}\s*$/.test(line.trim())) // 郵便番号だけの行を除外
+    .join(" ")
+    .trim();
+};
+
+const geocodeAddressYahoo = (address, appId) => {
+  if (!address || !appId) return Promise.resolve(null);
+  const cleanedAddress = sanitizeAddressForGeocoding(address);
+  if (!cleanedAddress) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const callbackName = `__yahooGeocodeCb_${Date.now()}_${yahooJsonpCounter++}`;
+    const script = document.createElement("script");
+    let settled = false;
+
+    const cleanup = () => {
+      delete window[callbackName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+      clearTimeout(timeoutId);
+    };
+    // 【重要】通信環境の問題やAPI側の不調で、コールバックが永遠に
+        // 呼ばれない場合に画面が「確認中…」のまま固まってしまわないよう、
+    // 一定時間で必ずタイムアウトさせる。
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(null);
+    }, 8000);
+
+    window[callbackName] = (json) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        const coords = json?.Feature?.[0]?.Geometry?.Coordinates; // "経度,緯度" の形式
+        if (!coords) { resolve(null); return; }
+        const [lon, lat] = coords.split(",").map(Number);
+        if (Number.isNaN(lat) || Number.isNaN(lon)) { resolve(null); return; }
+        resolve({ lat, lon });
+      } catch (e) {
+        resolve(null);
+      }
+    };
+
+    script.src = `https://map.yahooapis.jp/geocode/V1/geoCoder?appid=${encodeURIComponent(appId)}&query=${encodeURIComponent(cleanedAddress)}&output=json&callback=${callbackName}`;
+    script.onerror = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(null);
+    };
+    document.head.appendChild(script);
+  });
 };
 
 // 2点間の直線距離（km）をハーバサイン公式で計算する。
@@ -3629,6 +3687,12 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   // 【機能追加】受注登録画面で、集荷先・配達先の住所から地図・距離・
   // 所要時間の目安を確認できるようにする。
   const [routeCheck, setRouteCheck] = useState(null); // null | "loading" | { fromCoord, toCoord, distanceKm, minutes } | { error: "..." }
+  // 【重要・不具合修正】以前は新規登録フォームにしかこの機能が無く、
+  // 既存の受注を編集して住所を変更したときに確認する手段が無かった。
+  // 編集フォーム用に、別の状態として用意する（新規登録用の routeCheck とは
+  // 独立させ、互いに影響しないようにする）。
+  const [editRouteCheck, setEditRouteCheck] = useState(null);
+  const editRouteCheckGenRef = useRef(0);
   const [form, setForm] = useState({ customerId:"", deliveryType:"route", deliveryDate:"", pickupTime:"", deliveryTime:"", from:"", to:"", cargo:"", weight:"", amount:"", driverPayAmount:"", notes:"" });
   // 受注登録も項目数が多いため、ドライバー・車両登録と同じ理由で保護する。
   const orderFormSnapshotRef = useRef(JSON.stringify(form));
@@ -3834,6 +3898,10 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     setSelectedOrderId(order?.id || null);
     setOrderEditMode(false);
     setOrderDraft(order ? { ...order } : null);
+    // 【重要・不具合修正】別の受注の詳細を開いたときに、前に見ていた
+    // 受注の地図確認結果が残ったまま表示されてしまわないようにする。
+    setEditRouteCheck(null);
+    editRouteCheckGenRef.current++;
   };
 
   const closeOrderDetail = () => {
@@ -3841,6 +3909,8 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     setOrderEditMode(false);
     setOrderDraft(null);
     setShowOrderHistory(false);
+    setEditRouteCheck(null);
+    editRouteCheckGenRef.current++;
   };
 
   const saveOrderDetail = () => {
@@ -3865,6 +3935,34 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
         `どうしても必要な場合は、管理者に月の締めを解除してもらってください。`
       );
       return;
+    }
+
+    // 【AI活用監査で発見・追加】新規受注登録には「過去の受注額の平均と
+    // 大きく違わないか」の異常検知があったが、既存受注の金額を編集する
+    // ときには同じチェックが無かった。編集は「一部の項目を直すだけ」という
+    // 意識になりがちで、桁の打ち間違いにむしろ気づきにくい操作のため、
+    // 新規登録と同じ基準でチェックする（編集前の金額と同じ場合はそもそも
+    // 変更が無いので対象外。編集中のこの受注自身は平均の計算から除く）。
+    const nextAmountForCheck = Number(orderDraft?.amount) || 0;
+    if (nextAmountForCheck > 0 && orderDraft?.customerId && nextAmountForCheck !== (Number(before?.amount) || 0)) {
+      const pastAmounts = orders
+        .filter((o) => o?.customerId === orderDraft.customerId && o?.id !== orderDraft.id && !o?.deleted && Number(o?.amount) > 0)
+        .map((o) => Number(o.amount));
+      if (pastAmounts.length >= 3) {
+        const avg = pastAmounts.reduce((s, v) => s + v, 0) / pastAmounts.length;
+        const isTooHigh = nextAmountForCheck > avg * 3;
+        const isTooLow = nextAmountForCheck < avg / 3;
+        if (isTooHigh || isTooLow) {
+          const editCustomerName = customers.find((x) => x?.id === orderDraft.customerId)?.name;
+          const proceed = window.confirm(
+            `⚠ 変更後の金額（¥${nextAmountForCheck.toLocaleString()}）は、` +
+            `${editCustomerName || "この顧客"}の過去の受注額の平均（¥${Math.round(avg).toLocaleString()}）と大きく異なります。\n\n` +
+            `桁の打ち間違いではないか、ご確認ください。\n\n` +
+            `このまま保存しますか？`
+          );
+          if (!proceed) return;
+        }
+      }
     }
 
     logHistoryEntry(setData, { entityType: "order", entityId: orderDraft.id, entityLabel: orderDraft.id, before, userRole });
@@ -4433,6 +4531,13 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   };
   // 【機能追加】集荷先・配達先の住所をYahoo!地図のジオコーダAPIで
   // 座標に変換し、直線距離から所要時間の目安を計算する。
+  // 【重要・不具合修正】地図確認のリクエスト（最大8秒かかることがある）が
+  // 処理中の間にモーダルを閉じてしまうと、閉じた後（あるいは別の受注を
+  // 開いた後）に古い結果が突然表示される、という競合状態があった。
+  // 自動保存で使っているのと同じ「世代番号」の仕組みで、今の操作が
+  // 最新のものでなければ結果を反映しないようにする。
+  const routeCheckGenRef = useRef(0);
+
   const checkRoute = async () => {
     const appId = data?.companyInfo?.yahooMapAppId;
     if (!appId) {
@@ -4443,11 +4548,15 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
       window.alert("出発地・配送先の両方を入力してください。");
       return;
     }
+    const gen = ++routeCheckGenRef.current;
     setRouteCheck("loading");
     const [fromCoord, toCoord] = await Promise.all([
       geocodeAddressYahoo(form.from, appId),
       geocodeAddressYahoo(form.to, appId),
     ]);
+    // この間にモーダルが閉じられた／別の確認が新しく始まっていたら、
+    // この結果はもう使わない。
+    if (routeCheckGenRef.current !== gen) return;
     if (!fromCoord || !toCoord) {
       setRouteCheck({ error: "住所から位置情報を取得できませんでした。住所の表記をご確認のうえ、もう少し詳しく（市区町村名まで等）入力してみてください。" });
       return;
@@ -4455,6 +4564,34 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     const distanceKm = haversineDistanceKm(fromCoord, toCoord);
     const minutes = estimateTravelMinutes(distanceKm);
     setRouteCheck({ fromCoord, toCoord, distanceKm, minutes });
+  };
+
+  // 【機能追加・不具合修正】既存の受注を編集するときにも、新規登録と
+  // 同じ地図確認ができるようにする。
+  const checkEditRoute = async () => {
+    const appId = data?.companyInfo?.yahooMapAppId;
+    if (!appId) {
+      window.alert("Yahoo!地図のClient IDが未登録です。会社情報設定から登録してください。");
+      return;
+    }
+    if (!orderDraft?.from || !orderDraft?.to) {
+      window.alert("出発地・配送先の両方を入力してください。");
+      return;
+    }
+    const gen = ++editRouteCheckGenRef.current;
+    setEditRouteCheck("loading");
+    const [fromCoord, toCoord] = await Promise.all([
+      geocodeAddressYahoo(orderDraft.from, appId),
+      geocodeAddressYahoo(orderDraft.to, appId),
+    ]);
+    if (editRouteCheckGenRef.current !== gen) return;
+    if (!fromCoord || !toCoord) {
+      setEditRouteCheck({ error: "住所から位置情報を取得できませんでした。住所の表記をご確認のうえ、もう少し詳しく（市区町村名まで等）入力してみてください。" });
+      return;
+    }
+    const distanceKm = haversineDistanceKm(fromCoord, toCoord);
+    const minutes = estimateTravelMinutes(distanceKm);
+    setEditRouteCheck({ fromCoord, toCoord, distanceKm, minutes });
   };
 
   const handleAdd = () => {
@@ -4765,7 +4902,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
           </div>
         )}
       </div>
-      {showModal&&<Modal title="新規受注登録" icon={orderIcon} onClose={()=>{ setShowModal(false); setRouteCheck(null); }} confirmClose={()=>JSON.stringify(form) !== orderFormSnapshotRef.current}>
+      {showModal&&<Modal title="新規受注登録" icon={orderIcon} onClose={()=>{ setShowModal(false); setRouteCheck(null); routeCheckGenRef.current++; }} confirmClose={()=>JSON.stringify(form) !== orderFormSnapshotRef.current}>
         <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap:"6px 12px" }}>
           <Fl label="顧客"><SearchableSelect
             value={form.customerId}
@@ -4841,14 +4978,22 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
               <div style={{ fontSize:"10px", color:"#999", padding:"4px 10px", background:"#fafafa" }}>
                 ※ 直線距離をもとにした概算です。実際の道路状況・交通状況により前後します。
               </div>
-              {/* Yahoo!地図の一般利用者向けサイトを、2地点のピン付きで埋め込む。
-                  地図描画専用のAPI（終了予定）には依存せず、通常のYahoo!地図の
-                  URL仕様を利用した、より長く使える可能性が高い方法。 */}
-              <iframe
-                title="ルート確認地図"
-                style={{ width:"100%", height:"260px", border:"none" }}
-                src={`https://map.yahoo.co.jp/embed?lat=${(routeCheck.fromCoord.lat + routeCheck.toCoord.lat) / 2}&lon=${(routeCheck.fromCoord.lon + routeCheck.toCoord.lon) / 2}&z=13&mode=map&pointer=on&fat=${routeCheck.fromCoord.lat}&flon=${routeCheck.fromCoord.lon}&tat=${routeCheck.toCoord.lat}&tlon=${routeCheck.toCoord.lon}`}
-              />
+              {/* 【重要・不具合修正】以前はここに https://map.yahoo.co.jp/embed
+                  という、実在しないURLを想定で埋め込んでいた（iframe自体が
+                  真っ白のまま表示される不具合だった）。Yahoo!地図が公式に
+                  公開しているURL仕様（route/{車・電車・徒歩}?from=...&to=...）
+                  を使う。このURLは埋め込み専用ではなく通常のページのため、
+                  iframeで埋め込むとブロックされる可能性がある。そのため
+                  埋め込みはせず、新しいタブで確実に開くボタンにする。 */}
+              <div style={{ padding:"10px" }}>
+                <RetroBtn
+                  small
+                  onClick={() => window.open(`https://map.yahoo.co.jp/route/car?from=${encodeURIComponent(sanitizeAddressForGeocoding(form.from))}&to=${encodeURIComponent(sanitizeAddressForGeocoding(form.to))}`, "_blank")}
+                  style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}
+                >
+                  Yahoo!地図でルートを見る（新しいタブで開きます）
+                </RetroBtn>
+              </div>
             </div>
           )}
         </div>
@@ -4864,7 +5009,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
         )}
         <Fl label="備考"><RetroTextarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></Fl>
         <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"8px" }}>
-          <RetroBtn onClick={()=>{ setShowModal(false); setRouteCheck(null); }}>キャンセル</RetroBtn>
+          <RetroBtn onClick={()=>{ setShowModal(false); setRouteCheck(null); routeCheckGenRef.current++; }}>キャンセル</RetroBtn>
           <RetroBtn onClick={handleAdd} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>登録する</RetroBtn>
         </div>
       </Modal>}
@@ -4901,6 +5046,37 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
               </div>
               <Fl label="出発地"><RetroInput value={orderDraft?.from || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), from:e.target.value }))}/></Fl>
               <Fl label="配送先"><RetroInput value={orderDraft?.to || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), to:e.target.value }))}/></Fl>
+
+              {/* 【機能追加・不具合修正】新規登録フォームと同じ、地図・距離確認機能。
+                  住所を編集した後にも、変更後の内容で確認し直せる。 */}
+              <div style={{ marginBottom:"8px" }}>
+                <RetroBtn small onClick={checkEditRoute} disabled={editRouteCheck === "loading"} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
+                  {editRouteCheck === "loading" ? "確認中…" : "📍 地図で確認する（距離・所要時間の目安）"}
+                </RetroBtn>
+                {editRouteCheck && editRouteCheck !== "loading" && editRouteCheck.error && (
+                  <div style={{ fontSize:"11px", color:"#e65100", marginTop:"6px" }}>{editRouteCheck.error}</div>
+                )}
+                {editRouteCheck && editRouteCheck !== "loading" && !editRouteCheck.error && (
+                  <div style={{ marginTop:"8px", border:"1px solid #e0e0e0", borderRadius:"6px", overflow:"hidden" }}>
+                    <div style={{ padding:"8px 10px", background:"#f0fbfa", fontSize:"12px", color:"#00695c", display:"flex", gap:"14px", flexWrap:"wrap" }}>
+                      <span>直線距離：約{editRouteCheck.distanceKm.toFixed(1)}km</span>
+                      <span>所要時間の目安：約{editRouteCheck.minutes}分</span>
+                    </div>
+                    <div style={{ fontSize:"10px", color:"#999", padding:"4px 10px", background:"#fafafa" }}>
+                      ※ 直線距離をもとにした概算です。実際の道路状況・交通状況により前後します。
+                    </div>
+                    <div style={{ padding:"10px" }}>
+                      <RetroBtn
+                        small
+                        onClick={() => window.open(`https://map.yahoo.co.jp/route/car?from=${encodeURIComponent(sanitizeAddressForGeocoding(orderDraft.from))}&to=${encodeURIComponent(sanitizeAddressForGeocoding(orderDraft.to))}`, "_blank")}
+                        style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}
+                      >
+                        Yahoo!地図でルートを見る（新しいタブで開きます）
+                      </RetroBtn>
+                    </div>
+                  </div>
+                )}
+              </div>
               <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap:"6px 12px" }}>
                 <Fl label="荷物"><RetroInput value={orderDraft?.cargo || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), cargo:e.target.value }))}/></Fl>
                 <Fl label="重量"><RetroInput value={orderDraft?.weight || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), weight:e.target.value }))}/></Fl>
@@ -9753,9 +9929,26 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       .filter(t => t && !t?.deleted && String(t?.occurredAt || "").startsWith(month));
     const accidentCount = monthTroubles.filter(t => t?.type === "accident").length;
     const claimCount = monthTroubles.filter(t => t?.type === "claim").length;
-    const totalDeliveryCount = dailyRecords
-      .filter(r => r && !r.deleted && String(r.date || "").startsWith(month) && isApprovedRecord(r))
-      .length;
+    // 【重要・不具合修正】totalDeliveryCount は当初「レコードの行数」を
+    // 数えていたが、実際には dailyRecords の1行が表す配送量は種類によって
+    // 大きく異なる。単発受注由来は1行＝概ね1件でよいが、ルート配送・
+    // チビ宅・デカ宅は「1行＝その日1日分、複数個口をまとめた記録」であり、
+    // 実際の個数は "配完個数" や "deka_◯◯" というフィールドに入っている。
+    // 行数のまま数えると、ルート配送中心の会社ほど分母が実態より大幅に
+    // 小さくなり、事故率・クレーム率が実態よりずっと高く表示されてしまう。
+    const getRecordDeliveryCount = (r) => {
+      if (!r) return 0;
+      if (r?.["配完個数"] != null) return Number(r["配完個数"]) || 0;
+      const dekaKeys = Object.keys(r).filter((k) => k.startsWith("deka_"));
+      if (dekaKeys.length > 0) {
+        return dekaKeys.reduce((s, k) => s + (Number(r[k]) || 0), 0);
+      }
+      // 単発受注由来（個数の概念が無い、またはチャーター等）は1件として数える。
+      return 1;
+    };
+    const monthDailyRecords = dailyRecords
+      .filter(r => r && !r.deleted && String(r.date || "").startsWith(month) && isApprovedRecord(r));
+    const totalDeliveryCount = monthDailyRecords.reduce((s, r) => s + getRecordDeliveryCount(r), 0);
     const accidentRate = totalDeliveryCount > 0 ? (accidentCount / totalDeliveryCount) * 1000 : 0;
     const claimRate = totalDeliveryCount > 0 ? (claimCount / totalDeliveryCount) * 1000 : 0;
 
@@ -12993,6 +13186,13 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     // ダッシュボードに警告を出すかをユーザーが設定できるようにする。
     // 以前は「期限が過ぎてから」しか分からず、事前に気づく手段がなかった。
     expiryAlertDays: companyInfo?.expiryAlertDays ?? 30,
+    // 【重要・バグ修正】yahooMapAppId・invoiceRegistrationNumber を、
+    // フォーム側（入力欄）には追加していたのに、この初期値リストに
+    // 追加し忘れていた。そのため、保存自体は正しくできていたのに、
+    // ページを再読み込みするたびに「保存されていないように見える」
+    // （実際には消えていない）という状態になっていた。
+    yahooMapAppId: companyInfo?.yahooMapAppId || "",
+    invoiceRegistrationNumber: companyInfo?.invoiceRegistrationNumber || "",
   });
   const [mailDraft, setMailDraft] = useState({ to: "", subject: "", body: "" });
 
@@ -13820,11 +14020,30 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
   // 押すのは最終的に人（Gmail側の仕様のため）だが、「誰に送るべきかを
   // 自分で探す」手間は無くなる。
   const startReminderQueue = () => {
-    const targets = invoices.filter((inv) =>
-      inv?.status !== "paid" &&
-      (inv?.dueDate || "") < getTodayLocalStr() &&
-      customers.find((c) => c?.id === inv?.customerId)?.email
-    );
+    // 【重要・不具合修正】赤伝（マイナス金額の訂正請求書）は、元の請求書とは
+    // 別の請求書レコードとして status:"unpaid" のまま作成される。
+    // 除外していないと、「マイナス金額の請求書に支払いをお願いします」という
+    // 意味の通らない督促メールを、実際の顧客に送ってしまう危険があった。
+    //
+    // 【重要・不具合修正】さらに、元の請求書自体は赤伝を発行しても status が
+    // 自動では変わらない（意図的な設計：赤伝はあくまで「訂正の記録」として
+    // 別レコードで残し、元の請求書の記録も改ざんしない）。そのため、
+    // 赤伝で全額（またはそれ以上）訂正済みの請求書が、実際の残額はゼロなのに
+    // 督促対象として残り続けてしまう可能性があった。元の請求書に紐づく
+    // 赤伝の合計を差し引いた「実質の残額」で、督促が必要かどうかを判断する。
+    const creditNoteTotalByOriginal = new Map();
+    invoices.forEach((inv) => {
+      if (!inv?.isCreditNote || !inv?.originalInvoiceId || inv?.deleted) return;
+      const prev = creditNoteTotalByOriginal.get(inv.originalInvoiceId) || 0;
+      creditNoteTotalByOriginal.set(inv.originalInvoiceId, prev + (Number(inv.total) || 0));
+    });
+    const targets = invoices.filter((inv) => {
+      if (inv?.status === "paid" || inv?.isCreditNote || inv?.deleted) return false;
+      if ((inv?.dueDate || "") >= getTodayLocalStr()) return false;
+      if (!customers.find((c) => c?.id === inv?.customerId)?.email) return false;
+      const netRemaining = (Number(inv?.total) || 0) + (creditNoteTotalByOriginal.get(inv?.id) || 0);
+      return netRemaining > 0;
+    });
     if (targets.length === 0) {
       window.alert("督促が必要な請求書はありません。");
       return;
