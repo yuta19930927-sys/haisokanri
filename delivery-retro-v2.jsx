@@ -3961,6 +3961,22 @@ const MultiOrderMapModal = ({ orders, onClose, yahooAppId, isMobile }) => {
         。ピンをクリックすると案件の詳細が見られます。
       </div>
 
+      {/* 【利用者フィードバックで追加】以前はYahoo!地図へのリンクが、
+          ピンをクリックした後の詳細パネルの中にしかなく、分かりにくかった。
+          1件の案件だけを見ているとき（受注詳細からの「地図で見る」）は、
+          モーダルを開いた瞬間から見える、目立つ場所にボタンを出す。 */}
+      {orders.length === 1 && orders[0]?.from && orders[0]?.to && (
+        <div style={{ marginBottom: "10px" }}>
+          <RetroBtn
+            small
+            onClick={() => window.open(`https://map.yahoo.co.jp/route/car?from=${encodeURIComponent(sanitizeAddressForGeocoding(orders[0].from))}&to=${encodeURIComponent(sanitizeAddressForGeocoding(orders[0].to))}`, "_blank")}
+            style={{ background: "#e60012", borderColor: "#e60012", color: "#fff" }}
+          >
+            Yahoo!地図でルートを見る（新しいタブで開きます）
+          </RetroBtn>
+        </div>
+      )}
+
       {status === "loading" && <div style={{ padding: "40px", textAlign: "center", color: "#999" }}>地図を準備しています…</div>}
       {status === "error" && <div style={{ padding: "20px", color: "#e65100", fontSize: "13px" }}>{errorMsg}</div>}
 
@@ -3994,6 +4010,28 @@ const MultiOrderMapModal = ({ orders, onClose, yahooAppId, isMobile }) => {
                 {selectedPoint.order?.status === "cancelled" && (
                   <div style={{ color:"#e63946", fontWeight:700, marginTop:"4px" }}>⚠ この案件はキャンセル済みです</div>
                 )}
+                {/* 【機能追加・利用者フィードバックで追加】受注登録画面にあった
+                    「Yahoo!地図でルートを見る」のような、後から見返すための
+                    本物のYahoo!地図へのリンクが、この案件確定後の地図には
+                    無かった。ピンをクリックしたときに、その場所を
+                    Yahoo!地図で開けるようにする。この案件（1件）だけを
+                    表示している場合は、集荷先→配達先のルートリンクも出す。 */}
+                <div style={{ marginTop:"8px", display:"flex", gap:"8px", flexWrap:"wrap" }}>
+                  <button
+                    onClick={() => window.open(`https://map.yahoo.co.jp/place?lat=${selectedPoint.lat}&lon=${selectedPoint.lon}`, "_blank")}
+                    style={{ border:"1px solid #1565c0", color:"#1565c0", background:"#fff", borderRadius:"4px", padding:"4px 10px", fontSize:"11px", cursor:"pointer" }}
+                  >
+                    Yahoo!地図でこの場所を見る
+                  </button>
+                  {orders.length === 1 && orders[0]?.from && orders[0]?.to && (
+                    <button
+                      onClick={() => window.open(`https://map.yahoo.co.jp/route/car?from=${encodeURIComponent(sanitizeAddressForGeocoding(orders[0].from))}&to=${encodeURIComponent(sanitizeAddressForGeocoding(orders[0].to))}`, "_blank")}
+                      style={{ border:"1px solid #00a09a", color:"#00a09a", background:"#fff", borderRadius:"4px", padding:"4px 10px", fontSize:"11px", cursor:"pointer" }}
+                    >
+                      Yahoo!地図でルートを見る
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -4024,7 +4062,7 @@ const MultiOrderMapModal = ({ orders, onClose, yahooAppId, isMobile }) => {
   );
 };
 
-const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrderId, onOrderAutoOpenHandled, setPage }) => {
+const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrderId, onOrderAutoOpenHandled, setPage, requestOpenTroubleForOrder }) => {
   // 【重要・監査で発見】この関数内では複数箇所で yen(...) を使って金額を
   // 「¥12,345」の形式で表示しているが、この OrdersPage コンポーネント自体には
   // yen 関数が定義されていなかった（他のページでは各コンポーードごとに
@@ -5144,9 +5182,12 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
           <RetroBtn small onClick={bulkCancel} style={{ background:"#fff", color:"#546e7a", borderColor:"#90a4ae" }}>
             まとめてキャンセル
           </RetroBtn>
-          {/* 【機能追加】選択した複数案件の集荷先・配達先をまとめて地図に表示する。 */}
+          {/* 【機能追加・利用者フィードバックで名称統一】選択した複数案件の
+              集荷先・配達先をまとめて地図に表示する。Yahoo!地図は2地点までの
+              ルートしか表示できないため、複数案件をまとめて見たいときは
+              こちらの「複数ピンマップ」（Leaflet）を使う。 */}
           <RetroBtn small onClick={()=>{ setShowSingleOrderMap(false); setShowMultiOrderMap(true); }} style={{ background:"#fff", color:"#1565c0", borderColor:"#1565c0" }}>
-            📍 地図で表示
+            📍 複数ピンマップで見る
           </RetroBtn>
           {/* キャンセル済みが選ばれているときだけ出す。
               普段は表示しないことで、ボタンが増えすぎて迷うのを防ぐ。 */}
@@ -5644,13 +5685,31 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                     「閉じる」「編集」は右側にまとめる。 */}
                 <div style={{ display:"flex", gap:"6px" }}>
                   <RetroBtn onClick={closeOrderDetail}>閉じる</RetroBtn>
-                  {/* 【業務監査で追加】破損・誤配・クレーム等が起きた受注から、
-                      すぐにトラブル記録を残せるようにする導線。 */}
-                  {typeof setPage === "function" && (
+                  {/* 【不具合修正】以前はこのボタンを押しても、単にトラブル記録
+                      画面に移動するだけで、押した受注の情報が全く引き継がれて
+                      おらず、どの案件のトラブルなのかを画面遷移後に自分で
+                      選び直す必要があった。ドライバー・車両の「事故を記録」と
+                      同じ仕組みで、この受注をあらかじめ選んだ状態で開く。 */}
+                  {typeof requestOpenTroubleForOrder === "function" ? (
+                    <RetroBtn onClick={() => requestOpenTroubleForOrder(selectedOrder?.id)} style={{ background:"#fff", color:"#e65100", borderColor:"#e65100" }}>⚠ トラブルを記録</RetroBtn>
+                  ) : typeof setPage === "function" && (
                     <RetroBtn onClick={() => setPage("trouble")} style={{ background:"#fff", color:"#e65100", borderColor:"#e65100" }}>⚠ トラブルを記録</RetroBtn>
                   )}
-                  {/* 【機能追加】案件確定後も、集荷先・配達先を地図で確認できるようにする。 */}
-                  <RetroBtn onClick={()=>{ setShowMultiOrderMap(false); setShowSingleOrderMap(true); }} style={{ background:"#fff", color:"#1565c0", borderColor:"#1565c0" }}>📍 地図で見る</RetroBtn>
+                  {/* 【利用者フィードバックで変更】以前はこのボタンを押すと、
+                      まず複数ピンマップ（Leaflet）が開き、Yahoo!地図は
+                      その中のボタンからしか辿れなかった。普段はYahoo!地図を
+                      主に使いたいとのことなので、押した瞬間にYahoo!地図が
+                      直接開くように変更する。複数ピンで見たいときだけ、
+                      別のボタンから切り替えられるようにする。 */}
+                  {selectedOrder?.from && selectedOrder?.to && (
+                    <RetroBtn
+                      onClick={() => window.open(`https://map.yahoo.co.jp/route/car?from=${encodeURIComponent(sanitizeAddressForGeocoding(selectedOrder.from))}&to=${encodeURIComponent(sanitizeAddressForGeocoding(selectedOrder.to))}`, "_blank")}
+                      style={{ background:"#e60012", borderColor:"#e60012", color:"#fff" }}
+                    >
+                      📍 Yahoo!地図で見る
+                    </RetroBtn>
+                  )}
+                  <RetroBtn onClick={()=>{ setShowMultiOrderMap(false); setShowSingleOrderMap(true); }} style={{ background:"#fff", color:"#1565c0", borderColor:"#1565c0" }}>複数ピンマップで見る</RetroBtn>
                   <RetroBtn onClick={()=>{ setOrderDraft(selectedOrder ? { ...selectedOrder } : null); setOrderEditMode(true); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
                 </div>
               </div>
@@ -7907,11 +7966,20 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
     consumptionTax,
     // 控除
     royalty: Math.round(royalty),
-    // 【利害衝突監査で追加】ロイヤリティの金額（円）だけが明細に表示され、
-    // その根拠となる率（%）が出ていなかった。ドライバーが自分で
-    // 「売上◯円の10%だから◯円」と検算できず、会社を信頼するしかない
-    // 状態になっていた。締め済みの月なら当時固定された cfg（現在の
-    // ドライバー設定ではない）から、実際に使われた率をそのまま返す。
+    // 【利用者フィードバックで追加】受注登録では、売上金額とドライバーへの
+    // 支払額をあえて分けて入力しており、その差額が実質的に会社の取り分
+    // （ロイヤリティ）になっている。しかしこれまで「ロイヤリティ」欄には、
+    // ドライバーごとに契約設定する追加控除（royaltyType/royaltyRate）分
+    // しか表示されておらず、この受注ごとの差額は反映されていなかった。
+    // 【重要】royalty フィールド自体は経営分析の利益計算でも使われて
+    // いるため、ここで書き換えると「粗利」と「ロイヤリティ収入」に
+    // 同じ金額が二重に計上されてしまう（受注ごとの差額は、
+    // 既に grossProfit = totalSales - totalDriverCost の粗利計算に
+    // 正しく含まれているため）。そのため royalty 自体は変更せず、
+    // 表示専用の新しいフィールド（画面・集計の「ロイヤリティ」欄にだけ使う）
+    // として、契約ロイヤリティ＋受注ごとの差額の合計を別途用意する。
+    orderMargin: Math.round(sales) - Math.round(grossPay),
+    royaltyForDisplay: Math.round(royalty) + (Math.round(sales) - Math.round(grossPay)),
     royaltyTypeUsed: cfg?.royaltyType || "rate",
     royaltyRateUsed: cfg?.royaltyRate,
     royaltyFixedUsed: cfg?.royaltyFixed,
@@ -7964,6 +8032,83 @@ const filterRecordsByMonth = (records, month) =>
  * 両方から呼ばれる共通部品。行の組み立てロジック（支給・控除・稼働明細）は
  * ここに1箇所だけ存在し、単体版と一括版で計算結果が食い違うことがないようにする。
  */
+/**
+ * ===== 報酬明細書の共通スタイル =====
+ *
+ * 【利用者フィードバックで全面刷新】以前はグラデーションの帯・角丸カード・
+ * ティール系の色を使った「スタートアップ風」のデザインだったが、
+ * 顧客向け請求書を「大企業の経理部門が発行する正式な帳票」らしく
+ * 作り直したのに合わせ、報酬明細書もまったく同じデザイン言語
+ * （グレーと黒を基調にした配色、濃いグレーのラベルボックスで金額を
+ * 強調、細く整った罫線、tabular-numsによる数字の桁揃え、タイトル下の
+ * 黒い下線）に統一する。単体発行・一括発行の両方で共有するため、
+ * 定数として1箇所にまとめる（以前はCSSが2箇所に重複していた）。
+ */
+const PAYOUT_STATEMENT_CSS = `
+  *{box-sizing:border-box}
+  body{font-family:'Noto Sans JP','\u30b4\u30b7\u30c3\u30af','Yu Gothic','Hiragino Kaku Gothic ProN',sans-serif;color:#000;margin:0;padding:0;background:#ddd}
+  @media print{ body{background:#fff} }
+  .print-bar{max-width:210mm;margin:0 auto;padding:6mm 11mm 0;text-align:right}
+  @media print{ .print-bar{display:none !important} }
+  .print-bar button{padding:8px 20px;font-size:13px;font-weight:700;color:#fff;background:#00a09a;border:none;border-radius:4px;cursor:pointer;font-family:inherit}
+  .container{max-width:210mm;margin:0 auto;background:#fff;padding:6mm 11mm;box-shadow:0 0 8px rgba(0,0,0,0.15)}
+  @media print{ .container{box-shadow:none;margin:0;max-width:none;padding:6mm 11mm} }
+
+  .topbar{ display:none }
+
+  .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3mm}
+  .company{font-size:15pt;font-weight:700}
+  .company-sub{font-size:9.5pt;color:#333;margin-top:2mm;line-height:1.5;overflow-wrap:anywhere}
+  .doc-title{text-align:right}
+  .doc-title .label{font-size:22pt;font-weight:700;letter-spacing:2px}
+  .doc-title .meta{font-size:10pt;color:#000;margin-top:2mm;line-height:1.5;overflow-wrap:anywhere}
+  .line{height:0;border-bottom:2pt solid #000;margin:0 0 5mm}
+
+  .to{font-size:11pt;font-weight:700;margin-bottom:4mm;overflow-wrap:anywhere}
+  .to .name{font-size:15pt}
+
+  .summary{display:flex;border:1.5pt solid #000;margin-bottom:4mm}
+  .summary > div:first-child{background:#646464;color:#fff;width:56mm;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:2mm}
+  .summary .label{font-size:10pt;font-weight:700;line-height:1.4}
+  .summary .warn{font-size:8.5pt;color:#fff;font-weight:700;margin-top:1mm}
+  .summary .amount{flex:1;display:flex;align-items:center;justify-content:flex-end;padding:0 5mm;font-size:20pt;font-weight:700;font-variant-numeric:tabular-nums}
+
+  .stats{display:flex;gap:8mm;font-size:9.5pt;color:#000;margin-bottom:4mm}
+  .stats b{font-size:11pt;color:#000;margin-left:1.5mm;font-variant-numeric:tabular-nums}
+
+  .cols{display:flex;gap:6mm}
+  .col{flex:1}
+  h3{font-size:10pt;font-weight:700;margin:0 0 1.5mm;padding-bottom:1mm;border-bottom:2pt solid #000}
+  table{width:100%;border-collapse:collapse}
+  td,th{padding:1.3mm 1.5mm;font-size:9.5pt;border-bottom:0.5pt solid #ccc}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .strong{font-weight:700}
+  .empty{color:#666;text-align:center}
+  .subtotal{display:flex;justify-content:space-between;padding:1.8mm 1.5mm;margin-top:1mm;border-top:1.5pt solid #000;font-weight:700;font-size:10.5pt}
+  .subtotal span:last-child{font-variant-numeric:tabular-nums}
+
+  .detail{margin-top:5mm}
+  .detail thead th{background:#e1e1e1;border-top:2pt solid #000;border-bottom:2pt solid #000;border-right:1pt solid #000;text-align:left;font-size:9.5pt;font-weight:700;white-space:nowrap}
+  .detail tbody td.cell-date{white-space:nowrap}
+  .detail thead th:last-child{border-right:none}
+  .detail tbody td{border-right:1pt solid #000}
+  .detail tbody td:last-child{border-right:none}
+  .detail tbody tr:nth-child(even) td{background:#f2f2f2}
+
+  .bank{margin-top:5mm;display:flex;border:1.5pt solid #000}
+  .bank .label{background:#e1e1e1;width:26mm;flex-shrink:0;display:flex;align-items:center;justify-content:center;text-align:center;font-size:10pt;font-weight:700}
+  .bank > div:last-child{flex:1;padding:2mm 3mm;font-size:9.5pt;line-height:1.6;display:flex;align-items:center;overflow-wrap:anywhere}
+  .bankempty{color:#999}
+
+  .footer{margin-top:6mm;text-align:center;font-size:9pt;color:#333}
+
+  @page{ size: A4; margin: 10mm; }
+  @media print{
+    .detail{page-break-inside:auto}
+    tr{page-break-inside:avoid}
+  }
+`;
+
 const buildPayoutStatementBody = (payout, companyInfo, driver) => {
   // XSS対策。ドライバー名や備考にHTMLタグが含まれていても、そのまま文字として表示する。
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => (
@@ -8013,7 +8158,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
                      (Number(r?.parkingFee)||0) + (Number(r?.fuelAllowance)||0) + (Number(r?.otherAllowance)||0);
       const base = (Number(r?.driverAmount)||0) - addOns;
       return `<tr>
-        <td>${esc(r?.date)}</td>
+        <td class="cell-date">${esc(r?.date)}</td>
         <td class="num">${r?.count ? esc(r.count) : "—"}</td>
         <td class="num">${yen(base)}</td>
         <td class="num">${addOns ? yen(addOns) : "—"}</td>
@@ -8023,7 +8168,10 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
 
   const bankLine = driver?.bankName
     ? `${esc(driver.bankName)} ${esc(driver.branchName || "")} ${esc(driver.accountType || "普通")} ${esc(driver.accountNumber || "")} ${esc(driver.accountHolderKana || "")}`
-    : "口座情報が未登録です";
+    // 【利用者フィードバックで修正】請求書側では「振込先未登録」の場合に
+    // グレー文字で目立たなく表現する配慮（.bankempty）があったが、
+    // デザイン統一時にこちらへ引き継がれていなかった。同じ扱いにする。
+    : `<span class="bankempty">口座情報が未登録です</span>`;
 
   return `<div class="container">
       <div class="topbar"></div>
@@ -8106,55 +8254,7 @@ const buildPayoutStatementHtml = (payout, companyInfo, driver) => {
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"/>
     <title>報酬明細 ${esc(payout.driverName)} ${esc(periodLabel)}</title>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
-    <style>
-      *{box-sizing:border-box}
-      body{font-family:'Noto Sans JP',sans-serif;color:#222;margin:0;padding:24px;background:#f5f5f5}
-      .container{max-width:800px;margin:0 auto;background:#fff;padding:32px 36px}
-      .print-bar{margin-bottom:12px;text-align:right}
-      .print-bar button{padding:8px 18px;font-size:13px;font-weight:700;color:#fff;background:#00a09a;border:none;border-radius:4px;cursor:pointer;font-family:inherit}
-      .topbar{height:5px;background:linear-gradient(90deg,#00c2ba,#00655f);margin:-32px -36px 20px}
-      .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px}
-      .company{font-size:17px;font-weight:700}
-      .company-sub{font-size:11px;color:#777;margin-top:2px;line-height:1.6}
-      .doc-title{text-align:right}
-      .doc-title .label{font-size:22px;font-weight:700;letter-spacing:3px}
-      .doc-title .meta{font-size:12px;color:#666;margin-top:4px}
-      .line{height:2px;background:#222;margin:12px 0 18px}
-      .to{font-size:15px;font-weight:700;margin-bottom:4px}
-      .to .name{font-size:19px}
-      .summary{display:flex;justify-content:space-between;align-items:center;background:#f0fbfa;border:1px solid #b2dfdb;border-radius:6px;padding:16px 20px;margin:16px 0}
-      .summary .label{font-size:12px;color:#00695c;font-weight:700}
-      .summary .amount{font-size:32px;font-weight:700;color:#00695c}
-      .summary .warn{font-size:12px;color:#c62828;font-weight:700}
-      .stats{display:flex;gap:24px;font-size:12px;color:#555;margin-bottom:16px}
-      .stats b{font-size:15px;color:#222;margin-left:4px}
-      .cols{display:flex;gap:20px}
-      .col{flex:1}
-      h3{font-size:13px;margin:0 0 6px;padding-bottom:4px;border-bottom:2px solid #222}
-      table{width:100%;border-collapse:collapse}
-      td,th{padding:6px 4px;font-size:12px;border-bottom:1px solid #e5e5e5}
-      .num{text-align:right;font-variant-numeric:tabular-nums}
-      .strong{font-weight:700}
-      .empty{color:#999;text-align:center}
-      .subtotal{display:flex;justify-content:space-between;padding:8px 4px;margin-top:4px;border-top:2px solid #222;font-weight:700;font-size:13px}
-      .detail{margin-top:24px}
-      .detail thead th{background:#fafafa;border-top:2px solid #222;border-bottom:2px solid #222;text-align:left;font-size:11px}
-      .bank{margin-top:20px;background:#f8f8f8;border-left:4px solid #00a09a;padding:10px 14px;font-size:12px}
-      .bank .label{font-size:11px;color:#777;font-weight:700;margin-bottom:2px}
-      .footer{margin-top:24px;text-align:center;font-size:10px;color:#999}
-      @page{ size: A4; margin: 12mm; }
-      @media print{
-        body{background:#fff;padding:0}
-        /* コンテナ幅がA4の印刷可能幅（約21cm弱）を超えないよう、
-           印刷時は画面表示用の固定幅(800px)をリセットする。
-           これが無いと、環境によって右端が欠けたり、意図せず
-           縮小されて見づらくなったりする。 */
-        .container{padding:0; max-width:100%; width:100%}
-        .print-bar{display:none}
-        .detail{page-break-inside:auto}
-        tr{page-break-inside:avoid}
-      }
-    </style></head><body>
+    <style>${PAYOUT_STATEMENT_CSS}</style></head><body>
     <div class="print-bar"><button onclick="window.print()">印刷 / PDF保存</button></div>
     ${buildPayoutStatementBody(payout, companyInfo, driver)}
     </body></html>`;
@@ -8186,55 +8286,7 @@ const buildBulkPayoutStatementHtml = (payouts, companyInfo, drivers) => {
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"/>
     <title>報酬明細一括発行 — ${esc(payouts[0]?.month || "")}</title>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
-    <style>
-      *{box-sizing:border-box}
-      body{font-family:'Noto Sans JP',sans-serif;color:#222;margin:0;padding:24px;background:#f5f5f5}
-      .container{max-width:800px;margin:0 auto;background:#fff;padding:32px 36px}
-      .print-bar{margin-bottom:12px;text-align:right}
-      .print-bar button{padding:8px 18px;font-size:13px;font-weight:700;color:#fff;background:#00a09a;border:none;border-radius:4px;cursor:pointer;font-family:inherit}
-      .topbar{height:5px;background:linear-gradient(90deg,#00c2ba,#00655f);margin:-32px -36px 20px}
-      .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px}
-      .company{font-size:17px;font-weight:700}
-      .company-sub{font-size:11px;color:#777;margin-top:2px;line-height:1.6}
-      .doc-title{text-align:right}
-      .doc-title .label{font-size:22px;font-weight:700;letter-spacing:3px}
-      .doc-title .meta{font-size:12px;color:#666;margin-top:4px}
-      .line{height:2px;background:#222;margin:12px 0 18px}
-      .to{font-size:15px;font-weight:700;margin-bottom:4px}
-      .to .name{font-size:19px}
-      .summary{display:flex;justify-content:space-between;align-items:center;background:#f0fbfa;border:1px solid #b2dfdb;border-radius:6px;padding:16px 20px;margin:16px 0}
-      .summary .label{font-size:12px;color:#00695c;font-weight:700}
-      .summary .amount{font-size:32px;font-weight:700;color:#00695c}
-      .summary .warn{font-size:12px;color:#c62828;font-weight:700}
-      .stats{display:flex;gap:24px;font-size:12px;color:#555;margin-bottom:16px}
-      .stats b{font-size:15px;color:#222;margin-left:4px}
-      .cols{display:flex;gap:20px}
-      .col{flex:1}
-      h3{font-size:13px;margin:0 0 6px;padding-bottom:4px;border-bottom:2px solid #222}
-      table{width:100%;border-collapse:collapse}
-      td,th{padding:6px 4px;font-size:12px;border-bottom:1px solid #e5e5e5}
-      .num{text-align:right;font-variant-numeric:tabular-nums}
-      .strong{font-weight:700}
-      .empty{color:#999;text-align:center}
-      .subtotal{display:flex;justify-content:space-between;padding:8px 4px;margin-top:4px;border-top:2px solid #222;font-weight:700;font-size:13px}
-      .detail{margin-top:24px}
-      .detail thead th{background:#fafafa;border-top:2px solid #222;border-bottom:2px solid #222;text-align:left;font-size:11px}
-      .bank{margin-top:20px;background:#f8f8f8;border-left:4px solid #00a09a;padding:10px 14px;font-size:12px}
-      .bank .label{font-size:11px;color:#777;font-weight:700;margin-bottom:2px}
-      .footer{margin-top:24px;text-align:center;font-size:10px;color:#999}
-      @page{ size: A4; margin: 12mm; }
-      @media print{
-        body{background:#fff;padding:0}
-        /* コンテナ幅がA4の印刷可能幅（約21cm弱）を超えないよう、
-           印刷時は画面表示用の固定幅(800px)をリセットする。
-           これが無いと、環境によって右端が欠けたり、意図せず
-           縮小されて見づらくなったりする。 */
-        .container{padding:0; max-width:100%; width:100%}
-        .print-bar{display:none}
-        .detail{page-break-inside:auto}
-        tr{page-break-inside:avoid}
-      }
-    </style></head><body>
+    <style>${PAYOUT_STATEMENT_CSS}</style></head><body>
     <div class="print-bar"><button onclick="window.print()">全員分を印刷 / PDF保存（${payouts.length}人分）</button></div>
     ${bodies}
     </body></html>`;
@@ -8277,7 +8329,7 @@ const createEmptyTroubleForm = () => ({
   cause: "", preventiveMeasures: "",
 });
 
-const TroublePage = ({ data, setData, tenantId, userRole, isMobile, initialDriverId, initialVehicleId, onTroubleAutoOpenHandled }) => {
+const TroublePage = ({ data, setData, tenantId, userRole, isMobile, initialDriverId, initialVehicleId, initialOrderId, onTroubleAutoOpenHandled }) => {
   const orders = (Array.isArray(data?.orders) ? data.orders : []).filter(o => !o?.deleted);
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => !v?.deleted);
@@ -8303,6 +8355,22 @@ const TroublePage = ({ data, setData, tenantId, userRole, isMobile, initialDrive
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDriverId, initialVehicleId]);
+
+  // 【重要・不具合修正】受注詳細画面の「⚠ トラブルを記録」ボタンが、
+  // これまで単にこの画面に移動するだけで、押した受注の情報が
+  // 全く引き継がれていなかった。せっかく特定の案件から押しているのに、
+  // 「どの案件のトラブルなのか」を最初から入力し直す必要があり、
+  // ドライバー・車両の「事故を記録」と同じ使い勝手にする。
+  // 受注由来のトラブルは事故に限らない（破損・誤配・延着・クレーム等）
+  // ため、種別は強制せず、案件の紐づけだけを事前に入れておく。
+  useEffect(() => {
+    if (initialOrderId) {
+      setForm(f => ({ ...f, orderId: initialOrderId }));
+      setShowModal(true);
+      onTroubleAutoOpenHandled?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialOrderId]);
 
   const openAdd = (orderId = "") => {
     setEditingId(null);
@@ -9051,7 +9119,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
     gross: acc.gross + p.grossPay,
     deduction: acc.deduction + p.totalDeduction,
     net: acc.net + p.netPay,
-    royalty: acc.royalty + p.royalty,
+    royalty: acc.royalty + p.royaltyForDisplay,
   }), { sales: 0, gross: 0, deduction: 0, net: 0, royalty: 0 });
 
   // 承認待ちがあるまま振り込むと「働いたのに払われていない」となり、最も揉める。
@@ -9592,16 +9660,25 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
             二重に引かれているように見えてしまっていた。
             実際は「ドライバーから引いた額」＝「会社が受け取る額」で同じお金を
             引く側・受け取る側から見ているだけ。
-            計算式を添えて、何がどう引かれているのかを一目で分かるようにする。 */}
-        <Stat label="うちロイヤリティ" value={yen(totals.royalty)} color="#7b1fa2" />
+            計算式を添えて、何がどう引かれているのかを一目で分かるようにする。
+            【利用者フィードバックで修正】「うちロイヤリティ」→「ロイヤリティ」に
+            名称変更。あわせて、契約ベースの追加控除だけでなく、受注ごとに
+            売上と支払額を分けて入力した差額（会社の実質的な取り分）も
+            合算して表示するようにしたため、「控除合計の内訳」という
+            以前の説明も、実態に合わせて書き換える。 */}
+        <Stat label="ロイヤリティ" value={yen(totals.royalty)} color="#7b1fa2" />
       </div>
       {/* 何がどう計算されているのかを、その場で確認できるようにする */}
       <div style={{ fontSize:"11px", color:"#666", background:"#f5f5f5", borderRadius:"6px", padding:"8px 12px", marginTop:"-6px", lineHeight:1.8 }}>
         <b>振込額の計算</b>：支給合計 {yen(totals.gross)} − 控除合計 {yen(totals.deduction)} ＝ <b style={{ color:"#c62828" }}>{yen(totals.net)}</b>
         <br/>
         <span style={{ color:"#888" }}>
-          「うちロイヤリティ」は控除合計の内訳です（控除の中からロイヤリティ分だけを取り出したもの）。
-          ドライバーから引いた分が、そのまま会社の収入になります。二重には引かれていません。
+          「ロイヤリティ」は、ドライバーごとに契約設定した追加控除に加えて、
+          受注登録時に売上金額と支払額をあえて分けて入力した場合の差額
+          （会社の実質的な取り分）も合算した金額です。
+          後者は「控除」としてドライバーの支給額から引かれているのではなく、
+          受注登録の時点で支払額そのものが低く設定されているために生じる
+          差額のため、控除合計には含まれていません。
         </span>
       </div>
 
@@ -9609,7 +9686,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         <table style={{ minWidth:"100%", width:"max-content", borderCollapse:"collapse", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"12px" }}>
           <thead>
             <tr style={{ background:"#fafbfc" }}>
-              {["氏名","稼働","個数","売上","支給合計","ロイヤリティ","その他控除","振込金額","操作"].map((h) => (
+              {["氏名","稼働","個数","売上","支給合計","ロイヤリティ","案件差益","その他控除","振込金額","操作"].map((h) => (
                 <th key={h} style={{ color:"#666", fontSize:"11px", padding:"8px 10px", textAlign: ["氏名","操作"].includes(h) ? "left" : "right", fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder }}>{h}</th>
               ))}
             </tr>
@@ -9628,6 +9705,13 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
                 <td style={{ padding:"8px 10px", textAlign:"right", color:"#007a74" }}>{yen(p.sales)}</td>
                 <td style={{ padding:"8px 10px", textAlign:"right", color:"#e65100" }}>{yen(p.grossPay)}</td>
                 <td style={{ padding:"8px 10px", textAlign:"right", color:"#7b1fa2" }}>{p.royalty ? `-${yen(p.royalty)}` : "—"}</td>
+                {/* 【利用者フィードバックで追加】受注登録時に売上金額と支払額を
+                    あえて分けて入力した場合の差額（会社の実質的な取り分）を
+                    別列で表示する。既存の「ロイヤリティ」列（契約ベースの
+                    追加控除）とは別物のため、混ぜずに独立した列にすることで、
+                    「ロイヤリティ＋その他控除＝控除合計」という、この表の
+                    行内の整合性を崩さないようにしている。 */}
+                <td style={{ padding:"8px 10px", textAlign:"right", color:"#00695c" }}>{p.orderMargin ? yen(p.orderMargin) : "—"}</td>
                 <td style={{ padding:"8px 10px", textAlign:"right", color:"#7b1fa2" }}>
                   {p.totalDeduction - p.royalty ? `-${yen(p.totalDeduction - p.royalty)}` : "—"}
                 </td>
@@ -14049,7 +14133,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   }
   .summary .val {
     flex:1; display:flex; align-items:center; justify-content:flex-end;
-    padding:0 4mm; font-size:10pt;
+    padding:0 4mm; font-size:10pt; font-variant-numeric:tabular-nums;
   }
   .summary .row.amount .val { font-size:18pt; font-weight:700; }
   .summary .right { width:44%; display:flex; border-left:1.5pt solid #000; }
@@ -14093,22 +14177,28 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   table.items td.cell-date { white-space:nowrap; }
   table.items td.cell-name { word-break:break-all; }
   table.items tr:nth-child(even) td { background:#f2f2f2; }
-  .c { text-align:center; } .r { text-align:right; }
+  .c { text-align:center; } .r { text-align:right; font-variant-numeric:tabular-nums; }
 
   .bottom { display:flex; justify-content:space-between; margin-top:2mm; }
   .taxbreak { font-size:9.5pt; }
   .taxbreak table { border-collapse:collapse; }
   .taxbreak th { text-align:left; font-weight:700; padding:1mm 7mm 1.5mm 0; border-bottom:1pt solid #000; }
-  .taxbreak td { padding:1mm 7mm 1mm 0; text-align:right; }
-  .taxbreak td:first-child { text-align:left; }
+  .taxbreak td { padding:1mm 7mm 1mm 0; text-align:right; font-variant-numeric:tabular-nums; }
+  .taxbreak td:first-child { text-align:left; font-variant-numeric:normal; }
 
   .grand { min-width:62mm; font-size:10pt; }
   .grand .line { display:flex; justify-content:space-between; padding:1.1mm 2mm; border-bottom:0.5pt solid #ccc; }
+  .grand .line span:last-child { font-variant-numeric:tabular-nums; }
   .grand .final {
     display:flex; justify-content:space-between; align-items:center;
     border:1.5pt solid #000; padding:1.8mm 3mm; margin-top:0.5mm;
     font-weight:700; font-size:12pt;
+    /* 【利用者フィードバックで追加】仕様書で「枠線・背景グレー・太字…を
+       使って強調」と明記されていたが、背景色が抜けていた。ラベルで
+       使っている薄いグレー（#e1e1e1）と揃え、色数を増やさない。 */
+    background:#e1e1e1;
   }
+  .grand .final span:last-child { font-variant-numeric:tabular-nums; }
 
   .footnote { margin-top:6mm; font-size:9.5pt; }
 
@@ -18363,6 +18453,52 @@ const cloneData = (value) => {
 
 const MenuBtn = ({ icon, label, onClick, active, badge, alertMessages = [] }) => {
   const [showDetail, setShowDetail] = useState(false);
+  // 【重要・不具合修正】以前は position:"absolute" でポップオーバーを
+  // 配置していたが、サイドバー（<aside>）自体に overflowY:"auto" が
+  // 設定されており、CSSの仕様上、overflowY だけを指定すると overflowX も
+  // 自動的に「はみ出た分を切る」扱いになってしまう（overflowX を
+  // 明示的に "visible" にしても、この仕様のせいで上書きできない）。
+  // そのため、ポップオーバーを右に広げても、結局サイドバーの右端で
+  // 切られて文字が読めなくなっていた。
+  // position:"fixed" にして、クリックした瞬間のバッジの画面上の実際の
+  // 座標を基準に配置すれば、祖先要素の overflow 設定に一切影響されず、
+  // 画面のどこにでも正しく表示できる。
+  const badgeRef = useRef(null);
+  const [popoverPos, setPopoverPos] = useState(null);
+
+  const popoverRef = useRef(null);
+
+  const toggleDetail = () => {
+    if (!showDetail && badgeRef.current) {
+      const rect = badgeRef.current.getBoundingClientRect();
+      setPopoverPos({ top: rect.bottom + 4, left: rect.left });
+    }
+    setShowDetail(v => !v);
+  };
+
+  // 【重要・不具合修正】position:"fixed" にしたことで、開いた瞬間の
+  // 座標に固定されるようになった。開いたままサイドバーをスクロール
+  // すると、バッジの実際の画面上の位置は変わるのに、ポップオーバーは
+  // その場に取り残されてズレてしまう。位置を追従させ続けるのは
+  // 複雑になるため、シンプルに「スクロールが起きたら閉じる」方式にする
+  // （多くのツールチップ・ポップオーバーの実装で採用されている、
+  // 安全で分かりやすい挙動）。サイドバーのスクロールも、画面全体の
+  // スクロールも、どちらも拾えるよう window に capture:true で登録する。
+  // 【重要】ポップオーバー自体にも、警告が多いときのための内部スクロール
+  // （overflowY:"auto"）がある。この内部スクロールまで拾って閉じてしまうと、
+  // 一覧が長いときに最後まで読めなくなる。スクロールの発生元
+  // （event.target）がポップオーバーの中かどうかを確認し、中からの
+  // スクロールでは閉じないようにする。
+  useEffect(() => {
+    if (!showDetail) return;
+    const handleScroll = (e) => {
+      if (popoverRef.current && popoverRef.current.contains(e.target)) return;
+      setShowDetail(false);
+    };
+    window.addEventListener("scroll", handleScroll, true);
+    return () => window.removeEventListener("scroll", handleScroll, true);
+  }, [showDetail]);
+
   return (
     <div style={{ position:"relative" }}>
       <button onClick={onClick}
@@ -18374,29 +18510,27 @@ const MenuBtn = ({ icon, label, onClick, active, badge, alertMessages = [] }) =>
       </button>
       {badge>0&&(
         <div
+          ref={badgeRef}
           onClick={(e) => {
             // メニュー本体への遷移（ページ切り替え）とは別の操作として扱うため、
             // クリックがボタンまで伝わらないようにする。
             e.stopPropagation();
-            if (alertMessages.length > 0) setShowDetail(v => !v);
+            if (alertMessages.length > 0) toggleDetail();
             else onClick?.();
           }}
-          {...makeKeyboardClickable((e) => { e?.stopPropagation?.(); if (alertMessages.length > 0) setShowDetail(v => !v); else onClick?.(); })}
+          {...makeKeyboardClickable((e) => { e?.stopPropagation?.(); if (alertMessages.length > 0) toggleDetail(); else onClick?.(); })}
           style={{ position:"absolute", top:"4px", right:"6px", background:"#e63946", color:"#fff", fontSize:"10px", fontWeight:700, minWidth:"18px", height:"18px", borderRadius:"999px", display:"grid", placeItems:"center", zIndex:2, cursor:"pointer" }}
         >{badge}</div>
       )}
-      {showDetail && alertMessages.length > 0 && (
+      {showDetail && alertMessages.length > 0 && popoverPos && (
         <div
+          ref={popoverRef}
           onClick={(e) => e.stopPropagation()}
           style={{
-            // 【利用者フィードバックで修正】サイドバーの幅は210pxしかなく、
-            // このポップオーバーの幅（280px）より狭い。right:0 で右端を
-            // 揃えると、はみ出した分が左（画面外）に流れてしまい、
-            // 文字が切れて読めなくなっていた。left:0 にして、
-            // サイドバーより広い本文エリア側（右）に広がるようにする。
-            position:"absolute", top:"100%", left:0, marginTop:"4px", zIndex:20,
+            position:"fixed", top:`${popoverPos.top}px`, left:`${popoverPos.left}px`, zIndex:9998,
             background:"#fff", border:"1px solid #e0e0e0", borderRadius:"6px",
-            boxShadow:"0 4px 12px rgba(0,0,0,0.15)", padding:"8px", width:"280px",
+            boxShadow:"0 4px 12px rgba(0,0,0,0.15)", padding:"8px",
+            width:"280px", maxWidth:"calc(100vw - 24px)",
             maxHeight:"260px", overflowY:"auto",
           }}
         >
@@ -18501,6 +18635,9 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   // 画面へ直接移動し、該当のドライバー・車両をあらかじめ選択しておくための合図。
   const [troubleAutoOpenDriverId, setTroubleAutoOpenDriverId] = useState(null);
   const [troubleAutoOpenVehicleId, setTroubleAutoOpenVehicleId] = useState(null);
+  // 【不具合修正】受注詳細の「トラブルを記録」から、その受注の情報を
+  // 引き継いでトラブル記録画面を開けるようにする。
+  const [troubleAutoOpenOrderId, setTroubleAutoOpenOrderId] = useState(null);
   const [showNotifications, setShowNotifications] = useState(false);
   // システムアラートを「今のセッションだけ」非表示にするためのID一覧。
   // 次回ログイン時にはリセットされる（＝実際に直っていなければまた表示される）。
@@ -19311,7 +19448,25 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                           {a.category}
                         </span>
                       </div>
-                      <div style={{ fontSize:"12px", color:c.text, lineHeight:1.5 }}>{a.message}</div>
+                      {/* 【利用者フィードバックで追加】文章の中に「誰の警告か」が
+                          埋もれてしまい、通知が並ぶと一目で判断しづらかった。
+                          このアプリの警告メッセージは「【カテゴリ】対象者名は/が…」
+                          という形式で一貫して作られているため、「】」の直後から、
+                          最初の助詞（は・が・の・に・を等）または「（」の手前までを
+                          対象者名とみなし、そこだけ太字で目立たせる。
+                          該当しない形式のメッセージは、そのまま通常表示にする
+                          （抽出に失敗しても、元の文章がそのまま読めるので実害はない）。 */}
+                      <div style={{ fontSize:"12px", color:c.text, lineHeight:1.5 }}>
+                        {(() => {
+                          const m = String(a.message || "").match(/】([^\s、。（]+?)\s?(は|が|の|に|を|で|と|へ)/);
+                          if (!m) return a.message;
+                          const idx = a.message.indexOf(m[0]) + 1; // 】の直後
+                          const subject = m[1];
+                          const before = a.message.slice(0, idx);
+                          const after = a.message.slice(idx + subject.length);
+                          return (<>{before}<strong>{subject}</strong>{after}</>);
+                        })()}
+                      </div>
                     </div>
                     {/* この警告を今のセッション中だけ非表示にする。
                         次回ログイン時、実際に直っていなければまた表示される。 */}
@@ -19476,9 +19631,11 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                   // トラブル記録として直接登録できるようにする。
                   initialDriverId={troubleAutoOpenDriverId}
                   initialVehicleId={troubleAutoOpenVehicleId}
-                  onTroubleAutoOpenHandled={() => { setTroubleAutoOpenDriverId(null); setTroubleAutoOpenVehicleId(null); }}
+                  initialOrderId={troubleAutoOpenOrderId}
+                  onTroubleAutoOpenHandled={() => { setTroubleAutoOpenDriverId(null); setTroubleAutoOpenVehicleId(null); setTroubleAutoOpenOrderId(null); }}
                   requestOpenTroubleForDriver={(driverId) => { setTroubleAutoOpenDriverId(driverId); setPageWithHistory("trouble"); }}
                   requestOpenTroubleForVehicle={(vehicleId) => { setTroubleAutoOpenVehicleId(vehicleId); setPageWithHistory("trouble"); }}
+                  requestOpenTroubleForOrder={(orderId) => { setTroubleAutoOpenOrderId(orderId); setPageWithHistory("trouble"); }}
                 />
               </PageErrorBoundary>
             );
