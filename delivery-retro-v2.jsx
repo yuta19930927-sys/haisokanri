@@ -1479,14 +1479,21 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
       .filter((order) => normalizeDateString(order?.deliveryDate) === targetDate)
       .map((order) => {
         const driver = drivers.find((d) => d?.id === order?.driverId);
-        const isCharter = order?.deliveryType === "charter";
+        // 【重要・不具合修正】以前は「チャーター便かどうか」の2択しか
+        // 判定しておらず、スポット便（deliveryType:"spot"）のときも
+        // 「ルート：」という文字列にフォールバックしてしまっていた。
+        // その結果、バッジには正しく「スポット」と表示される一方、
+        // 隣のタイトル文字列には矛盾する「ルート：」が出てしまい、
+        // 利用者が「スポットなのかルートなのか分からない」と混乱する
+        // 原因になっていた。バッジと同じ DELIVERY_TYPE_LABEL を使い、
+        // 表示を一致させる。
         return {
         id: `order-${order?.id || Math.random()}`,
         source: "order",
         sourceId: order?.id,
         date: targetDate,
         type: "delivery",
-        title: `${isCharter ? "チャーター" : "ルート"}：${order?.customerName || "未設定"}`,
+        title: `${DELIVERY_TYPE_LABEL[order?.deliveryType] || "ルート配送"}：${order?.customerName || "未設定"}`,
         subtitle: driver?.name || "未配車",
         deliveryType: order?.deliveryType || "route",
         // 受注に入力された集荷・配達の時刻を、カレンダーにも渡す。
@@ -10515,15 +10522,35 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           <Panel2 title={`月間サマリー（${month}）`}>
             <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 24px", fontSize:"13px" }}>
               {[
-                ["売上", A.totalSales, "#007a74"],
-                ["ドライバー報酬", -A.totalDriverCost, "#e65100"],
-                ["ロイヤリティ収入", A.royaltyIncome, "#7b1fa2"],
-                ["リース料等収入（車両・保険・制服など）", A.driverDeductionIncome, "#7b1fa2"],
-                ["経費", -A.totalExpense, "#c62828"],
-              ].map(([k, v, c]) => (
-                <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #f0f0f0" }}>
-                  <span style={{ color:"#666" }}>{k}</span>
-                  <span style={{ fontWeight:700, color: c }}>{v < 0 ? `-${yen(Math.abs(v))}` : yen(v)}</span>
+                ["売上", A.totalSales, "#007a74", false],
+                ["ドライバー報酬", -A.totalDriverCost, "#e65100", false],
+                // 【利用者フィードバックで追加】「売上−ドライバー報酬」の差額が
+                // 営業利益にはちゃんと反映されているのに、この内訳一覧のどこにも
+                // 明示的に出てきておらず、「ロイヤリティ収入が0円なのは、
+                // その分が消えているのでは」と誤解される原因になっていた。
+                // 実際には粗利益率カードの小さな補足文字としてしか
+                // 表示されていなかった（A.grossProfit 自体は既に計算されていた）。
+                // 「ロイヤリティ収入」に混ぜる（二重計上になる）のではなく、
+                // 独立した行として粗利を明示する。
+                // 【重要】ただし、この行は上2行（売上・ドライバー報酬）の
+                // 差額を"参考として"見せているだけで、他の行と同列に
+                // 合算すべき金額ではない。単純にすべての行を足し算すると
+                // 実際の営業利益より多く出てしまう（差額を二重に数える
+                // ことになる）ため、他の行とは見た目をはっきり変え、
+                // 「これは小計であって、足し算には使わない」と伝わるようにする。
+                ["＝ 粗利（上記の差額）", A.grossProfit, "#007a74", true],
+                ["ロイヤリティ収入（契約ベースの追加控除）", A.royaltyIncome, "#7b1fa2", false],
+                ["リース料等収入（車両・保険・制服など）", A.driverDeductionIncome, "#7b1fa2", false],
+                ["経費", -A.totalExpense, "#c62828", false],
+              ].map(([k, v, c, isSubtotal]) => (
+                <div key={k} style={{
+                  display:"flex", justifyContent:"space-between", padding: isSubtotal ? "6px 0 6px 16px" : "6px 0",
+                  borderBottom:"1px solid #f0f0f0",
+                  background: isSubtotal ? "#f7f9f9" : "transparent",
+                  fontStyle: isSubtotal ? "italic" : "normal",
+                }}>
+                  <span style={{ color: isSubtotal ? "#888" : "#666", fontSize: isSubtotal ? "12px" : "13px" }}>{k}</span>
+                  <span style={{ fontWeight: isSubtotal ? 500 : 700, color: c, fontSize: isSubtotal ? "12px" : "13px" }}>{v < 0 ? `-${yen(Math.abs(v))}` : yen(v)}</span>
                 </div>
               ))}
             </div>
@@ -12059,6 +12086,12 @@ const ChatPage = ({ data, tenantId, userRole, isMobile, authEmail }) => {
 };
 
 const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab, setPage }) => {
+  // 【重要・不具合修正】顧客請求書の一括発行ボタンに、連打・多重クリックを
+  // 防ぐガードが一切無かった。「既に作成済みかどうか」の判定は、
+  // 保存が正常に完了して初めて正しく機能するため、保存が一時的に
+  // 失敗する状況（通信不良・Supabase側の一時停止など）では、
+  // 気づかないまま何度も同じ請求書を作成してしまう危険があった。
+  const isCreatingInvoiceRef = useRef(false);
   // 【重要・統合対応】実績データは dailyRecords に統合されている。
   // ここでの qualityRecords は、その中から「品質管理から入力された分」
   // （source === "quality_entry"）だけを取り出した参照用の変数。
@@ -12583,7 +12616,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
             <RetroBtn onClick={openAddRecord} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}実績を追加</RetroBtn>
           </div>
           <div style={{ background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:"6px", padding:"8px 10px", fontSize:"11px", color:"#e65100" }}>
-            ⚠ 同じ配送を「実績入力」の画面にも入力すると、売上が二重に集計されます。どちらか一方の画面で入力してください。
+            ⚠ 同じ配送を「個建実績入力」の画面にも入力すると、売上が二重に集計されます。どちらか一方の画面で入力してください。
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
             <span style={{ fontSize:"12px", color:"#666" }}>表示月：</span>
@@ -12843,8 +12876,16 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                         <span style={{ fontSize:"11px", color:"#2e7d32", fontWeight:700, background:"#e8f5e9", border:"1px solid #4caf50", borderRadius:"999px", padding:"2px 10px" }}>生成済</span>
                       ) : (
                         <RetroBtn small onClick={() => {
+                          // 【重要・不具合修正】確認ダイアログを2回挟んでいるとはいえ、
+                          // 処理中に再度クリックできてしまう作りだった。
+                          // 実際に、実績側の「請求済み」マーキングが何らかの理由で
+                          // 反映されないと、この関数の外側にある「生成済」の判定が
+                          // 効かず、同じ請求書を繰り返し作成できてしまう状態だった。
+                          if (isCreatingInvoiceRef.current) return;
+                          isCreatingInvoiceRef.current = true;
+                          const finishGuard = () => { isCreatingInvoiceRef.current = false; };
                           const customer = s.customer;
-                          if (!customer?.id) { window.alert("顧客が特定できません。"); return; }
+                          if (!customer?.id) { window.alert("顧客が特定できません。"); finishGuard(); return; }
 
                           // 締め日・支払サイトから発行日と支払期日を決める。
                           // 発行日は「その月の末日」。月をまたぐ判定をブラウザ任せにすると
@@ -12870,7 +12911,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                               already.map((i) => `　${i.id}　${yen(i.total)}　（発行日 ${i.issueDate}）`).join("\n") +
                               `\n\nこのまま作ると、同じ売上を2回請求することになります。\n` +
                               `本当にもう1枚作りますか？`
-                            )) return;
+                            )) { finishGuard(); return; }
                           }
 
                           // 【重要】いきなり発行されると、間違えて押したときに取り返しがつかない。
@@ -12882,7 +12923,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                             `　発行日　： ${issueDate}\n` +
                             `　支払期日： ${dueDate}\n\n` +
                             `作成しますか？`
-                          )) return;
+                          )) { finishGuard(); return; }
 
                           setData(d => {
                             const currentInvoices = Array.isArray(d?.invoices) ? d.invoices : [];
@@ -12902,6 +12943,17 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                               total: amount + tax,
                               status: "unpaid",
                               note: `${selectedMonth} 分`,
+                              // 【重要・不具合修正】この請求書が「もう作成済みです」と
+                              // 判定するための目印（salesMgmtMonth）が、判定する側の
+                              // コードにしか無く、実際に新規作成するときに一度も
+                              // 設定されていなかった。そのため、この目印による重複
+                              // チェックは実質的に常に不成立で、もう一方の判定
+                              // （未請求の実績が0件かどうか）だけに頼っていた。
+                              // 何らかの理由（一時的な保存失敗等）で実績側の
+                              // 「請求済み」印付けが反映されないと、この画面を
+                              // 開くたびに「まだ未請求」に見えてしまい、気づかずに
+                              // 何度もボタンを押せてしまう状態だった。
+                              salesMgmtMonth: selectedMonth,
                               lineItems: [{
                                 id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                                 name: `${selectedMonth} 配送業務`,
@@ -12948,6 +13000,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                             };
                           });
                           window.alert(`${customer.name} の請求書を作成しました。\n請求管理ページで確認できます。`);
+                          finishGuard();
                         }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
                           請求書を生成
                         </RetroBtn>
@@ -14900,6 +14953,10 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
           </RetroBtn>
         </div>
       )}
+      {/* 【利用者フィードバックで追加】このテーブルの下に余白が無く、
+          件数が少ないと最後の行がそのまま画面の一番下に来てしまい、
+          クリックしづらいという指摘があった。常に一定の余白を確保する。 */}
+      <div style={{ height:"40px" }} />
 
       {showInvoiceModal && invoiceDraft && (
         <Modal title={`請求書詳細 ${invoiceDraft.id}`} icon={invoiceIcon} onClose={()=>{ setShowInvoiceModal(false); setShowInvoiceHistory(false); }} width={780}>
@@ -18021,12 +18078,12 @@ const MENU = [
   { id:"calendar",  icon:<Icon size={16}><rect x="3" y="4" width="18" height="18"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></Icon>, label:"カレンダー", section:"メイン" },
   { id:"notices",   icon:<Icon size={16}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></Icon>, label:"お知らせ配信", section:"メイン" },
   { id:"chat",      icon:<Icon size={16}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></Icon>, label:"チャット", section:"メイン" },
-  { id:"recurring", icon:<Icon size={16}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></Icon>, label:"定期便管理", section:"案件管理" },
-  { id:"orders",    icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></Icon>, label:"受注管理", section:"案件管理" },
+  { id:"orders",    icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></Icon>, label:"単発受注入力", section:"案件管理" },
+  { id:"recurring", icon:<Icon size={16}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></Icon>, label:"車建実績入力", section:"案件管理" },
+  { id:"quality_mgmt", icon:<Icon size={16}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></Icon>, label:"個建実績入力", section:"案件管理" },
   { id:"dispatch",  icon:<Icon size={16}><rect x="2" y="8" width="15" height="8"/><path d="M17 10h3l2 3v3h-5"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>, label:"配車管理", section:"案件管理" },
-  { id:"quality_mgmt", icon:<Icon size={16}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></Icon>, label:"実績入力", section:"案件管理" },
-  { id:"trouble", icon:<Icon size={16}><path d="M12 3 2.5 20h19L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17"/></Icon>, label:"トラブル記録", section:"案件管理" },
   { id:"approval",  icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績承認", section:"案件管理" },
+  { id:"trouble", icon:<Icon size={16}><path d="M12 3 2.5 20h19L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17"/></Icon>, label:"トラブル記録", section:"案件管理" },
   { id:"sales_mgmt", icon:<Icon size={16}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></Icon>, label:"売上管理", section:"経理" },
   { id:"invoices",  icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></Icon>, label:"請求管理", section:"経理" },
   { id:"bank",      icon:<Icon size={16}><rect x="3" y="6" width="18" height="12" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>, label:"口座・入金", section:"経理" },
