@@ -594,6 +594,18 @@ const applyOrderDeliveredTransition = (d, orderId) => {
           hours: targetOrder?.hours || "",
           salesAmount: Number(targetOrder?.amount) || 0,
           driverAmount: Number(targetOrder?.driverPayAmount) || 0,
+          // 【重要・設計監査で発見・不具合修正】経営分析で「正社員・パートの
+          // 実績は粗利計算から除外する」対応をした際、当初はドライバーの
+          // "現在の"契約形態を見て判定していた。しかし、契約形態は後から
+          // 変わりうる（業務委託→正社員 等）ため、後日契約形態が変わると、
+          // 過去の（当時は正しく計上されていた）実績まで遡って扱いが
+          // 変わってしまい、確定していたはずの過去の月の利益が
+          // 後から変動する、という不具合があった。
+          // ロイヤリティ率のスナップショット（cfg）と同じ考え方で、
+          // この実績が発生した「その時点」の契約形態を記録しておき、
+          // 後から契約形態が変わっても、この記録自体は変わらないようにする。
+          driverContractTypeAtRecord: (Array.isArray(d?.drivers) ? d.drivers : [])
+            .find((dr) => dr?.id === (targetOrder?.assignedDriverId || targetOrder?.driverId))?.contractType || "業務委託",
           // 【重要】受注ごとに報酬額を直接決めた場合、その金額は
           // 「会社の取り分を引いた後の、ドライバーに渡す額」として
           // 入力されている。にもかかわらず、さらにロイヤリティ（売上の◯%）を
@@ -1386,6 +1398,22 @@ const EVENT_TYPE_LABEL = {
 
 /** 配送種別のラベル。route/charter に加えて、単発の依頼（スポット）を追加。 */
 const DELIVERY_TYPE_LABEL = { route:"ルート配送", charter:"チャーター便", spot:"スポット" };
+
+// 【設計監査で発見・不具合修正】「契約形態」には業務委託・正社員・パートの
+// 3種類が既に用意されていたのに、金額入力欄のラベルは常に
+// 「ドライバー報酬額（業務委託の支払額）」に固定されていた。
+// 業務委託と雇用契約（正社員・パート）では、税務・労務上の扱い
+// （源泉徴収・インボイス制度対応など）が全く異なるため、これは
+// 単なる言葉遣いの違いではなく、将来的に正社員・パートを実際に
+// 雇った際、支払いの性質を誤解させかねない不整合だった。
+// 対象ドライバーがまだ確定していない場面（受注登録時など）では、
+// 判定材料が無いため、これまで通りの表現に留める。
+const getDriverPayLabel = (driver) => {
+  if (driver?.contractType === "正社員" || driver?.contractType === "パート") {
+    return "ドライバー給与額（雇用契約の支払額）";
+  }
+  return "ドライバー報酬額（業務委託の支払額）";
+};
 
 const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authEmail }) => {
   const [calYear, setCalYear] = useState(() => getNow().getFullYear());
@@ -2702,46 +2730,41 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       const nowIso = new Date().toISOString();
       const paidAmount = getBankDepositAmount(tx);
 
-      const { data: invRows, error: lookupErr } = await supabase
-        .from("invoices")
-        .select("id, payload")
-        .eq("tenant_id", tenantId)
-        .limit(500);
-      if (lookupErr) throw lookupErr;
-
-      // invoiceOrId から業務ID（INV-005など）を取り出す（複数パターン対応）
-      let businessId = "";
-      if (typeof invoiceOrId === "string") {
-        businessId = invoiceOrId;
+      // 【重要・不具合修正】以前はここで毎回 Supabase に再問い合わせし、
+      // 渡された値を「常に業務ID（INV-005など）のはず」と決め打ちして
+      // 比較していた。しかし実際には、呼び出し元によって渡される値が
+      // 違っていた：
+      //   ・プルダウン（<select>）からは、getInvoiceDbId() が返す
+      //     「DB行ID」がそのまま渡される
+      //   ・候補ボタンからは、請求書オブジェクトそのものが渡される
+      // プルダウンから選んだ場合、DB行IDを業務IDと誤解して比較するため
+      // 絶対に一致せず、「請求書が見つかりませんでした」と出て、
+      // 実際には存在する請求書との照合が常に失敗する不具合になっていた。
+      // さらに、Supabaseへ再問い合わせする設計だと、作成直後でまだ
+      // 保存が完了していない請求書とも一致しない危険があった。
+      // 画面に表示されている最新のローカルデータ（invoices配列）から、
+      // DB行ID・業務IDのどちらで渡されても正しく特定できるようにする。
+      let matchedLocal = null;
+      if (typeof invoiceOrId === "string" && invoiceOrId) {
+        matchedLocal = invoices.find((inv) => getInvoiceDbId(inv) === invoiceOrId)
+          || invoices.find((inv) => getEntityPayload(inv)?.id === invoiceOrId || inv?.id === invoiceOrId);
       } else if (invoiceOrId && typeof invoiceOrId === "object") {
-        // fetchDataFromSupabase で payload がフラット展開されているので invoice.id が直接業務ID
-        businessId = invoiceOrId?.id || invoiceOrId?.payload?.id || "";
+        const wantedId = getInvoiceDbId(invoiceOrId);
+        matchedLocal = invoices.find((inv) => getInvoiceDbId(inv) === wantedId) || invoiceOrId;
       }
 
-      if (!businessId) {
-        window.alert("請求書IDが取得できませんでした。画面を再読み込みして再度お試しください。");
+      if (!matchedLocal) {
+        window.alert("請求書が見つかりませんでした。画面を再読み込みしてから、もう一度お試しください。");
         return;
       }
 
-      const matched = (invRows || []).find((row) => {
-        let pl = {};
-        try {
-          pl = row.payload
-            ? (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload)
-            : {};
-          if (pl.payload) pl = typeof pl.payload === "string" ? JSON.parse(pl.payload) : pl.payload;
-        } catch(e) {}
-        return pl.id === businessId;
-      });
-
-      if (!matched?.id) {
-        window.alert("請求書が見つかりませんでした。業務ID: " + businessId);
+      const invoiceDbId = getInvoiceDbId(matchedLocal);
+      if (!invoiceDbId) {
+        window.alert("請求書の内部IDが取得できませんでした。画面を再読み込みして再度お試しください。");
         return;
       }
 
-      const invoiceDbId = matched.id;
-
-      const invPayloadNext = { ...getEntityPayload(matched) };
+      const invPayloadNext = { ...getEntityPayload(matchedLocal) };
       const invoiceTotal = Number(invPayloadNext.total) || Number(invPayloadNext.amount) || 0;
 
       // 【重要】以前は「入金があったら必ず全額入金済み」として扱っていたため、
@@ -3142,7 +3165,7 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               </div>
               <div style={{ display:"flex", gap:"6px", alignItems:"center" }}>
                 <span style={{ fontSize:"11px", color:"#666" }}>照合：</span>
-                <RetroSelect style={{ width:"250px" }} onChange={(e)=>confirmMatch(b?.id, e.target.value)}>
+                <RetroSelect style={{ width:"250px" }} onChange={(e)=>{ if (e.target.value) confirmMatch(b?.id, e.target.value); }}>
                   <option value="">請求書を選択...</option>
                   {unpaidInvoiceOptions.options.map(({ rowId, label }) => (
                     <option key={rowId||`inv-${label}`} value={rowId||""}>{label}</option>
@@ -5193,7 +5216,25 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
               集荷先・配達先をまとめて地図に表示する。Yahoo!地図は2地点までの
               ルートしか表示できないため、複数案件をまとめて見たいときは
               こちらの「複数ピンマップ」（Leaflet）を使う。 */}
-          <RetroBtn small onClick={()=>{ setShowSingleOrderMap(false); setShowMultiOrderMap(true); }} style={{ background:"#fff", color:"#1565c0", borderColor:"#1565c0" }}>
+          <RetroBtn small onClick={()=>{
+            // 【重要・コスト監査で発見】選択できる案件数に上限が無かった。
+            // 事業が拡大し案件数が増えると、「全選択」チェックボックスと
+            // 組み合わさったときに、数百〜数千件をまとめて地図表示しようと
+            // してしまう危険があった。1件につき最大2回（集荷先・配達先）の
+            // ジオコーディングAPI呼び出しが必要なため、これは
+            // ①Yahoo!APIの無料枠を一瞬で使い切る
+            // ②大量のリクエストでブラウザが重くなる・固まる
+            // ③地図上に数百〜数千個のピンを描画しようとして表示が破綻する
+            // という、規模が大きくなるほど深刻化する問題につながる。
+            // 常識的な上限を設け、超えている場合は案内して止める。
+            const MAX_MAP_ORDERS = 50;
+            const checkedCount = filtered.filter(o => checkedOrderIds.includes(o?.id)).length;
+            if (checkedCount > MAX_MAP_ORDERS) {
+              window.alert(`一度に地図表示できるのは${MAX_MAP_ORDERS}件までです（現在${checkedCount}件選択中）。選択を絞り込んでから、もう一度お試しください。`);
+              return;
+            }
+            setShowSingleOrderMap(false); setShowMultiOrderMap(true);
+          }} style={{ background:"#fff", color:"#1565c0", borderColor:"#1565c0" }}>
             📍 複数ピンマップで見る
           </RetroBtn>
           {/* キャンセル済みが選ばれているときだけ出す。
@@ -5494,7 +5535,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                 <Fl label="重量"><RetroInput value={orderDraft?.weight || ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), weight:e.target.value }))}/></Fl>
                 <Fl label="金額"><RetroInput type="number" min="0" value={orderDraft?.amount ?? ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), amount:e.target.value }))}/></Fl>
                 {userRole !== "dispatcher" && (
-                  <Fl label="ドライバー報酬額（業務委託の支払額）">
+                  <Fl label={getDriverPayLabel(drivers.find(d => d?.id === orderDraft?.driverId))}>
                     <RetroInput type="number" min="0" value={orderDraft?.driverPayAmount ?? ""} onChange={(e)=>setOrderDraft((prev)=>({ ...(prev||{}), driverPayAmount:e.target.value }))} placeholder="未設定の場合、配送完了時に報酬額0円で記録されます"/>
                   </Fl>
                 )}
@@ -5890,7 +5931,7 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             return <option key={v?.id||`vehicle-${Math.random()}`} value={v?.id||""}>{warning}{v?.plate||""}</option>;
           })}</RetroSelect></Fl>
           {userRole !== "dispatcher" && (
-            <Fl label="ドライバー報酬額（業務委託の支払額）">
+            <Fl label={getDriverPayLabel(drivers.find(d => d?.id === aD))}>
               <RetroInput type="number" min="0" value={aPay} onChange={e=>setAPay(e.target.value)} placeholder="未設定の場合、配送完了時に報酬額0円で記録されます"/>
             </Fl>
           )}
@@ -5953,7 +5994,7 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                       </RetroSelect>
                     </Fl>
                     {userRole !== "dispatcher" && (
-                      <Fl label="ドライバー報酬額（業務委託の支払額）">
+                      <Fl label={getDriverPayLabel(drivers.find(d => d?.id === rD))}>
                         <RetroInput type="number" min="0" value={rPay} onChange={e=>setRPay(e.target.value)} placeholder="未設定の場合、配送完了時に報酬額0円で記録されます"/>
                       </Fl>
                     )}
@@ -6546,7 +6587,12 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         [field]: value,
         customerId: customerId || null,
         salesAmount: salesAmount || null,
-        driverAmount: driverAmount || null
+        driverAmount: driverAmount || null,
+        // 【重要・設計監査で発見・不具合修正】契約形態は後から変わりうる
+        // ため、その時点の契約形態を記録しておく（詳しい理由は
+        // applyOrderDeliveredTransition 内の同種のコメントを参照）。
+        driverContractTypeAtRecord: (Array.isArray(d?.drivers) ? d.drivers : [])
+          .find((dr) => dr?.id === driverId)?.contractType || "業務委託",
       }]};
     });
     if (!opts?.skipClear) {
@@ -7447,6 +7493,10 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               count: 1,
               salesAmount: Number(r?.salesAmount) || 0,
               driverAmount: Number(r?.driverPayAmount) || 0,
+              // 【重要・設計監査で発見・不具合修正】契約形態のスナップショット。
+              // 詳しい理由は applyOrderDeliveredTransition 内の同種のコメントを参照。
+              driverContractTypeAtRecord: (Array.isArray(d?.drivers) ? d.drivers : [])
+                .find((dr) => dr?.id === r?.driverId)?.contractType || "業務委託",
               note: "定期便より自動記録",
             },
           ],
@@ -9011,7 +9061,23 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         .filter((inv) => inv?.type === "driver_invoice" && !inv?.deleted)
         .map((inv) => [inv.id, inv])
     );
-    const monthPayouts = payouts.filter((p) => p.month === targetMonth && p.workDays > 0);
+    const monthPayouts = payouts.filter((p) => {
+      if (!(p.month === targetMonth && p.workDays > 0)) return false;
+      // 【設計監査で発見・不具合修正】契約形態を見ずに、その月に稼働した
+      // 全ドライバーを無差別に対象にしていた。しかし「請求書」を発行する
+      // という行為自体が、業務委託（会社に対して報酬を請求する契約）を
+      // 前提にした業務フローであり、正社員・パート（雇用契約）には
+      // そもそも適用できない。正社員・パートは給与として会社側が
+      // 計算・支払うべきもので、本人が請求書を発行する性質のものでは
+      // ない。誤って「請求書」という体裁の書類を正社員向けに発行して
+      // しまうと、税務・労務上不適切なため、対象から除外する。
+      // 【重要】正社員・パートの給与明細機能自体は、今回のスコープでは
+      // 作っていない。将来的に正社員を雇う場合は、別途給与計算の仕組みが
+      // 必要になる。
+      const driver = drivers.find((d) => d?.id === p.driverId);
+      if (driver?.contractType === "正社員" || driver?.contractType === "パート") return false;
+      return true;
+    });
     const newInvoices = [];
     const updatedInvoices = new Map(); // 金額を更新する既存請求書
 
@@ -10179,7 +10245,37 @@ const DonutChart = ({ data = [], size = 150 }) => {
  */
 const calcProfitAnalysis = (drivers, dailyRecords, payables, month, companyInfo = null) => {
   const n = (v) => Number(v) || 0;
-  const allMonthRecords = filterRecordsByMonth(dailyRecords, month);
+  const allMonthRecordsRaw = filterRecordsByMonth(dailyRecords, month);
+
+  // 【利用者との会話で決定・不具合修正済み】正社員・パートのドライバーは、
+  // 案件ごとにその都度「報酬（driverAmount）」を支払う運用をしていない
+  // （給料は月単位で別途支払う）。そのため、正社員が担当した実績を
+  // そのまま売上・粗利の計算に含めると、報酬コストが0円のまま売上
+  // だけが計上され、「粗利100%」のように実態とかけ離れた利益が
+  // 表示されてしまう。
+  // 正社員の人件費を月単位の固定費（経費）として計上する仕組みが
+  // 整うまでの暫定対応として、正社員・パートが担当した実績は、
+  // この経営分析の売上・粗利・利益の計算から一旦除外する。
+  // 【重要】これは「売上管理」「請求管理」など他の画面の売上とは
+  // 一致しなくなる差異のため、画面に必ず注記を出す。
+  // 【重要・不具合修正】当初はドライバーの"現在の"契約形態だけで
+  // 判定していたが、契約形態は後から変わりうる（業務委託→正社員、
+  // 退職による削除 等）ため、後日変更・削除されると、過去の
+  // （当時は正しく計上されていた）実績まで遡って扱いが変わってしまい、
+  // 確定していたはずの過去の月の利益が後から変動する不具合があった。
+  // 各実績に記録した「発生した時点の契約形態」のスナップショット
+  // （driverContractTypeAtRecord）があればそれを優先し、無い場合
+  // （この修正より前に作られた実績）だけ、現在の契約形態にフォールバック
+  // する（後方互換性のため）。
+  const currentContractTypeById = new Map(
+    (Array.isArray(drivers) ? drivers : []).map(d => [d?.id, d?.contractType])
+  );
+  const isEmployeeRecord = (r) => {
+    const snapshot = r?.driverContractTypeAtRecord;
+    const contractType = snapshot != null ? snapshot : currentContractTypeById.get(r?.driverId);
+    return contractType === "正社員" || contractType === "パート";
+  };
+  const allMonthRecords = allMonthRecordsRaw.filter(r => !isEmployeeRecord(r));
 
   // ★承認済みだけを売上・利益に計上する。
   // 報酬計算（calcDriverPayout）と同じ基準にしないと、
@@ -10302,6 +10398,15 @@ const recentMonths = (baseMonth, count) => {
  */
 const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
+  // 【重要・不具合修正】正社員・パートの実績を粗利計算から除外する際、
+  // 削除済み（退職済み）のドライバーを含まない drivers を使うと、
+  // 正社員が退職してシステムから削除された瞬間に、その人の"過去の"
+  // 実績が「契約形態が分からない」扱いになり、業務委託として粗利計算に
+  // 含まれてしまう。つまり、ドライバーを削除するという無関係な操作で、
+  // 確定済みの過去の月の利益が後から変わってしまう危険があった。
+  // 報酬・振込ページ（PayoutPage）に既にあった allDriversForHistory と
+  // 同じ考え方で、削除済みも含めた全ドライバーを別途用意する。
+  const allDriversForProfitAnalysis = Array.isArray(data?.drivers) ? data.drivers : [];
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => !v?.deleted);
   const dailyRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(r => !r?.deleted);
@@ -10325,7 +10430,7 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
   // 当月の分析
   const A = useMemo(
-    () => calcProfitAnalysis(drivers, dailyRecords, payables, month, data?.companyInfo),
+    () => calcProfitAnalysis(allDriversForProfitAnalysis, dailyRecords, payables, month, data?.companyInfo),
     [drivers, dailyRecords, payables, month, data?.companyInfo]
   );
 
@@ -10333,7 +10438,7 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const trend = useMemo(() => {
     const months = recentMonths(month, 12);
     return months.map((m) => {
-      const a = calcProfitAnalysis(drivers, dailyRecords, payables, m, data?.companyInfo);
+      const a = calcProfitAnalysis(allDriversForProfitAnalysis, dailyRecords, payables, m, data?.companyInfo);
       return { month: m, sales: a.totalSales, profit: a.operatingProfit, gross: a.grossProfit };
     });
   }, [drivers, dailyRecords, payables, month]);
@@ -10520,6 +10625,17 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           </div>
 
           <Panel2 title={`月間サマリー（${month}）`}>
+            {/* 【利用者との会話で決定・注記】正社員・パートのドライバーが
+                登録されている場合のみ表示する。彼らが担当した実績は、
+                月単位の給料を経費として計上する仕組みがまだ無いため、
+                一旦この経営分析の売上・粗利からは除外している。
+                「売上管理」「請求管理」など他の画面の売上とは一致しない
+                ことがあるため、必ず注記を出して混乱を防ぐ。 */}
+            {drivers.some(d => d?.contractType === "正社員" || d?.contractType === "パート") && (
+              <div style={{ fontSize:"11px", color:"#e65100", background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:"6px", padding:"6px 10px", marginBottom:"10px" }}>
+                ⚠ 正社員・パートのドライバーが担当した実績は、この経営分析の売上・利益には含まれていません（月単位の給料は経費として別途計上する運用に、今後対応予定です）。そのため、売上管理・請求管理の売上合計とは一致しません。
+              </div>
+            )}
             <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 24px", fontSize:"13px" }}>
               {[
                 ["売上", A.totalSales, "#007a74", false],
@@ -10538,7 +10654,12 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 // 実際の営業利益より多く出てしまう（差額を二重に数える
                 // ことになる）ため、他の行とは見た目をはっきり変え、
                 // 「これは小計であって、足し算には使わない」と伝わるようにする。
-                ["＝ 粗利（上記の差額）", A.grossProfit, "#007a74", true],
+                // 【重要・不具合修正】上の「粗利益率」KPIカードでは、赤字の
+                // ときに赤色へ変える配慮が既にあった（A.grossMargin < 0 ?
+                // "#c62828" : "#00695c"）のに、この行にはそれが抜けており、
+                // 粗利がマイナスの月でも常に緑固定のままだった。マイナスの
+                // 金額が「順調な色」で表示されると紛らわしいため揃える。
+                ["＝ 粗利（上記の差額）", A.grossProfit, A.grossProfit < 0 ? "#c62828" : "#007a74", true],
                 ["ロイヤリティ収入（契約ベースの追加控除）", A.royaltyIncome, "#7b1fa2", false],
                 ["リース料等収入（車両・保険・制服など）", A.driverDeductionIncome, "#7b1fa2", false],
                 ["経費", -A.totalExpense, "#c62828", false],
@@ -12349,8 +12470,28 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
             o?.id === linkedOrderId ? { ...o, amount: salesAmount, driverPayAmount: driverAmount } : o
           )
         : (Array.isArray(d?.orders) ? d.orders : []);
-      if (editingRecord) return { ...d, orders: nextOrders, dailyRecords: current.map(r => r?.id === editingRecord.id ? { ...r, ...next } : r) };
-      return { ...d, dailyRecords: [...current, { ...next, id: generateUniqueBusinessId(current, "DR") }] };
+      if (editingRecord) {
+        // 【重要・不具合修正】実績編集フォームでは、担当ドライバー自体を
+        // 変更できる（別のドライバーが実際は担当していた、という
+        // 訂正のケース）。しかし、ドライバーが変わっても契約形態の
+        // スナップショットは元のドライバーのまま残ってしまい、
+        // 「実際の担当は正社員なのに、スナップショットは業務委託のまま」
+        // という矛盾が起きる不具合があった。ドライバーIDが実際に
+        // 変わった場合だけ、新しいドライバーの契約形態で
+        // スナップショットを取り直す。
+        const driverChanged = next.driverId !== editingRecord.driverId;
+        const updatedSnapshot = driverChanged
+          ? { driverContractTypeAtRecord: (Array.isArray(d?.drivers) ? d.drivers : [])
+              .find((dr) => dr?.id === next.driverId)?.contractType || "業務委託" }
+          : {};
+        return { ...d, orders: nextOrders, dailyRecords: current.map(r => r?.id === editingRecord.id ? { ...r, ...next, ...updatedSnapshot } : r) };
+      }
+      // 【重要・設計監査で発見・不具合修正】新規作成の場合だけ、
+      // その時点の契約形態を記録する（編集時は上で ...r が既存の
+      // スナップショットをそのまま保持するため、ここでは触れない）。
+      const contractTypeAtRecord = (Array.isArray(d?.drivers) ? d.drivers : [])
+        .find((dr) => dr?.id === next.driverId)?.contractType || "業務委託";
+      return { ...d, dailyRecords: [...current, { ...next, driverContractTypeAtRecord: contractTypeAtRecord, id: generateUniqueBusinessId(current, "DR") }] };
     });
     setShowRecordModal(false);
   };
