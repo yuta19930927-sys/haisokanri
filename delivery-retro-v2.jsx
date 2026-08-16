@@ -1529,7 +1529,7 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
         // その日の動きが読み取れない。
         startTime: order?.pickupTime || order?.deliveryTime || "",
         endTime: order?.deliveryTime || "",
-        color: isCharter ? "#008800" : "#0000cc",
+        color: order?.deliveryType === "charter" ? "#008800" : "#0000cc",
         raw: order,
       };
     });
@@ -8223,6 +8223,23 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
       </tr>`;
     }).join("");
 
+  // 【利用者フィードバックで追加】請求書側は、明細が少ないときに
+  // 縞模様の空白行を埋めて、A4の紙面にバランスよく収まるように
+  // なっていた（MIN_VISIBLE_ROWS の仕組み）。報酬明細書の稼働明細にも
+  // 同じ配慮が無く、稼働日数が少ない月だと、表がすぐ終わって
+  // 下に不自然な余白ができてしまっていた。同じ考え方で揃える。
+  const recordCount = (payout.records || []).length;
+  const MIN_VISIBLE_RECORD_ROWS = 28;
+  const blankRecordRowCount = Math.max(0, MIN_VISIBLE_RECORD_ROWS - recordCount);
+  const blankRecordRows = Array.from({ length: blankRecordRowCount }, () => `
+    <tr>
+      <td class="cell-date">&nbsp;</td>
+      <td class="num">&nbsp;</td>
+      <td class="num">&nbsp;</td>
+      <td class="num">&nbsp;</td>
+      <td class="num">&nbsp;</td>
+    </tr>`).join("");
+
   const bankLine = driver?.bankName
     ? `${esc(driver.bankName)} ${esc(driver.branchName || "")} ${esc(driver.accountType || "普通")} ${esc(driver.accountNumber || "")} ${esc(driver.accountHolderKana || "")}`
     // 【利用者フィードバックで修正】請求書側では「振込先未登録」の場合に
@@ -8283,7 +8300,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
           <thead><tr>
             <th>日付</th><th class="num">個数</th><th class="num">基本報酬</th><th class="num">実費・手当</th><th class="num">計</th>
           </tr></thead>
-          <tbody>${recordRows || '<tr><td colspan="5" class="empty">この月の稼働記録はありません</td></tr>'}</tbody>
+          <tbody>${recordRows ? recordRows + blankRecordRows : '<tr><td colspan="5" class="empty">この月の稼働記録はありません</td></tr>'}</tbody>
         </table>
       </div>
 
@@ -12976,7 +12993,20 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                       })
                       .filter(Boolean)
                   );
-                  const recsForThisCustomer = [...monthRecords, ...qualityDailyRows].filter(r => r?.customerId === s.customer?.id);
+                  // 【重要・不具合修正】以前は monthRecords（承認状態を問わず、
+                  // その月の実績すべて）をそのまま請求対象にしていた。
+                  // 「実績承認」という確認の仕組みがあるのに、それを経ずに
+                  // 未承認（内容の確認がまだの）実績まで、そのまま荷主への
+                  // 請求書に計上されてしまう危険があった。もし実績の入力に
+                  // 誤りがあり、承認前に気づいていたとしても、この一括発行
+                  // 機能を使うと、確認前の金額のまま請求書が作られてしまう。
+                  // 請求書生成の対象だけ、承認済みの実績に絞り込む
+                  // （画面上の一覧・集計表示は、経理が全体を把握できるよう
+                  // 未承認も含めたままにしておく。対象を変えるのは
+                  // 請求書生成のときだけ）。
+                  const recsForThisCustomer = [...monthRecords, ...qualityDailyRows]
+                    .filter(r => r?.customerId === s.customer?.id)
+                    .filter(isApprovedRecord);
                   // orderId を持たない実績（手動入力など）は請求書との対応関係が分からないため、
                   // 安全側として常に「未請求」として扱う（除外しない）。
                   const unbilledRecs = recsForThisCustomer.filter(r => !r?.orderId || !alreadyBilledOrderIds.has(r.orderId));
@@ -13595,6 +13625,37 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     });
     if (targetOrders.length === 0) return [];
 
+    // 【重要・不具合修正】実績承認画面には「承認するまで、売上・報酬には
+    // 計上されません」と明記されているのに、この一括発行は受注の
+    // 「配送完了」ステータスだけを見ており、対応する実績が承認済みか
+    // どうかを一切確認していなかった。そのため、事務員が内容の誤りに
+    // 気づいて承認を保留にしている実績があっても、対応する受注が
+    // 「配送完了」でありさえすれば、確認前の金額のまま荷主への請求書に
+    // 計上されてしまう危険があった。承認済みの実績に対応する受注だけを
+    // 請求対象にする（実績が存在しない受注は、この後の別のチェックで
+    // 検知される）。
+    const approvedRecordOrderIds = new Set(
+      (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+        .filter((r) => !r?.deleted && r?.orderId && isApprovedRecord(r))
+        .map((r) => r.orderId)
+    );
+    const unapprovedTargetOrders = targetOrders.filter((o) => !approvedRecordOrderIds.has(o?.id));
+    if (unapprovedTargetOrders.length > 0) {
+      const list = unapprovedTargetOrders.slice(0, 5).map((o) => `・${o.id}（${o.customerName || "顧客未設定"} / ${yen(o.amount)}）`).join("\n");
+      const more = unapprovedTargetOrders.length > 5 ? `\n…他 ${unapprovedTargetOrders.length - 5}件` : "";
+      const proceed = window.confirm(
+        `次の受注は、対応する実績がまだ承認されていません。\n\n` +
+        `${list}${more}\n\n` +
+        `「実績承認」画面で承認するまで、この受注は本来まだ確定した売上として\n` +
+        `扱われません。未承認のまま請求書を発行すると、後で内容の誤りが\n` +
+        `見つかった場合に、既に荷主へ送った請求と食い違ってしまいます。\n\n` +
+        `未承認の受注を除外して、それ以外の分だけ発行しますか？`
+      );
+      if (!proceed) return [];
+    }
+    // 未承認の受注は対象から除外して続行する。
+    const targetOrdersApprovedOnly = targetOrders.filter((o) => approvedRecordOrderIds.has(o?.id));
+
     // 【重要】受注は「配送完了」のままなのに、対応する実績データが
     // （削除等で）存在しない受注が請求対象に混ざることがある。
     // その状態で請求書を作ると、
@@ -13625,7 +13686,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     }
 
     const byCustomer = new Map();
-    targetOrders.forEach((o) => {
+    targetOrdersApprovedOnly.forEach((o) => {
       const key = o?.customerId || "unknown";
       if (!byCustomer.has(key)) byCustomer.set(key, []);
       byCustomer.get(key).push(o);
@@ -18220,7 +18281,7 @@ const MENU = [
   { id:"notices",   icon:<Icon size={16}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></Icon>, label:"お知らせ配信", section:"メイン" },
   { id:"chat",      icon:<Icon size={16}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></Icon>, label:"チャット", section:"メイン" },
   { id:"orders",    icon:<Icon size={16}><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></Icon>, label:"単発受注入力", section:"案件管理" },
-  { id:"recurring", icon:<Icon size={16}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></Icon>, label:"車建実績入力", section:"案件管理" },
+  { id:"recurring", icon:<Icon size={16}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></Icon>, label:"車建受注入力", section:"案件管理" },
   { id:"quality_mgmt", icon:<Icon size={16}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></Icon>, label:"個建実績入力", section:"案件管理" },
   { id:"dispatch",  icon:<Icon size={16}><rect x="2" y="8" width="15" height="8"/><path d="M17 10h3l2 3v3h-5"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></Icon>, label:"配車管理", section:"案件管理" },
   { id:"approval",  icon:<Icon size={16}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>, label:"実績承認", section:"案件管理" },
@@ -18384,6 +18445,7 @@ const fetchDataFromSupabase = async (tenantId) => {
     })
   );
 
+  const failedKeys = [];
   for (const result of results) {
     if (result.error) {
       // 【重要】以前はここで即座に throw していたため、
@@ -18396,6 +18458,15 @@ const fetchDataFromSupabase = async (tenantId) => {
       // 他の正常なテーブルの読み込みは続行する。
       console.error(`fetchDataFromSupabase: ${result.table || result.key} の読み込みに失敗しました`, result.error);
       nextData[result.key] = result.single ? null : [];
+      // 【重要・不具合修正】失敗したテーブルを単に「空」として扱うだけだと、
+      // 他のテーブルが1件でも読み込めていれば hasRemoteData が true になり
+      // システムは正常に起動したように見えてしまう。その状態のまま
+      // 自動保存が走ると、失敗したテーブルの「空」が、サーバー上の
+      // 本物のデータにそのまま上書きされ、実際にデータが消えてしまう
+      // 危険があった（実際にシミュレーションで再現・確認した）。
+      // どのテーブルが失敗したかを記録し、呼び出し元が保存時に
+      // 除外できるようにする。
+      failedKeys.push(result.key);
       continue;
     }
     if (result.single) {
@@ -18424,7 +18495,7 @@ const fetchDataFromSupabase = async (tenantId) => {
   // 「他の人が編集した」と判定して警告できる。
   window.__hakomaneLastSyncAt = Date.now();
 
-  return nextData;
+  return { ...nextData, __failedTableKeys: failedKeys };
 };
 
 /**
@@ -18474,7 +18545,7 @@ const invoiceRowToUpsert = (row, tenantId) => {
   return { id: dbId, payload, tenant_id: tenantId };
 };
 
-const saveDataToSupabase = async (nextData, prevData, tenantId, expectedUpdatedAt) => {
+const saveDataToSupabase = async (nextData, prevData, tenantId, expectedUpdatedAt, excludeKeys = []) => {
   // テナントが確定していない状態での保存は、tenant_id が null のデータを
   // 作ってしまったり、削除範囲の絞り込みが効かなくなったりするため、
   // ここで明確に拒否する（fetchDataFromSupabase と同じ方針）。
@@ -18527,6 +18598,12 @@ const saveDataToSupabase = async (nextData, prevData, tenantId, expectedUpdatedA
   const deletes = [];
 
   TABLE_CONFIG.forEach(({ key, table, single }) => {
+    // 【重要・不具合修正】読み込みに失敗したテーブルは、excludeKeys に
+    // 含めて渡してもらうことで、ここで完全にスキップする。
+    // このテーブルに関しては upsert も delete も一切行わないため、
+    // サーバー上の既存データはそのまま維持される
+    // （「読み込めなかっただけなのに、空として上書きされる」事故を防ぐ）。
+    if (excludeKeys.includes(key)) return;
     const currentRows = single
       ? (nextData[key]
           ? [{ id: nextData[key]?.id || "COMPANY-001", payload: nextData[key], tenant_id: tenantId }]
@@ -18852,6 +18929,12 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const previousDataRef = useRef(createEmptyData());
   const latestDataRef = useRef(initialData);
   const saveGenerationRef = useRef(0);
+  // 【重要・不具合修正】読み込みに失敗したテーブルがあった場合、そのテーブル名を
+  // 保持しておく。詳しい理由は fetchDataFromSupabase 内のコメントを参照。
+  // 自動保存のたびに、このリストにあるテーブルだけは保存対象から除外し、
+  // 「読み込めなかっただけなのに、サーバー上の本物のデータが空で
+  // 上書きされてしまう」事故を防ぐ。
+  const failedTableKeysRef = useRef([]);
   const saveChainRef = useRef(Promise.resolve());
   // 保存が完了していない変更があるかどうか。
   // 画面を閉じようとした際に警告を出すかの判断に使う。
@@ -18987,6 +19070,17 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             setTimeout(() => reject(new Error("timeout")), LOAD_TIMEOUT_MS)
           ),
         ]);
+        // 【重要・不具合修正】一部テーブルの読み込みに失敗していた場合、
+        // その一覧を記録しておく（後続の自動保存で、このテーブルだけは
+        // 保存対象から除外するために使う）。
+        const failedKeysThisLoad = remoteData.__failedTableKeys || [];
+        failedTableKeysRef.current = failedKeysThisLoad;
+        if (failedKeysThisLoad.length > 0) {
+          console.warn("以下のテーブルは読み込みに失敗したため、今回のセッション中は保存対象から除外されます:", failedKeysThisLoad);
+          setSaveErrorBanner(
+            `一部のデータ（${failedKeysThisLoad.join("、")}）の読み込みに失敗しました。画面を再読み込みしてください。このまま操作すると、読み込めなかったデータ以外は正常に保存されますが、念のため再読み込みを推奨します。`
+          );
+        }
         const hasRemoteData = TABLE_CONFIG.some(({ key, single }) =>
           single ? !!remoteData[key] : (remoteData[key] || []).length > 0
         );
@@ -18994,13 +19088,14 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         if (!alive) return;
 
         if (hasRemoteData) {
-          const merged = { ...initialData, ...remoteData };
+          const { __failedTableKeys, ...remoteDataClean } = remoteData;
+          const merged = { ...initialData, ...remoteDataClean };
           setData(merged);
           previousDataRef.current = cloneData(merged);
           latestDataRef.current = merged;
           lastKnownUpdatedAtRef.current = syncUpdatedAt;
         } else {
-          const result = await saveDataToSupabase(initialData, createEmptyData(), tenantId, syncUpdatedAt);
+          const result = await saveDataToSupabase(initialData, createEmptyData(), tenantId, syncUpdatedAt, failedTableKeysRef.current);
           setData(initialData);
           previousDataRef.current = cloneData(initialData);
           latestDataRef.current = initialData;
@@ -19159,7 +19254,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
       // ことになりかねないため、1回の保存サイクルの中では固定する）。
       const expectedUpdatedAt = lastKnownUpdatedAtRef.current;
       try {
-        const result = await saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt);
+        const result = await saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt, failedTableKeysRef.current);
         if (saveGenerationRef.current === gen) {
           previousDataRef.current = cloneData(snapshot);
           lastKnownUpdatedAtRef.current = result?.updatedAt ?? expectedUpdatedAt;
@@ -19215,7 +19310,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               // 再試行する時点で、すでに新しい保存が始まっていたり
               // 既に成功していたりする場合は、古い内容で上書きしない。
               if (saveGenerationRef.current !== gen) return;
-              saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt)
+              saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt, failedTableKeysRef.current)
                 .then((retryResult) => {
                   if (saveGenerationRef.current === gen) {
                     previousDataRef.current = cloneData(snapshot);
@@ -19276,7 +19371,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
       const expectedUpdatedAt = lastKnownUpdatedAtRef.current;
       saveChainRef.current = saveChainRef.current.then(async () => {
         try {
-          const result = await saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt);
+          const result = await saveDataToSupabase(snapshot, previousDataRef.current, tenantId, expectedUpdatedAt, failedTableKeysRef.current);
           previousDataRef.current = cloneData(snapshot);
           lastKnownUpdatedAtRef.current = result?.updatedAt ?? expectedUpdatedAt;
         } catch (error) {
@@ -19316,7 +19411,12 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
       if (!isUnmodified) return;
       try {
         const remoteData = await fetchDataFromSupabase(tenantId);
-        const merged = { ...initialData, ...remoteData };
+        // 【重要・不具合修正】この経路（タブ復帰時の再取得）でも同じ危険が
+        // あるため、失敗したテーブルの記録を更新し、内部専用のマーカーは
+        // 実際のアプリの状態には含めない。
+        failedTableKeysRef.current = remoteData.__failedTableKeys || [];
+        const { __failedTableKeys, ...remoteDataClean } = remoteData;
+        const merged = { ...initialData, ...remoteDataClean };
         // 再取得した後も自分が何か編集していないことを再確認してから反映する
         // （fetch中に操作が始まっていた場合は反映しない）。
         const stillUnmodified = JSON.stringify(latestDataRef.current) === JSON.stringify(previousDataRef.current);
