@@ -15949,6 +15949,52 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
     setPwSaving(false);
   };
 
+  // 【機能追加】「事務員が一時的なコードを発行し、ドライバー自身が
+  // そのコードで新しいパスワードを設定する」方式。初回のパスワード
+  // 設定・パスワードを忘れた場合の再設定、両方に同じ仕組みを使う。
+  // 事務員はコードを電話・LINE等で伝えるだけで、実際のパスワードは
+  // ドライバー本人しか知らない状態を保てる（今までの「事務員が直接
+  // パスワードを設定する」方式より安全）。
+  const [resetCodeResult, setResetCodeResult] = useState(null);
+  const [resetCodeSaving, setResetCodeSaving] = useState(false);
+  const issueResetCode = async (driverId) => {
+    if (!driverId) return;
+    setResetCodeSaving(true);
+    setResetCodeResult(null);
+    try {
+      // 6桁の数字コード。他人に推測されにくく、電話口でも伝えやすい桁数。
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24時間後
+      const { data: existing, error: selErr } = await supabase
+        .from("driver_auth")
+        .select("id")
+        .eq("tenant_id", tenantId)
+        .eq("driver_id", driverId);
+      if (selErr) throw selErr;
+
+      if (existing && existing.length > 0) {
+        const { error } = await supabase
+          .from("driver_auth")
+          .update({ reset_code: code, reset_code_expires_at: expiresAt })
+          .eq("id", existing[0].id);
+        if (error) throw error;
+      } else {
+        // まだ一度もパスワードを設定していない（driver_authの行自体が無い）
+        // ドライバーの、初回設定の場合もここに来る。password_hash は
+        // 空のまま行だけ作っておき、ドライバー自身が初めてログインする
+        // ときに、コードを使ってパスワードを設定してもらう。
+        const { error } = await supabase
+          .from("driver_auth")
+          .insert({ tenant_id: tenantId, driver_id: driverId, password_hash: "", reset_code: code, reset_code_expires_at: expiresAt });
+        if (error) throw error;
+      }
+      setResetCodeResult({ code, expiresAt });
+    } catch (e) {
+      setResetCodeResult({ error: "コードの発行に失敗しました。driver_auth テーブルの設定をご確認ください（reset_code 列が必要です）。" });
+    }
+    setResetCodeSaving(false);
+  };
+
   const openAdd = () => {
     setEditingId(null);
     const empty = createEmptyDriverForm();
@@ -17041,6 +17087,44 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
                 <div style={{ marginTop: "16px", color: "#999", lineHeight: 1.7 }}>
                   ・設定・変更したパスワードは、ドライバーご本人に直接お伝えください（この画面には表示されません）。<br/>
                   ・パスワードはハッシュ化して保存されるため、忘れた場合は再設定が必要です。
+                </div>
+
+                {/* 【機能追加】上記は事務員が直接パスワードを決める方式。
+                    こちらは、事務員は一時的なコードを伝えるだけで、
+                    実際のパスワードはドライバー本人だけが知っている状態に
+                    できる、より安全な方式。初回設定・パスワードを
+                    忘れた場合の再設定、どちらにも使える。 */}
+                <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #e0e0e0" }}>
+                  <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+                    📱 コードでドライバー本人に設定してもらう（推奨）
+                  </div>
+                  <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "10px", color: "#666" }}>
+                    ここでコードを発行し、電話やLINE等でドライバーに伝えてください。
+                    ドライバーはハコログの「初めての方／パスワードをお忘れの方」から、
+                    このコードを使って、自分でパスワードを設定できます。
+                    コードは24時間だけ有効です。
+                  </div>
+                  <RetroBtn
+                    onClick={() => issueResetCode(selectedDriver?.id)}
+                    disabled={resetCodeSaving}
+                    style={{ background: "#fff", color: "#00a09a", borderColor: "#00a09a" }}
+                  >
+                    {resetCodeSaving ? "発行中..." : "コードを発行する"}
+                  </RetroBtn>
+                  {resetCodeResult && resetCodeResult.error && (
+                    <div style={{ marginTop: "8px", fontWeight: 700, color: "#c62828" }}>{resetCodeResult.error}</div>
+                  )}
+                  {resetCodeResult && resetCodeResult.code && (
+                    <div style={{ marginTop: "10px", background: "#f0fbfa", border: "1px solid #b2dfdb", borderRadius: "6px", padding: "12px", textAlign: "center" }}>
+                      <div style={{ fontSize: "11px", color: "#00695c", marginBottom: "4px" }}>このコードをドライバーに伝えてください</div>
+                      <div style={{ fontSize: "28px", fontWeight: 900, letterSpacing: "4px", color: "#00695c" }}>
+                        {resetCodeResult.code}
+                      </div>
+                      <div style={{ fontSize: "11px", color: "#999", marginTop: "4px" }}>
+                        有効期限：{new Date(resetCodeResult.expiresAt).toLocaleString("ja-JP")}まで
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
