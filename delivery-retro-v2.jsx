@@ -8472,12 +8472,6 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
     rows.push({ date: dateStr, shiftRec, shiftRep, precheck });
   }
 
-  const Badge = ({ ok, warn, okLabel, warnLabel }) => {
-    if (warn) return <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ {warnLabel}</span>;
-    if (ok) return <span style={{ color: "#0f766e", fontWeight: 700 }}>✓ {okLabel}</span>;
-    return <span style={{ color: "#ccc" }}>—</span>;
-  };
-
   return (
     <div style={{ padding: isMobile ? 12 : 24 }}>
       <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>稼働記録・日報</h2>
@@ -8499,7 +8493,7 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
       ) : rows.length === 0 ? (
         <p style={{ color: "#999", textAlign: "center", padding: 40 }}>この月の記録はありません</p>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: "2px solid #333", textAlign: "left" }}>
               <th style={{ padding: 8 }}>日付</th>
@@ -8511,26 +8505,71 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
             </tr>
           </thead>
           <tbody>
-            {rows.map(row => (
-              <tr key={row.date} onClick={() => setDetailRow(row)} style={{ borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                <td style={{ padding: 8 }}>{row.date}</td>
-                <td style={{ padding: 8 }}>
-                  {row.shiftRec ? `${fmtTimeShort(row.shiftRec.startAt)} 〜 ${fmtTimeShort(row.shiftRec.endAt)}` : <span style={{ color: "#ccc" }}>—</span>}
-                </td>
-                <td style={{ padding: 8 }}>
-                  <Badge ok={!!row.shiftRep?.preSubmittedAt} okLabel="提出済み" />
-                </td>
-                <td style={{ padding: 8 }}>
-                  <Badge ok={!!row.shiftRep?.postSubmittedAt} warn={row.shiftRep?.postSubmittedAt && row.shiftRep?.abnormal === "yes"} okLabel="提出済み" warnLabel="異常あり" />
-                </td>
-                <td style={{ padding: 8 }}>
-                  <Badge ok={!!row.precheck?.healthCheck} warn={alcoholCheckHasAbnormal(row.precheck)} okLabel="実施済み" warnLabel="要確認" />
-                </td>
-                <td style={{ padding: 8 }}>
-                  <Badge ok={!!row.precheck?.vehicleCheck} warn={vehicleCheckHasAbnormal(row.precheck)} okLabel="実施済み" warnLabel="要確認" />
-                </td>
-              </tr>
-            ))}
+            {rows.map(row => {
+              // 【機能改善・ユーザー要望】一覧を見ただけで、貨物自動車運送事業
+              // 輸送安全規則が求める記録内容（車両・地点・日時・確認結果）が
+              // 直接分かるよう、実施済み/未実施の記号だけでなく、実際の値を
+              // 各セルに要約して表示する。
+              const rep = row.shiftRep;
+              const pc = row.precheck;
+              const alcoholAbnormal = alcoholCheckHasAbnormal(pc);
+              const vehicleAbnormal = vehicleCheckHasAbnormal(pc);
+              const alcoholDetectorUsed = pc?.healthCheck?.alcoholDetectorUsed;
+              const vc = pc?.vehicleCheck;
+              const vehicleBadItems = vc ? [...(vc.required || []), ...(vc.optional || [])].filter(i => i.value === "repair").map(i => i.label) : [];
+              if (vc?.prevAbnormal === "repair") vehicleBadItems.push("前回運行の異状");
+              return (
+                <tr key={row.date} onClick={() => setDetailRow(row)} style={{ borderBottom: "1px solid #eee", cursor: "pointer", verticalAlign: "top" }}>
+                  <td style={{ padding: 8 }}>{row.date}</td>
+                  <td style={{ padding: 8 }}>
+                    {row.shiftRec ? `${fmtTimeShort(row.shiftRec.startAt)} 〜 ${fmtTimeShort(row.shiftRec.endAt)}` : <span style={{ color: "#ccc" }}>—</span>}
+                  </td>
+                  <td style={{ padding: 8 }}>
+                    {rep?.preSubmittedAt ? (
+                      <div>
+                        <div style={{ color: "#0f766e", fontWeight: 700 }}>✓ {fmtTimeShort(rep.preSubmittedAt)} 提出</div>
+                        <div style={{ color: "#666", fontSize: 12 }}>{rep.vehicle || "車両番号未記入"} ／ {rep.departureLoc || "出庫地未記入"}</div>
+                      </div>
+                    ) : <span style={{ color: "#ccc" }}>—</span>}
+                  </td>
+                  <td style={{ padding: 8 }}>
+                    {rep?.postSubmittedAt ? (
+                      <div>
+                        <div style={{ color: rep.abnormal === "yes" ? "#dc2626" : "#0f766e", fontWeight: 700 }}>
+                          {rep.abnormal === "yes" ? "⚠ 異常あり" : "✓"} {fmtTimeShort(rep.postSubmittedAt)} 提出
+                        </div>
+                        <div style={{ color: "#666", fontSize: 12 }}>
+                          走行 {(rep.odometerOut !== "" && rep.odometerOut != null && rep.odometerIn !== "" && rep.odometerIn != null) ? (Number(rep.odometerIn) - Number(rep.odometerOut)) : "—"}km ／ 休憩{rep.restTaken === "yes" ? `あり(${rep.restLoc || "場所未記載"})` : "なし"}
+                        </div>
+                        {rep.abnormal === "yes" && <div style={{ color: "#dc2626", fontSize: 12 }}>{rep.abnormalNote || "（詳細記載なし）"}</div>}
+                      </div>
+                    ) : <span style={{ color: "#ccc" }}>—</span>}
+                  </td>
+                  <td style={{ padding: 8 }}>
+                    {pc?.healthCheck ? (
+                      <div>
+                        <div style={{ color: alcoholAbnormal ? "#dc2626" : "#0f766e", fontWeight: 700 }}>
+                          {alcoholAbnormal ? "⚠ 酒気帯びあり" : "✓ 異常なし"}
+                        </div>
+                        <div style={{ color: "#666", fontSize: 12 }}>
+                          検知器：{alcoholDetectorUsed === true ? "使用" : alcoholDetectorUsed === false ? "未使用" : "未回答"}
+                        </div>
+                      </div>
+                    ) : <span style={{ color: "#ccc" }}>—</span>}
+                  </td>
+                  <td style={{ padding: 8 }}>
+                    {vc ? (
+                      vehicleAbnormal ? (
+                        <div>
+                          <div style={{ color: "#dc2626", fontWeight: 700 }}>⚠ 要確認</div>
+                          <div style={{ color: "#dc2626", fontSize: 12 }}>{vehicleBadItems.join("、")}</div>
+                        </div>
+                      ) : <div style={{ color: "#0f766e", fontWeight: 700 }}>✓ 異常なし</div>
+                    ) : <span style={{ color: "#ccc" }}>—</span>}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -8560,7 +8599,7 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
               {detailRow.shiftRep?.postSubmittedAt ? (
                 <table style={{ fontSize: 13, width: "100%" }}><tbody>
                   <tr><td style={{ color: "#999", width: 100 }}>提出時刻</td><td>{fmtTimeShort(detailRow.shiftRep.postSubmittedAt)}</td></tr>
-                  <tr><td style={{ color: "#999" }}>走行距離</td><td>{(Number(detailRow.shiftRep.odometerIn || 0) - Number(detailRow.shiftRep.odometerOut || 0)) || "—"} km</td></tr>
+                  <tr><td style={{ color: "#999" }}>走行距離</td><td>{(detailRow.shiftRep.odometerOut !== "" && detailRow.shiftRep.odometerOut != null && detailRow.shiftRep.odometerIn !== "" && detailRow.shiftRep.odometerIn != null) ? (Number(detailRow.shiftRep.odometerIn) - Number(detailRow.shiftRep.odometerOut)) : "—"} km</td></tr>
                   <tr><td style={{ color: "#999" }}>休憩・仮眠</td><td>{detailRow.shiftRep.restTaken === "yes" ? `あり（${detailRow.shiftRep.restLoc || "場所未記載"} ${detailRow.shiftRep.restH || "--"}:${detailRow.shiftRep.restM || "--"}）` : "なし"}</td></tr>
                   <tr><td style={{ color: "#999" }}>高速道路</td><td>{detailRow.shiftRep.highway === "yes" ? "使用あり" : "使用なし"}</td></tr>
                   <tr><td style={{ color: "#999" }}>異常</td><td>{detailRow.shiftRep.abnormal === "yes" ? <span style={{ color: "#dc2626", fontWeight: 700 }}>あり：{detailRow.shiftRep.abnormalNote || "（詳細記載なし）"}</span> : "なし"}</td></tr>
@@ -18616,15 +18655,15 @@ const TABLE_CONFIG = [
   // ドライバーが任意で実施した乗務前点検（アルコールチェック等）の記録。
   // 貨物軽自動車運送事業のため保存義務はないが、参考情報として閲覧できるようにする。
   // Hakomane側からは読むだけで、書き込み・編集は行わない（ハコログ専用の記録のため）。
-  { key: "precheckRecords", table: "precheck_records" },
+  { key: "precheckRecords", table: "precheck_records", readOnly: true },
   // 乗務前日報・乗務後日報。ハコログ側から自動的に届く、乗務記録
   // （出退庫時刻・走行距離・給油・道路状況）と積荷情報。
   // Hakomane側からは読むだけで、書き込み・編集は行わない。
-  { key: "shiftReports", table: "shift_reports" },
+  { key: "shiftReports", table: "shift_reports", readOnly: true },
   // 稼働記録（稼働開始・終了時刻）。ハコログ側から、稼働開始・終了の
   // 操作のたびに送られてくる。Hakomane側からは読むだけで、
   // 書き込み・編集は行わない（ハコログ専用の記録のため）。
-  { key: "shiftRecords", table: "shift_records" },
+  { key: "shiftRecords", table: "shift_records", readOnly: true },
   // 変更履歴（監査ログ）。受注・請求書・ドライバー情報・実績の編集前の内容を
   // スナップショットとして残す。追記専用（編集・削除は行わない）。
   { key: "changeHistory", table: "change_history" },
@@ -18654,6 +18693,7 @@ const createEmptyData = () => ({
   dailyRecords: [],
   precheckRecords: [],
   shiftReports: [],
+  shiftRecords: [],
   changeHistory: [],
   recurringAssignments: [],
   recurringConfirmations: [],
@@ -18894,7 +18934,16 @@ const saveDataToSupabase = async (nextData, prevData, tenantId, expectedUpdatedA
   const upserts = [];
   const deletes = [];
 
-  TABLE_CONFIG.forEach(({ key, table, single }) => {
+  TABLE_CONFIG.forEach(({ key, table, single, readOnly }) => {
+    // 【重要・不具合修正】precheck_records・shift_reports・shift_records は
+    // ハコログ専用の記録で、Hakomane側からは書き込む必要が無い
+    // （コメントには以前から明記されていたが、実際にはガードされておらず、
+    // 毎回の自動保存で無条件に書き込もうとしていた）。
+    // これらのテーブルにはHakomane側の書き込み権限（RLS）が無いため、
+    // 403エラーが発生し、1つのトランザクションにまとめている都合上、
+    // 本来保存されるべきだった他の業務データ（受注・請求書等）まで、
+    // 道連れで保存が取り消されてしまっていた（実際に発生を確認した重大な不具合）。
+    if (readOnly) return;
     // 【重要・不具合修正】読み込みに失敗したテーブルは、excludeKeys に
     // 含めて渡してもらうことで、ここで完全にスキップする。
     // このテーブルに関しては upsert も delete も一切行わないため、
@@ -19243,19 +19292,13 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   // 「保存が終わっていないこと」が目に見えないと、
   // 利用者は完了したと思って画面を閉じてしまう。
   const [isSaving, setIsSaving] = useState(false);
-  // 【利用者心理の監査で発見】「保存中です…」の表示は、保存が終わった瞬間に
-  // 何の合図もなく消えるだけだった。エラー時は目立つ警告が出るのに、
-  // 「問題なく保存できました」という安心材料が無く、特に使い始めたばかりの
-  // 利用者は「本当に保存されたのか」と不安になり、無駄な再読み込みをしがちになる。
-  // 保存が成功した直後、短時間だけ「✓ 保存しました」を表示する
-  // （ずっと出しっぱなしにすると、それはそれで邪魔になるため、自動で消す）。
+  // 【機能廃止・ユーザー要望】以前は「保存の安心材料」として、保存成功の
+  // たびに「✓ 保存しました」を表示していたが、自動保存の仕組みがある以上
+  // 不要で、むしろ頻繁に出てきて煩わしいという要望により、表示自体を
+  // 完全に取りやめる（呼び出し箇所は変更せず、表示だけを止める）。
   const [showSavedConfirm, setShowSavedConfirm] = useState(false);
   const savedConfirmTimeoutRef = useRef(null);
-  const flashSavedConfirm = () => {
-    setShowSavedConfirm(true);
-    if (savedConfirmTimeoutRef.current) clearTimeout(savedConfirmTimeoutRef.current);
-    savedConfirmTimeoutRef.current = setTimeout(() => setShowSavedConfirm(false), 2200);
-  };
+  const flashSavedConfirm = () => {};
   const pageHistoryRef = useRef(["dashboard"]);
   const handlingPopRef = useRef(false);
   const now = new Date();
