@@ -8417,6 +8417,120 @@ const createEmptyTroubleForm = () => ({
  *   日報・点検の詳しい内容は、クリックしたときだけモーダルで見せる
  * という2点を徹底し、シンプルさを保つ。
  */
+// 【機能追加・ユーザー要望】「運転者台帳の乗務前点検・乗務日報」と、
+// 「稼働記録・日報」画面を、集約してほしいという要望に基づき、
+// 1日分の記録（稼働時間・業務前後の点呼記録・業務後日報）を表示する
+// ロジックを、共有部品として、ここに1箇所だけ実装する。
+// 点呼記録簿（法定様式）が求める項目（実施日時・点呼方法・点呼執行者・
+// アルコール検知器の使用の有無・酒気帯びの有無・疾病等の状況・
+// 日常点検の状況・指示事項）を、業務前・業務後、それぞれ満たす形にする。
+// 「運転者台帳」「稼働記録・日報」の、両方の画面から、この1つの実装を
+// 呼び出すことで、以前発生した「片方だけ実装されていて、もう片方は
+// 常に空白になる」という種類の不具合が、構造的に起こらないようにする。
+const fmtTimeShortShared = (iso) => {
+  if (!iso) return "--:--";
+  try { return new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }); }
+  catch { return "--:--"; }
+};
+const alcoholCheckHasAbnormalShared = (pc) => {
+  if (!pc?.healthCheck) return false;
+  return pc.healthCheck.items?.some(i => i.value === "bad") || false;
+};
+const vehicleCheckHasAbnormalShared = (pc) => {
+  const vc = pc?.vehicleCheck;
+  if (!vc) return false;
+  if ([...(vc.required || []), ...(vc.optional || [])].some(i => i.value === "repair")) return true;
+  if (vc.prevAbnormal === "repair") return true;
+  return false;
+};
+const precheckHasAbnormalShared = (pc) => alcoholCheckHasAbnormalShared(pc) || vehicleCheckHasAbnormalShared(pc);
+
+const DailyRecordDetail = ({ row }) => {
+  const fmtTimeShort = fmtTimeShortShared;
+  const precheckHasAbnormal = precheckHasAbnormalShared;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#0f766e" }}>■ 稼働時間</div>
+        {row.shiftRec
+          ? <p style={{ fontSize: 14 }}>{fmtTimeShort(row.shiftRec.startAt)} 〜 {fmtTimeShort(row.shiftRec.endAt)}</p>
+          : <p style={{ fontSize: 13, color: "#999" }}>記録なし</p>}
+      </div>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#0f766e" }}>■ 業務前点呼・乗務前日報</div>
+        {row.shiftRep?.preSubmittedAt ? (
+          <table style={{ fontSize: 13, width: "100%" }}><tbody>
+            <tr><td style={{ color: "#999", width: 100 }}>実施日時</td><td>{row.date} {fmtTimeShort(row.shiftRep.preSubmittedAt)}</td></tr>
+            <tr><td style={{ color: "#999" }}>点呼方法</td><td>{row.shiftRep.callMethod === "faceToFace" ? "対面" : row.shiftRep.callMethod === "other" ? `その他（${row.shiftRep.callMethodOther || "内容未記載"}）` : "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>点呼執行者</td><td>{row.shiftRep.callExecutor || "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>車両番号</td><td>{row.shiftRep.vehicle || "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>出庫地</td><td>{row.shiftRep.departureLoc || "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>出庫時メーター</td><td>{row.shiftRep.odometerOut || "—"} km</td></tr>
+            {row.shiftRep.callInstruction && <tr><td style={{ color: "#999" }}>指示事項</td><td>{row.shiftRep.callInstruction}</td></tr>}
+          </tbody></table>
+        ) : <p style={{ fontSize: 13, color: "#999" }}>未提出</p>}
+      </div>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#0f766e" }}>■ アルコールチェック・車両点検（業務前）</div>
+        {row.precheck ? (
+          <div style={{ fontSize: 13 }}>
+            <p style={{ color: "#999", marginBottom: 6 }}>実施時刻：{fmtTimeShort(row.precheck.checkedAt)}</p>
+            {row.precheck.healthCheck && (
+              <p style={{ color: "#666", marginBottom: 6 }}>
+                アルコール検知器使用：{
+                  row.precheck.healthCheck.alcoholDetectorUsed === true ? "使用した"
+                  : row.precheck.healthCheck.alcoholDetectorUsed === false ? <span style={{ color: "#dc2626", fontWeight: 700 }}>使用していない</span>
+                  : <span style={{ color: "#999" }}>未回答</span>
+                }
+              </p>
+            )}
+            {precheckHasAbnormal(row.precheck) ? (
+              <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 10 }}>
+                {row.precheck.healthCheck?.items?.filter(i => i.value === "bad").map((i, idx) => (
+                  <p key={idx} style={{ color: "#dc2626", fontWeight: 700, margin: "2px 0" }}>⚠ {i.label}：不良</p>
+                ))}
+                {[...(row.precheck.vehicleCheck?.required || []), ...(row.precheck.vehicleCheck?.optional || [])]
+                  .filter(i => i.value === "repair")
+                  .map((i, idx) => (
+                    <p key={idx} style={{ color: "#dc2626", fontWeight: 700, margin: "2px 0" }}>⚠ {i.label}：修理対応</p>
+                  ))}
+                {row.precheck.vehicleCheck?.prevAbnormal === "repair" && (
+                  <p style={{ color: "#dc2626", fontWeight: 700, margin: "2px 0" }}>⚠ 前回の運行の異状：{row.precheck.vehicleCheck.prevNote || "（詳細記載なし）"}</p>
+                )}
+              </div>
+            ) : (
+              <p style={{ color: "#0f766e" }}>✓ 異常なし（全項目「良」）</p>
+            )}
+            {row.precheck.note && <p style={{ marginTop: 6, color: "#666" }}>特記事項：{row.precheck.note}</p>}
+          </div>
+        ) : <p style={{ fontSize: 13, color: "#999" }}>未実施</p>}
+      </div>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#0f766e" }}>■ 業務後点呼・乗務後日報</div>
+        {row.shiftRep?.postSubmittedAt ? (
+          <table style={{ fontSize: 13, width: "100%" }}><tbody>
+            <tr><td style={{ color: "#999", width: 100 }}>実施日時</td><td>{row.date} {fmtTimeShort(row.shiftRep.postSubmittedAt)}</td></tr>
+            <tr><td style={{ color: "#999" }}>点呼方法</td><td>{row.shiftRep.postCallMethod === "faceToFace" ? "対面" : row.shiftRep.postCallMethod === "other" ? `その他（${row.shiftRep.postCallMethodOther || "内容未記載"}）` : "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>点呼執行者</td><td>{row.shiftRep.postCallExecutor || "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>アルコール検知器使用</td><td>{row.shiftRep.postAlcoholDetectorUsed === true ? "使用した" : row.shiftRep.postAlcoholDetectorUsed === false ? "使用していない" : "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>酒気帯びの有無</td><td>{row.shiftRep.postAlcoholStatus === "bad" ? <span style={{ color: "#dc2626", fontWeight: 700 }}>あり</span> : row.shiftRep.postAlcoholStatus === "ok" ? "なし" : "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>運転者氏名</td><td>{row.shiftRep.driverName || "—"}</td></tr>
+            <tr><td style={{ color: "#999" }}>走行距離</td><td>{(row.shiftRep.odometerOut !== "" && row.shiftRep.odometerOut != null && row.shiftRep.odometerIn !== "" && row.shiftRep.odometerIn != null) ? (Number(row.shiftRep.odometerIn) - Number(row.shiftRep.odometerOut)) : "—"} km</td></tr>
+            <tr><td style={{ color: "#999" }}>休憩・仮眠</td><td>{row.shiftRep.restTaken === "yes" ? `あり（${row.shiftRep.restLoc || "場所未記載"} ${row.shiftRep.restH || "--"}:${row.shiftRep.restM || "--"}〜${row.shiftRep.restEndH || "--"}:${row.shiftRep.restEndM || "--"}）` : "なし"}</td></tr>
+            <tr><td style={{ color: "#999", verticalAlign: "top" }}>経過地点</td><td>{Array.isArray(row.shiftRep.waypoints) && row.shiftRep.waypoints.length > 0 ? row.shiftRep.waypoints.map((w, wi) => (
+              <div key={wi}>{w.loc || "（場所未記載）"}　着{w.arrH || "--"}:{w.arrM || "--"}／発{w.depH || "--"}:{w.depM || "--"}</div>
+            )) : "なし"}</td></tr>
+            <tr><td style={{ color: "#999" }}>荷主都合の待機・荷役</td><td>{row.shiftRep.shipperWaitTaken === "yes" ? `あり（${row.shiftRep.shipperWaitLoc || "場所未記載"}／${row.shiftRep.shipperWaitContent || "内容未記載"}／${row.shiftRep.shipperWaitStartH || "--"}:${row.shiftRep.shipperWaitStartM || "--"}〜${row.shiftRep.shipperWaitEndH || "--"}:${row.shiftRep.shipperWaitEndM || "--"}）` : "なし"}</td></tr>
+            <tr><td style={{ color: "#999" }}>異常</td><td>{row.shiftRep.abnormal === "yes" ? <span style={{ color: "#dc2626", fontWeight: 700 }}>あり：{row.shiftRep.abnormalNote || "（詳細記載なし）"}</span> : "なし"}</td></tr>
+            {row.shiftRep.postCallInstruction && <tr><td style={{ color: "#999" }}>指示事項</td><td>{row.shiftRep.postCallInstruction}</td></tr>}
+            {row.shiftRep.memo && <tr><td style={{ color: "#999" }}>メモ</td><td>{row.shiftRep.memo}</td></tr>}
+          </tbody></table>
+        ) : <p style={{ fontSize: 13, color: "#999" }}>未提出</p>}
+      </div>
+    </div>
+  );
+};
+
 const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const shiftRecords = Array.isArray(data?.shiftRecords) ? data.shiftRecords : [];
@@ -8576,85 +8690,7 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
 
       {detailRow && (
         <Modal title={`${detailRow.date} の記録`} onClose={() => setDetailRow(null)} width={520}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#0f766e" }}>■ 稼働時間</div>
-              {detailRow.shiftRec
-                ? <p style={{ fontSize: 14 }}>{fmtTimeShort(detailRow.shiftRec.startAt)} 〜 {fmtTimeShort(detailRow.shiftRec.endAt)}</p>
-                : <p style={{ fontSize: 13, color: "#999" }}>記録なし</p>}
-            </div>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#0f766e" }}>■ 乗務前日報</div>
-              {detailRow.shiftRep?.preSubmittedAt ? (
-                <table style={{ fontSize: 13, width: "100%" }}><tbody>
-                  <tr><td style={{ color: "#999", width: 100 }}>提出時刻</td><td>{fmtTimeShort(detailRow.shiftRep.preSubmittedAt)}</td></tr>
-                  <tr><td style={{ color: "#999" }}>車両番号</td><td>{detailRow.shiftRep.vehicle || "—"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>出庫地</td><td>{detailRow.shiftRep.departureLoc || "—"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>出庫時メーター</td><td>{detailRow.shiftRep.odometerOut || "—"} km</td></tr>
-                  <tr><td style={{ color: "#999" }}>点呼執行者</td><td>{detailRow.shiftRep.callExecutor || "—"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>点呼方法</td><td>{detailRow.shiftRep.callMethod === "faceToFace" ? "対面" : detailRow.shiftRep.callMethod === "other" ? `その他（${detailRow.shiftRep.callMethodOther || "内容未記載"}）` : "—"}</td></tr>
-                  {detailRow.shiftRep.callInstruction && <tr><td style={{ color: "#999" }}>指示事項</td><td>{detailRow.shiftRep.callInstruction}</td></tr>}
-                </tbody></table>
-              ) : <p style={{ fontSize: 13, color: "#999" }}>未提出</p>}
-            </div>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#0f766e" }}>■ 乗務後日報</div>
-              {detailRow.shiftRep?.postSubmittedAt ? (
-                <table style={{ fontSize: 13, width: "100%" }}><tbody>
-                  <tr><td style={{ color: "#999", width: 100 }}>提出時刻</td><td>{fmtTimeShort(detailRow.shiftRep.postSubmittedAt)}</td></tr>
-                  <tr><td style={{ color: "#999" }}>運転者氏名</td><td>{detailRow.shiftRep.driverName || "—"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>走行距離</td><td>{(detailRow.shiftRep.odometerOut !== "" && detailRow.shiftRep.odometerOut != null && detailRow.shiftRep.odometerIn !== "" && detailRow.shiftRep.odometerIn != null) ? (Number(detailRow.shiftRep.odometerIn) - Number(detailRow.shiftRep.odometerOut)) : "—"} km</td></tr>
-                  <tr><td style={{ color: "#999" }}>休憩・仮眠</td><td>{detailRow.shiftRep.restTaken === "yes" ? `あり（${detailRow.shiftRep.restLoc || "場所未記載"} ${detailRow.shiftRep.restH || "--"}:${detailRow.shiftRep.restM || "--"}〜${detailRow.shiftRep.restEndH || "--"}:${detailRow.shiftRep.restEndM || "--"}）` : "なし"}</td></tr>
-                  <tr><td style={{ color: "#999", verticalAlign: "top" }}>経過地点</td><td>{Array.isArray(detailRow.shiftRep.waypoints) && detailRow.shiftRep.waypoints.length > 0 ? detailRow.shiftRep.waypoints.map((w, wi) => (
-                    <div key={wi}>{w.loc || "（場所未記載）"}　着{w.arrH || "--"}:{w.arrM || "--"}／発{w.depH || "--"}:{w.depM || "--"}</div>
-                  )) : "なし"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>荷主都合の待機・荷役</td><td>{detailRow.shiftRep.shipperWaitTaken === "yes" ? `あり（${detailRow.shiftRep.shipperWaitLoc || "場所未記載"}／${detailRow.shiftRep.shipperWaitContent || "内容未記載"}／${detailRow.shiftRep.shipperWaitStartH || "--"}:${detailRow.shiftRep.shipperWaitStartM || "--"}〜${detailRow.shiftRep.shipperWaitEndH || "--"}:${detailRow.shiftRep.shipperWaitEndM || "--"}）` : "なし"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>異常</td><td>{detailRow.shiftRep.abnormal === "yes" ? <span style={{ color: "#dc2626", fontWeight: 700 }}>あり：{detailRow.shiftRep.abnormalNote || "（詳細記載なし）"}</span> : "なし"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>点呼執行者</td><td>{detailRow.shiftRep.postCallExecutor || "—"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>点呼方法</td><td>{detailRow.shiftRep.postCallMethod === "faceToFace" ? "対面" : detailRow.shiftRep.postCallMethod === "other" ? `その他（${detailRow.shiftRep.postCallMethodOther || "内容未記載"}）` : "—"}</td></tr>
-                  <tr><td style={{ color: "#999" }}>アルコールチェック（業務後）</td><td>検知器：{detailRow.shiftRep.postAlcoholDetectorUsed === true ? "使用" : detailRow.shiftRep.postAlcoholDetectorUsed === false ? "未使用" : "—"}／{detailRow.shiftRep.postAlcoholStatus === "bad" ? <span style={{ color: "#dc2626", fontWeight: 700 }}>酒気帯びあり</span> : detailRow.shiftRep.postAlcoholStatus === "ok" ? "異常なし" : "—"}</td></tr>
-                  {detailRow.shiftRep.postCallInstruction && <tr><td style={{ color: "#999" }}>指示事項</td><td>{detailRow.shiftRep.postCallInstruction}</td></tr>}
-                  {detailRow.shiftRep.memo && <tr><td style={{ color: "#999" }}>メモ</td><td>{detailRow.shiftRep.memo}</td></tr>}
-                </tbody></table>
-              ) : <p style={{ fontSize: 13, color: "#999" }}>未提出</p>}
-            </div>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#0f766e" }}>■ 車両点検・アルコールチェック</div>
-              {detailRow.precheck ? (
-                <div style={{ fontSize: 13 }}>
-                  <p style={{ color: "#999", marginBottom: 6 }}>実施時刻：{fmtTimeShort(detailRow.precheck.checkedAt)}</p>
-                  {detailRow.precheck.healthCheck && (
-                    <p style={{ color: "#666", marginBottom: 6 }}>
-                      アルコール検知器使用：{
-                        detailRow.precheck.healthCheck.alcoholDetectorUsed === true ? "使用した"
-                        : detailRow.precheck.healthCheck.alcoholDetectorUsed === false ? <span style={{ color: "#dc2626", fontWeight: 700 }}>使用していない</span>
-                        : <span style={{ color: "#999" }}>未回答</span>
-                      }
-                    </p>
-                  )}
-                  {/* シンプルさを優先し、異常のあった項目だけを表示する（正常な項目を1つずつ並べても情報として意味が薄いため） */}
-                  {precheckHasAbnormal(detailRow.precheck) ? (
-                    <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 10 }}>
-                      {detailRow.precheck.healthCheck?.items?.filter(i => i.value === "bad").map((i, idx) => (
-                        <p key={idx} style={{ color: "#dc2626", fontWeight: 700, margin: "2px 0" }}>⚠ {i.label}：不良</p>
-                      ))}
-                      {[...(detailRow.precheck.vehicleCheck?.required || []), ...(detailRow.precheck.vehicleCheck?.optional || [])]
-                        .filter(i => i.value === "repair")
-                        .map((i, idx) => (
-                          <p key={idx} style={{ color: "#dc2626", fontWeight: 700, margin: "2px 0" }}>⚠ {i.label}：修理対応</p>
-                        ))}
-                      {detailRow.precheck.vehicleCheck?.prevAbnormal === "repair" && (
-                        <p style={{ color: "#dc2626", fontWeight: 700, margin: "2px 0" }}>⚠ 前回の運行の異状：{detailRow.precheck.vehicleCheck.prevNote || "（詳細記載なし）"}</p>
-                      )}
-                    </div>
-                  ) : (
-                    <p style={{ color: "#0f766e" }}>✓ 異常なし（全項目「良」）</p>
-                  )}
-                  {detailRow.precheck.note && <p style={{ marginTop: 6, color: "#666" }}>特記事項：{detailRow.precheck.note}</p>}
-                </div>
-              ) : <p style={{ fontSize: 13, color: "#999" }}>未実施</p>}
-            </div>
-          </div>
+          <DailyRecordDetail row={detailRow} />
         </Modal>
       )}
     </div>
@@ -16448,10 +16484,9 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
     { id:"vehicle", label:"⑥車両情報" },
     { id:"routes", label:"⑦担当ルート" },
     { id:"payout", label:"⑧報酬・振込" },
-    { id:"precheck", label:"⑨乗務前点検" },
-    { id:"shiftreport", label:"⑩乗務日報" },
-    { id:"account", label:"⑪ログイン設定" },
-    { id:"history", label:"⑫変更履歴" },
+    { id:"records", label:"⑨点呼記録・日報" },
+    { id:"account", label:"⑩ログイン設定" },
+    { id:"history", label:"⑪変更履歴" },
   ];
   /**
    * 【重要】配車担当（dispatcher）は業務上ドライバー管理ページ自体には
@@ -16472,7 +16507,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
   // 常に非表示になってしまっていた（実際にブラウザで発見・特定した
   // 重大な不具合）。編集中・詳細表示中のどちらでもない場合のみ、
   // 本当の「新規登録中」として扱う。
-  const detailOnlyTabIds = ["precheck", "shiftreport", "history"];
+  const detailOnlyTabIds = ["records", "history"];
   const tabs = allTabs.filter((t) =>
     !restrictedTabIds.includes(t.id) && !(!editingId && !selectedDriverId && detailOnlyTabIds.includes(t.id))
   );
@@ -16943,138 +16978,43 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
         </>
       );
     }
-    // 【不具合修正】以前は、これらのタブ（乗務前点検・乗務日報・
-    // ログイン設定）が、詳細表示モーダルにしか実装されておらず、
-    // 編集モーダルから開くと、ボタンは表示されるのに、常に空白に
-    // なってしまっていた（実際にブラウザで発見・特定した重大な不具合）。
-    // 詳細表示モーダル側の実装内容を、編集モーダル用に移植する。
-    if (tab === "precheck") {
-
-              // 貨物軽自動車運送事業のため記録の保存義務はないが、
-              // ドライバーが任意で実施した場合は参考情報として閲覧できるようにする。
-              const recs = (Array.isArray(data?.precheckRecords) ? data.precheckRecords : [])
-                .filter(r => r?.driverId === viewDriverId)
-                .sort((a, b) => String(b?.checkedAt || "").localeCompare(String(a?.checkedAt || "")))
-                .slice(0, 30);
-              const itemLabel = { health: "飲酒・健康状態確認", appearance: "身だしなみ", vehicle: "車両点検" };
-              return (
-                <div style={{ fontSize: "12px" }}>
-                  <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "10px", color: "#666" }}>
-                    貨物軽自動車運送事業のため記録保存の義務はありません。ドライバーが任意で実施した記録のみ表示しています。
-                  </div>
-                  {recs.length === 0 ? (
-                    <div style={{ color: "#999", padding: "20px 0", textAlign: "center" }}>記録はありません</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      {recs.map((r, i) => {
-                        // 健康チェックの「不良」項目（飲酒・残酒はない、が不良ならアルコール確認あり）
-                        const hc = r?.healthCheck;
-                        const badHealthItems = hc ? (hc.items || []).filter(x => x.value === "bad") : [];
-                        const alcoholFlag = badHealthItems.some(x => x.label === "飲酒・残酒はない");
-                        // 車両点検の詳細から「修理対応」フラグの項目だけを抜き出す
-                        const vc = r?.vehicleCheck;
-                        const repairItems = vc
-                          ? [...(vc.required || []), ...(vc.optional || [])].filter(x => x.value === "repair")
-                          : [];
-                        const prevRepair = vc?.prevAbnormal === "repair";
-                        return (
-                          <div key={r?.id || i} style={{ border: "1px solid #e8e8e8", borderRadius: "6px", padding: "8px 10px" }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                              <span style={{ fontWeight: 700 }}>{String(r?.checkedAt || "").slice(0, 16).replace("T", " ")}</span>
-                              <span style={{ fontWeight: 700, color: alcoholFlag ? "#c62828" : "#00695c" }}>
-                                {alcoholFlag ? "🚫 アルコール確認あり" : "✓ アルコールなし"}
-                              </span>
-                            </div>
-                            <div style={{ color: "#666" }}>
-                              {Object.entries(r?.items || {}).filter(([, v]) => v).map(([k]) => itemLabel[k] || k).join("・") || "（項目未選択）"}
-                            </div>
-                            {(repairItems.length > 0 || prevRepair) && (
-                              <div style={{ marginTop: "6px", background: "#ffebee", border: "1px solid #e57373", borderRadius: "4px", padding: "6px 8px" }}>
-                                <div style={{ fontWeight: 700, color: "#c62828", marginBottom: "2px" }}>⚠ 修理対応の項目があります</div>
-                                {repairItems.map((x, j) => <div key={j} style={{ color: "#c62828" }}>・{x.label}</div>)}
-                                {prevRepair && <div style={{ color: "#c62828" }}>・前回指摘箇所（未解消）{vc?.prevNote ? `：${vc.prevNote}` : ""}</div>}
-                              </div>
-                            )}
-                            {badHealthItems.filter(x => x.label !== "飲酒・残酒はない").length > 0 && (
-                              <div style={{ marginTop: "6px", background: "#fff4e5", border: "1px solid #ffb74d", borderRadius: "4px", padding: "6px 8px" }}>
-                                <div style={{ fontWeight: 700, color: "#e65100", marginBottom: "2px" }}>⚠ 健康状態で「不良」の項目があります</div>
-                                {badHealthItems.filter(x => x.label !== "飲酒・残酒はない").map((x, j) => <div key={j} style={{ color: "#e65100" }}>・{x.label}</div>)}
-                              </div>
-                            )}
-                            {r?.note && <div style={{ color: "#999", marginTop: "2px" }}>メモ：{r.note}</div>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+    // 【機能追加・ユーザー要望】「運転者台帳の乗務前点検・乗務日報」を、
+    // 1つの「点呼記録・日報」タブに集約する。詳細表示モーダル側と
+    // まったく同じ内容を、編集モーダルからも見られるようにする。
+    if (tab === "records") {
+      const shiftRecords = Array.isArray(data?.shiftRecords) ? data.shiftRecords : [];
+      const shiftReports = Array.isArray(data?.shiftReports) ? data.shiftReports : [];
+      const precheckRecords = Array.isArray(data?.precheckRecords) ? data.precheckRecords : [];
+      const allDates = Array.from(new Set([
+        ...shiftRecords.filter(r => r?.driverId === viewDriverId).map(r => r.date),
+        ...shiftReports.filter(r => r?.driverId === viewDriverId).map(r => r.date),
+        ...precheckRecords.filter(r => r?.driverId === viewDriverId).map(r => (r?.checkedAt || "").slice(0, 10)),
+      ].filter(Boolean))).sort((a, b) => b.localeCompare(a)).slice(0, 30);
+      const dayRows = allDates.map(dateStr => ({
+        date: dateStr,
+        shiftRec: shiftRecords.find(r => r?.driverId === viewDriverId && r?.date === dateStr),
+        shiftRep: shiftReports.find(r => r?.driverId === viewDriverId && r?.date === dateStr),
+        precheck: precheckRecords.find(r => r?.driverId === viewDriverId && (r?.checkedAt || "").slice(0, 10) === dateStr),
+      }));
+      return (
+        <div style={{ fontSize: "12px" }}>
+          <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "12px", color: "#666" }}>
+            ハコログから届いた、点呼記録・日報です（直近30日分）。貨物軽自動車運送事業のため、車両点検・健康チェック自体の記録保存義務はありませんが、ドライバーが任意で実施した記録は、あわせて表示しています。
+          </div>
+          {dayRows.length === 0 ? (
+            <div style={{ color: "#999", padding: "20px 0", textAlign: "center" }}>記録はありません</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "480px", overflowY: "auto" }}>
+              {dayRows.map((row) => (
+                <div key={row.date} style={{ border: "1px solid #e8e8e8", borderRadius: "8px", padding: "12px", background: "#fff" }}>
+                  <div style={{ fontWeight: 700, color: "#007a74", marginBottom: "8px" }}>{row.date}</div>
+                  <DailyRecordDetail row={row} />
                 </div>
-              );
-    }
-    if (tab === "shiftreport") {
-              // ハコログの「乗務前日報・乗務後日報」機能から自動的に届くデータ。
-              // 車両点検・アルコールチェックは⑨乗務前点検タブと重複するため、
-              // ここでは乗務記録（出退庫・走行距離・給油・道路状況）と
-              // 積荷情報のみを表示する。
-              const reports = (Array.isArray(data?.shiftReports) ? data.shiftReports : [])
-                .filter(r => r?.driverId === viewDriverId)
-                .sort((a, b) => String(b?.date || "").localeCompare(String(a?.date || "")))
-                .slice(0, 30);
-              const weatherLabel = { sun:"晴", cloud:"曇", rain:"雨", snow:"雪" };
-              return (
-                <div style={{ fontSize: "12px" }}>
-                  <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "10px", color: "#666" }}>
-                    ハコログから届いた乗務前日報・乗務後日報です（直近30件）。車両点検・健康チェックは「⑨乗務前点検」タブをご覧ください。
-                  </div>
-                  {reports.length === 0 ? (
-                    <div style={{ color: "#999", padding: "20px 0", textAlign: "center" }}>記録はありません</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {reports.map((r) => (
-                        <div key={r.id} style={{ border: cardBorder, borderRadius: "6px", padding: "10px 12px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                            <span style={{ fontWeight: 700 }}>{r.date}</span>
-                            <div style={{ display: "flex", gap: "6px" }}>
-                              {r.preSubmittedAt && <span style={{ fontSize: "10px", background: "#e0f2f1", color: "#00695c", borderRadius: "999px", padding: "2px 8px" }}>乗務前提出済</span>}
-                              {r.postSubmittedAt && <span style={{ fontSize: "10px", background: "#e8f5e9", color: "#2e7d32", borderRadius: "999px", padding: "2px 8px" }}>乗務後提出済</span>}
-                            </div>
-                          </div>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", rowGap: "4px", color: "#555" }}>
-                            {r.vehicle && <div>車両番号：{r.vehicle}</div>}
-                            {r.driverName && <div>運転者氏名：{r.driverName}</div>}
-                            {r.weather && <div>天気：{weatherLabel[r.weather] || r.weather}</div>}
-                            {r.departureLoc && <div>出庫地：{r.departureLoc}</div>}
-                            {r.returnLoc && <div>帰庫地：{r.returnLoc}</div>}
-                            {(r.depH || r.depM) && <div>出庫時刻：{r.depH}:{r.depM}</div>}
-                            {(r.retH || r.retM) && <div>帰庫時刻：{r.retH}:{r.retM}</div>}
-                            {(r.odometerOut || r.odometerIn) && <div>走行距離：{r.odometerOut||"?"}km → {r.odometerIn||"?"}km</div>}
-                          </div>
-                          {r.abnormal === "yes" && (
-                            <div style={{ marginTop: "6px", background: "#fff5f5", border: "1px solid #ffcdd2", borderRadius: "4px", padding: "6px 8px", color: "#c62828" }}>
-                              ⚠️ 異常あり：{r.abnormalNote || "（詳細未記入）"}
-                            </div>
-                          )}
-                          {r.memo && <div style={{ marginTop: "6px", color: "#666" }}>メモ：{r.memo}</div>}
-                          {Array.isArray(r.waypoints) && r.waypoints.length > 0 && (
-                            <div style={{ marginTop: "6px", borderTop: "1px solid #f0f0f0", paddingTop: "6px" }}>
-                              <div style={{ color: "#999", fontSize: "11px", marginBottom: "2px" }}>経過地点</div>
-                              {r.waypoints.map((w, wi) => (
-                                <div key={wi} style={{ color: "#555" }}>
-                                  {w.loc || "（場所未記載）"}　着{w.arrH || "--"}:{w.arrM || "--"}／発{w.depH || "--"}:{w.depM || "--"}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          {r.shipperWaitTaken === "yes" && (
-                            <div style={{ marginTop: "6px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", padding: "6px 8px", color: "#92400e" }}>
-                              荷主都合の待機・荷役：{r.shipperWaitLoc || "場所未記載"}／{r.shipperWaitContent || "内容未記載"}／{r.shipperWaitStartH || "--"}:{r.shipperWaitStartM || "--"}〜{r.shipperWaitEndH || "--"}:{r.shipperWaitEndM || "--"}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
+              ))}
+            </div>
+          )}
+        </div>
+      );
     }
     if (tab === "account" && !restrictedTabIds.includes("account")) return (
               <div style={{ fontSize: "12px" }}>
@@ -17410,127 +17350,40 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
                 </div>
               );
             })()}
-            {activeTab==="precheck" && (() => {
-
-              // 貨物軽自動車運送事業のため記録の保存義務はないが、
-              // ドライバーが任意で実施した場合は参考情報として閲覧できるようにする。
-              const recs = (Array.isArray(data?.precheckRecords) ? data.precheckRecords : [])
-                .filter(r => r?.driverId === viewDriverId)
-                .sort((a, b) => String(b?.checkedAt || "").localeCompare(String(a?.checkedAt || "")))
-                .slice(0, 30);
-              const itemLabel = { health: "飲酒・健康状態確認", appearance: "身だしなみ", vehicle: "車両点検" };
+            {activeTab==="records" && (() => {
+              // 【機能追加・ユーザー要望】「運転者台帳の乗務前点検・乗務日報」を、
+              // 1つの「点呼記録・日報」タブに集約する。直近30日分を、
+              // 日付ごとに、点呼記録簿の書式（業務前点呼・業務後点呼を含む）
+              // でカード表示する。表示ロジック自体は、共有部品
+              // （DailyRecordDetail）を使い、「稼働記録・日報」画面と、
+              // まったく同じ内容が表示されるようにする。
+              const shiftRecords = Array.isArray(data?.shiftRecords) ? data.shiftRecords : [];
+              const shiftReports = Array.isArray(data?.shiftReports) ? data.shiftReports : [];
+              const precheckRecords = Array.isArray(data?.precheckRecords) ? data.precheckRecords : [];
+              const allDates = Array.from(new Set([
+                ...shiftRecords.filter(r => r?.driverId === viewDriverId).map(r => r.date),
+                ...shiftReports.filter(r => r?.driverId === viewDriverId).map(r => r.date),
+                ...precheckRecords.filter(r => r?.driverId === viewDriverId).map(r => (r?.checkedAt || "").slice(0, 10)),
+              ].filter(Boolean))).sort((a, b) => b.localeCompare(a)).slice(0, 30);
+              const dayRows = allDates.map(dateStr => ({
+                date: dateStr,
+                shiftRec: shiftRecords.find(r => r?.driverId === viewDriverId && r?.date === dateStr),
+                shiftRep: shiftReports.find(r => r?.driverId === viewDriverId && r?.date === dateStr),
+                precheck: precheckRecords.find(r => r?.driverId === viewDriverId && (r?.checkedAt || "").slice(0, 10) === dateStr),
+              }));
               return (
                 <div style={{ fontSize: "12px" }}>
-                  <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "10px", color: "#666" }}>
-                    貨物軽自動車運送事業のため記録保存の義務はありません。ドライバーが任意で実施した記録のみ表示しています。
+                  <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "12px", color: "#666" }}>
+                    ハコログから届いた、点呼記録・日報です（直近30日分）。貨物軽自動車運送事業のため、車両点検・健康チェック自体の記録保存義務はありませんが、ドライバーが任意で実施した記録は、あわせて表示しています。
                   </div>
-                  {recs.length === 0 ? (
+                  {dayRows.length === 0 ? (
                     <div style={{ color: "#999", padding: "20px 0", textAlign: "center" }}>記録はありません</div>
                   ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      {recs.map((r, i) => {
-                        // 健康チェックの「不良」項目（飲酒・残酒はない、が不良ならアルコール確認あり）
-                        const hc = r?.healthCheck;
-                        const badHealthItems = hc ? (hc.items || []).filter(x => x.value === "bad") : [];
-                        const alcoholFlag = badHealthItems.some(x => x.label === "飲酒・残酒はない");
-                        // 車両点検の詳細から「修理対応」フラグの項目だけを抜き出す
-                        const vc = r?.vehicleCheck;
-                        const repairItems = vc
-                          ? [...(vc.required || []), ...(vc.optional || [])].filter(x => x.value === "repair")
-                          : [];
-                        const prevRepair = vc?.prevAbnormal === "repair";
-                        return (
-                          <div key={r?.id || i} style={{ border: "1px solid #e8e8e8", borderRadius: "6px", padding: "8px 10px" }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                              <span style={{ fontWeight: 700 }}>{String(r?.checkedAt || "").slice(0, 16).replace("T", " ")}</span>
-                              <span style={{ fontWeight: 700, color: alcoholFlag ? "#c62828" : "#00695c" }}>
-                                {alcoholFlag ? "🚫 アルコール確認あり" : "✓ アルコールなし"}
-                              </span>
-                            </div>
-                            <div style={{ color: "#666" }}>
-                              {Object.entries(r?.items || {}).filter(([, v]) => v).map(([k]) => itemLabel[k] || k).join("・") || "（項目未選択）"}
-                            </div>
-                            {(repairItems.length > 0 || prevRepair) && (
-                              <div style={{ marginTop: "6px", background: "#ffebee", border: "1px solid #e57373", borderRadius: "4px", padding: "6px 8px" }}>
-                                <div style={{ fontWeight: 700, color: "#c62828", marginBottom: "2px" }}>⚠ 修理対応の項目があります</div>
-                                {repairItems.map((x, j) => <div key={j} style={{ color: "#c62828" }}>・{x.label}</div>)}
-                                {prevRepair && <div style={{ color: "#c62828" }}>・前回指摘箇所（未解消）{vc?.prevNote ? `：${vc.prevNote}` : ""}</div>}
-                              </div>
-                            )}
-                            {badHealthItems.filter(x => x.label !== "飲酒・残酒はない").length > 0 && (
-                              <div style={{ marginTop: "6px", background: "#fff4e5", border: "1px solid #ffb74d", borderRadius: "4px", padding: "6px 8px" }}>
-                                <div style={{ fontWeight: 700, color: "#e65100", marginBottom: "2px" }}>⚠ 健康状態で「不良」の項目があります</div>
-                                {badHealthItems.filter(x => x.label !== "飲酒・残酒はない").map((x, j) => <div key={j} style={{ color: "#e65100" }}>・{x.label}</div>)}
-                              </div>
-                            )}
-                            {r?.note && <div style={{ color: "#999", marginTop: "2px" }}>メモ：{r.note}</div>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-            {activeTab==="shiftreport" && (() => {
-              // ハコログの「乗務前日報・乗務後日報」機能から自動的に届くデータ。
-              // 車両点検・アルコールチェックは⑨乗務前点検タブと重複するため、
-              // ここでは乗務記録（出退庫・走行距離・給油・道路状況）と
-              // 積荷情報のみを表示する。
-              const reports = (Array.isArray(data?.shiftReports) ? data.shiftReports : [])
-                .filter(r => r?.driverId === viewDriverId)
-                .sort((a, b) => String(b?.date || "").localeCompare(String(a?.date || "")))
-                .slice(0, 30);
-              const weatherLabel = { sun:"晴", cloud:"曇", rain:"雨", snow:"雪" };
-              return (
-                <div style={{ fontSize: "12px" }}>
-                  <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "10px", color: "#666" }}>
-                    ハコログから届いた乗務前日報・乗務後日報です（直近30件）。車両点検・健康チェックは「⑨乗務前点検」タブをご覧ください。
-                  </div>
-                  {reports.length === 0 ? (
-                    <div style={{ color: "#999", padding: "20px 0", textAlign: "center" }}>記録はありません</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {reports.map((r) => (
-                        <div key={r.id} style={{ border: cardBorder, borderRadius: "6px", padding: "10px 12px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                            <span style={{ fontWeight: 700 }}>{r.date}</span>
-                            <div style={{ display: "flex", gap: "6px" }}>
-                              {r.preSubmittedAt && <span style={{ fontSize: "10px", background: "#e0f2f1", color: "#00695c", borderRadius: "999px", padding: "2px 8px" }}>乗務前提出済</span>}
-                              {r.postSubmittedAt && <span style={{ fontSize: "10px", background: "#e8f5e9", color: "#2e7d32", borderRadius: "999px", padding: "2px 8px" }}>乗務後提出済</span>}
-                            </div>
-                          </div>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", rowGap: "4px", color: "#555" }}>
-                            {r.vehicle && <div>車両番号：{r.vehicle}</div>}
-                            {r.driverName && <div>運転者氏名：{r.driverName}</div>}
-                            {r.weather && <div>天気：{weatherLabel[r.weather] || r.weather}</div>}
-                            {r.departureLoc && <div>出庫地：{r.departureLoc}</div>}
-                            {r.returnLoc && <div>帰庫地：{r.returnLoc}</div>}
-                            {(r.depH || r.depM) && <div>出庫時刻：{r.depH}:{r.depM}</div>}
-                            {(r.retH || r.retM) && <div>帰庫時刻：{r.retH}:{r.retM}</div>}
-                            {(r.odometerOut || r.odometerIn) && <div>走行距離：{r.odometerOut||"?"}km → {r.odometerIn||"?"}km</div>}
-                          </div>
-                          {r.abnormal === "yes" && (
-                            <div style={{ marginTop: "6px", background: "#fff5f5", border: "1px solid #ffcdd2", borderRadius: "4px", padding: "6px 8px", color: "#c62828" }}>
-                              ⚠️ 異常あり：{r.abnormalNote || "（詳細未記入）"}
-                            </div>
-                          )}
-                          {r.memo && <div style={{ marginTop: "6px", color: "#666" }}>メモ：{r.memo}</div>}
-                          {Array.isArray(r.waypoints) && r.waypoints.length > 0 && (
-                            <div style={{ marginTop: "6px", borderTop: "1px solid #f0f0f0", paddingTop: "6px" }}>
-                              <div style={{ color: "#999", fontSize: "11px", marginBottom: "2px" }}>経過地点</div>
-                              {r.waypoints.map((w, wi) => (
-                                <div key={wi} style={{ color: "#555" }}>
-                                  {w.loc || "（場所未記載）"}　着{w.arrH || "--"}:{w.arrM || "--"}／発{w.depH || "--"}:{w.depM || "--"}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          {r.shipperWaitTaken === "yes" && (
-                            <div style={{ marginTop: "6px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", padding: "6px 8px", color: "#92400e" }}>
-                              荷主都合の待機・荷役：{r.shipperWaitLoc || "場所未記載"}／{r.shipperWaitContent || "内容未記載"}／{r.shipperWaitStartH || "--"}:{r.shipperWaitStartM || "--"}〜{r.shipperWaitEndH || "--"}:{r.shipperWaitEndM || "--"}
-                            </div>
-                          )}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "480px", overflowY: "auto" }}>
+                      {dayRows.map((row) => (
+                        <div key={row.date} style={{ border: "1px solid #e8e8e8", borderRadius: "8px", padding: "12px", background: "#fff" }}>
+                          <div style={{ fontWeight: 700, color: "#007a74", marginBottom: "8px" }}>{row.date}</div>
+                          <DailyRecordDetail row={row} />
                         </div>
                       ))}
                     </div>
