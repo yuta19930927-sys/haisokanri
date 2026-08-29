@@ -5036,6 +5036,25 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
       window.alert("配達日を入力してください。");
       return;
     }
+    // 【重要・不具合修正】配達日に、常識的な範囲を大きく外れる日付
+    // （例：誤って年を1つ多く打ち込んでしまい「9999年」になってしまった
+    // 場合など）を入力しても、警告なくそのまま登録できてしまっていた
+    // （実際にブラウザで、9999-12-31という日付が、無警告で保存される
+    // ことを確認した）。今日から前後5年を超える日付は、通常の配送
+    // 業務では、まず発生しないため、打ち間違いに気づけるよう確認を挟む。
+    {
+      const today = new Date();
+      const deliveryDateObj = new Date(`${form.deliveryDate}T00:00:00`);
+      const yearsDiff = (deliveryDateObj - today) / (1000 * 60 * 60 * 24 * 365);
+      if (Number.isFinite(yearsDiff) && Math.abs(yearsDiff) > 5) {
+        const proceed = window.confirm(
+          `配達日「${form.deliveryDate}」は、今日から見て、大きく離れた日付です。\n\n` +
+          `年の入力を、打ち間違えていませんか？\n\n` +
+          `このまま、この日付で、登録しますか？`
+        );
+        if (!proceed) return;
+      }
+    }
     isSubmittingRef.current = true;
     try {
       const c = customers.find(x=> x?.id===form.customerId);
@@ -6073,6 +6092,10 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       window.alert("会社名を入力してください。");
       return;
     }
+    if (form.name.trim().length > 100) {
+      window.alert(`会社名は100文字以内で入力してください（現在${form.name.trim().length}文字）。`);
+      return;
+    }
     // 【重要】明らかに電話番号・メールとして成立しない値（日本語や、
     // @の無いメールなど）を、誤入力に気づけないまま保存できてしまう
     // 問題があった。空欄は許可し、何か入力されている場合だけ形式を見る。
@@ -6131,6 +6154,12 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     // 同じ理由・同じチェックを、編集の保存時にも適用する。
     if (!customerDraft?.name || !String(customerDraft.name).trim()) {
       window.alert("会社名を入力してください。");
+      return;
+    }
+    // 【重要・不具合修正】ドライバー管理の氏名で発見したのと同じ種類の
+    // 不具合。会社名にも、文字数の上限チェックが無かった。
+    if (String(customerDraft.name).trim().length > 100) {
+      window.alert(`会社名は100文字以内で入力してください（現在${String(customerDraft.name).trim().length}文字）。`);
       return;
     }
     if (!isValidPhoneFormat(customerDraft?.phone)) {
@@ -6224,12 +6253,13 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const plusIcon = <Icon size={14}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-      <div style={{ display:"flex", gap:"10px", alignItems:"center", flexWrap:"wrap" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ fontSize:"14px", fontWeight:700, color:"#222" }}>顧客台帳</div>
         <RetroBtn onClick={()=>setShowModal(true)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}顧客追加</RetroBtn>
-        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-          <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>検索</span>
-          <RetroInput value={search} onChange={e=>setSearch(e.target.value)} placeholder="会社名・ID・担当者・電話で検索" style={{ width: isMobile ? "200px" : "260px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
-        </div>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+        <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>検索</span>
+        <RetroInput value={search} onChange={e=>setSearch(e.target.value)} placeholder="会社名・ID・担当者・電話で検索" style={{ width: isMobile ? "200px" : "260px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
       </div>
       <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", overflow:"auto", maxHeight: isMobile ? "60vh" : "calc(100vh - 260px)" }}>
         <table style={{ minWidth:"100%", width:"max-content", borderCollapse:"collapse", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"12px" }}>
@@ -8427,6 +8457,17 @@ const createEmptyTroubleForm = () => ({
 // 「運転者台帳」「稼働記録・日報」の、両方の画面から、この1つの実装を
 // 呼び出すことで、以前発生した「片方だけ実装されていて、もう片方は
 // 常に空白になる」という種類の不具合が、構造的に起こらないようにする。
+// 【機能追加・法令調査に基づく】点呼記録・業務記録・日常点検記録の
+// 保存期限（記録日から1年後）を計算する。保存期間は、推測ではなく、
+// 貨物自動車運送事業輸送安全規則（2025年4月改正、経過措置なし）に
+// 基づく「1年間」を使用している。
+const addYearsToDateStr = (dateStr, years) => {
+  if (!dateStr) return "—";
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (isNaN(d.getTime())) return "—";
+  d.setFullYear(d.getFullYear() + years);
+  return formatDate(d);
+};
 const fmtTimeShortShared = (iso) => {
   if (!iso) return "--:--";
   try { return new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }); }
@@ -8531,6 +8572,129 @@ const DailyRecordDetail = ({ row }) => {
   );
 };
 
+// 【機能追加・ユーザー要望】点呼記録・業務記録を、点呼記録簿の書式に
+// 沿った列構成で、CSVとして出力する、共有関数。Excelでの文字化けを
+// 避けるため、UTF-8 BOM付きで出力する。
+const rollCallCsvRows = (rows, driverName) => {
+  const header = ["運転者名", "日付", "点呼区分", "実施日時", "点呼方法", "点呼執行者", "アルコール検知器の使用の有無", "酒気帯びの有無", "疾病等の状況", "日常点検の状況", "指示事項"];
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [header.map(esc).join(",")];
+  const fmtTimeShort = fmtTimeShortShared;
+  rows.forEach(row => {
+    const rep = row.shiftRep;
+    const pc = row.precheck;
+    const alcoholAbnormal = alcoholCheckHasAbnormalShared(pc);
+    const vehicleAbnormal = vehicleCheckHasAbnormalShared(pc);
+    const alcoholDetectorUsed = pc?.healthCheck?.alcoholDetectorUsed;
+    const healthBadItems = pc?.healthCheck?.items?.filter(i => i.value === "bad" && i.label !== "飲酒・残酒はない").map(i => i.label) || [];
+    lines.push([driverName, row.date, "業務前",
+      rep?.preSubmittedAt ? fmtTimeShort(rep.preSubmittedAt) : "",
+      rep?.callMethod === "faceToFace" ? "対面" : rep?.callMethod === "other" ? `その他(${rep.callMethodOther || ""})` : "",
+      rep?.callExecutor || "",
+      alcoholDetectorUsed === true ? "使用" : alcoholDetectorUsed === false ? "未使用" : "",
+      pc?.healthCheck ? (alcoholAbnormal ? "有" : "無") : "",
+      pc?.healthCheck ? (healthBadItems.length > 0 ? healthBadItems.join("、") : "良好") : "",
+      pc?.vehicleCheck ? (vehicleAbnormal ? "要確認" : "良好") : "",
+      rep?.callInstruction || "",
+    ].map(esc).join(","));
+    lines.push([driverName, row.date, "業務後",
+      rep?.postSubmittedAt ? fmtTimeShort(rep.postSubmittedAt) : "",
+      rep?.postCallMethod === "faceToFace" ? "対面" : rep?.postCallMethod === "other" ? `その他(${rep.postCallMethodOther || ""})` : "",
+      rep?.postCallExecutor || "",
+      rep?.postAlcoholDetectorUsed === true ? "使用" : rep?.postAlcoholDetectorUsed === false ? "未使用" : "",
+      rep?.postAlcoholStatus === "bad" ? "有" : rep?.postAlcoholStatus === "ok" ? "無" : "",
+      "",
+      "",
+      rep?.postCallInstruction || "",
+    ].map(esc).join(","));
+  });
+  return lines;
+};
+
+const downloadCsvLines = (lines, filename) => {
+  const csv = "\uFEFF" + lines.join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename.endsWith(".csv") ? filename : `${filename}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+const downloadRollCallCsv = (rows, driverName, filename) => {
+  downloadCsvLines(rollCallCsvRows(rows, driverName), filename);
+};
+
+// 【機能追加・ユーザー要望】監査対応パック：期間（開始日〜終了日）を
+// 指定するだけで、全ドライバー分の点呼記録・業務記録を、まとめて
+// CSV出力する。運輸支局等の監査で「この期間の記録を出してください」
+// と言われたときに、1件ずつ手作業で集める必要が無いようにする。
+const AuditPackModal = ({ data, onClose }) => {
+  const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
+  const shiftRecords = Array.isArray(data?.shiftRecords) ? data.shiftRecords : [];
+  const shiftReports = Array.isArray(data?.shiftReports) ? data.shiftReports : [];
+  const precheckRecords = Array.isArray(data?.precheckRecords) ? data.precheckRecords : [];
+  const today = new Date();
+  const [startDate, setStartDate] = useState(formatDate(new Date(today.getFullYear(), today.getMonth(), 1)));
+  const [endDate, setEndDate] = useState(formatDate(today));
+
+  const handleExport = () => {
+    if (!startDate || !endDate) { window.alert("開始日・終了日を指定してください。"); return; }
+    if (startDate > endDate) { window.alert("開始日は、終了日より前の日付にしてください。"); return; }
+    const allRows = [];
+    drivers.forEach(d => {
+      const dates = Array.from(new Set([
+        ...shiftRecords.filter(r => r?.driverId === d.id && r.date >= startDate && r.date <= endDate).map(r => r.date),
+        ...shiftReports.filter(r => r?.driverId === d.id && r.date >= startDate && r.date <= endDate).map(r => r.date),
+        ...precheckRecords.filter(r => r?.driverId === d.id && (r?.checkedAt || "").slice(0, 10) >= startDate && (r?.checkedAt || "").slice(0, 10) <= endDate).map(r => (r.checkedAt || "").slice(0, 10)),
+      ].filter(Boolean))).sort();
+      dates.forEach(dateStr => {
+        allRows.push({
+          driverName: d.name,
+          date: dateStr,
+          shiftRec: shiftRecords.find(r => r?.driverId === d.id && r?.date === dateStr),
+          shiftRep: shiftReports.find(r => r?.driverId === d.id && r?.date === dateStr),
+          precheck: precheckRecords.find(r => r?.driverId === d.id && (r?.checkedAt || "").slice(0, 10) === dateStr),
+        });
+      });
+    });
+    if (allRows.length === 0) {
+      window.alert("指定された期間に、記録がありません。");
+      return;
+    }
+    // ドライバーごとに区切って、1つのCSVにまとめる（運転者名の列があるため、そのまま結合できる）
+    const header = ["運転者名", "日付", "点呼区分", "実施日時", "点呼方法", "点呼執行者", "アルコール検知器の使用の有無", "酒気帯びの有無", "疾病等の状況", "日常点検の状況", "指示事項"];
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const lines = [header.map(esc).join(",")];
+    Object.entries(
+      allRows.reduce((acc, r) => { (acc[r.driverName] = acc[r.driverName] || []).push(r); return acc; }, {})
+    ).forEach(([driverName, rowsForDriver]) => {
+      rollCallCsvRows(rowsForDriver, driverName).slice(1).forEach(line => lines.push(line));
+    });
+    downloadCsvLines(lines, `監査対応パック_点呼記録_${startDate}_${endDate}`);
+    onClose();
+  };
+
+  return (
+    <Modal title="監査対応パック（期間指定で一括出力）" onClose={onClose} width={420}>
+      <p style={{ fontSize: 12, color: "#666", marginBottom: 12 }}>
+        指定した期間の、全ドライバー分の点呼記録・業務記録を、まとめてCSV出力します。運輸支局等の監査で、期間を指定された場合に、ご利用ください。
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <Fl label="開始日"><RetroInput type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></Fl>
+        <Fl label="終了日"><RetroInput type="date" value={endDate} onChange={e => setEndDate(e.target.value)} /></Fl>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <RetroBtn onClick={onClose}>キャンセル</RetroBtn>
+        <RetroBtn onClick={handleExport} style={{ background: "#00a09a", borderColor: "#00a09a", color: "#fff" }}>CSVを出力</RetroBtn>
+      </div>
+    </Modal>
+  );
+};
+
 const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const shiftRecords = Array.isArray(data?.shiftRecords) ? data.shiftRecords : [];
@@ -8543,6 +8707,11 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
   const [detailRow, setDetailRow] = useState(null);
+  // 【機能追加・ユーザー要望】監査対応パック：運輸支局等の監査で、
+  // 「○年○月○日〜○月○日の記録を出してください」と指定されたときに、
+  // 1件ずつ手作業で集める必要が無いよう、期間を指定するだけで、
+  // その期間・全ドライバー分の点呼記録・日報を、まとめてCSV出力する。
+  const [showAuditPack, setShowAuditPack] = useState(false);
 
   const [y, m] = selectedMonth.split("-").map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
@@ -8583,13 +8752,25 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
     // precheck_records は日付単体の項目を持たないため、checkedAt（提出日時）の日付部分で照合する。
     const precheck = precheckRecords.find(r => r?.driverId === selectedDriverId && (r?.checkedAt || "").slice(0, 10) === dateStr);
     if (!shiftRec && !shiftRep && !precheck) continue; // 何も記録が無い日は表示しない（シンプルに保つ）
-    rows.push({ date: dateStr, shiftRec, shiftRep, precheck });
+    // 【機能追加・法令調査に基づく再設計】点呼（業務前・業務後）・日常点検は、
+    // 貨物軽自動車運送事業でも、2025年4月から法令上の実施・記録義務がある
+    // （経過措置なし）。「稼働した実績があるのに、点呼・点検の記録が
+    // 欠けている」状態を、システム側で検知し、見落とさないようにする
+    // （入力漏れ防止）。稼働自体していない日（休日）まで警告しないよう、
+    // 「稼働記録（shiftRec）があるか」を、判定の起点にする。
+    const missingPreCall = !!shiftRec && !shiftRep?.preSubmittedAt;
+    const missingPostCall = !!shiftRec?.endAt && !shiftRep?.postSubmittedAt;
+    const missingDailyCheck = !!shiftRec && !precheck;
+    rows.push({ date: dateStr, shiftRec, shiftRep, precheck, missingPreCall, missingPostCall, missingDailyCheck });
   }
 
   return (
     <div style={{ padding: isMobile ? 12 : 24 }}>
-      <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>稼働記録・日報</h2>
-      <p style={{ fontSize: 12, color: "#999", marginBottom: 16 }}>ハコログから届く、稼働時間・乗務前後日報・車両点検の記録を確認できます。</p>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>稼働記録・日報</h2>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "#dc2626", borderRadius: 999, padding: "2px 8px" }}>法令必須</span>
+      </div>
+      <p style={{ fontSize: 12, color: "#999", marginBottom: 16 }}>ハコログから届く、稼働時間・乗務前後日報・車両点検の記録を確認できます。点呼記録・業務の記録・日常点検記録は、貨物軽自動車運送事業でも、2025年4月から法令上の実施・記録義務があります（保存期間：1年間）。</p>
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <select value={selectedDriverId} onChange={e => setSelectedDriverId(e.target.value)} style={{ padding: "8px 12px", borderRadius: 6, border: "1px solid #ddd" }}>
           {drivers.length === 0 && <option value="">（ドライバー未登録）</option>}
@@ -8600,30 +8781,54 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
           <span style={{ fontWeight: 700, minWidth: 90, textAlign: "center" }}>{selectedMonth.replace("-", "年")}月</span>
           <button onClick={() => shiftMonth(1)} style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>翌月 ›</button>
         </div>
+        <button
+          onClick={() => downloadRollCallCsv(rows, drivers.find(d => d.id === selectedDriverId)?.name || selectedDriverId, `${selectedMonth}の点呼記録`)}
+          disabled={rows.length === 0}
+          style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #00a09a", background: rows.length === 0 ? "#f0f0f0" : "#fff", color: rows.length === 0 ? "#999" : "#00a09a", cursor: rows.length === 0 ? "default" : "pointer", fontWeight: 700 }}
+        >
+          ⬇ この月をCSV出力
+        </button>
+        <button
+          onClick={() => setShowAuditPack(true)}
+          style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #555", background: "#fff", color: "#555", cursor: "pointer", fontWeight: 700 }}
+        >
+          📦 監査対応パック（期間指定）
+        </button>
       </div>
+
+      {rows.some(r => r.missingPreCall || r.missingPostCall || r.missingDailyCheck) && (
+        <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 14px", marginBottom: 16, color: "#b91c1c", fontSize: 13, fontWeight: 700 }}>
+          ⚠ {rows.filter(r => r.missingPreCall || r.missingPostCall || r.missingDailyCheck).length}日分、点呼・日常点検の記録に、抜けがあります（下表の赤字箇所）。法令違反の可能性があるため、至急ご確認ください。
+        </div>
+      )}
 
       {!selectedDriverId ? (
         <p style={{ color: "#999", textAlign: "center", padding: 40 }}>ドライバーを選択してください</p>
       ) : rows.length === 0 ? (
         <p style={{ color: "#999", textAlign: "center", padding: 40 }}>この月の記録はありません</p>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse", fontSize: 12, whiteSpace: "nowrap" }}>
           <thead>
             <tr style={{ borderBottom: "2px solid #333", textAlign: "left" }}>
-              <th style={{ padding: 8 }}>日付</th>
-              <th style={{ padding: 8 }}>稼働時間</th>
-              <th style={{ padding: 8 }}>乗務前日報</th>
-              <th style={{ padding: 8 }}>乗務後日報</th>
-              <th style={{ padding: 8 }}>アルコールチェック</th>
-              <th style={{ padding: 8 }}>車両点検</th>
+              <th style={{ padding: 6 }}>日付</th>
+              <th style={{ padding: 6 }}>点呼区分</th>
+              <th style={{ padding: 6 }}>実施日時</th>
+              <th style={{ padding: 6 }}>点呼方法</th>
+              <th style={{ padding: 6 }}>点呼執行者</th>
+              <th style={{ padding: 6 }}>ｱﾙｺｰﾙ検知器</th>
+              <th style={{ padding: 6 }}>酒気帯び</th>
+              <th style={{ padding: 6 }}>疾病等の状況</th>
+              <th style={{ padding: 6 }}>日常点検の状況</th>
+              <th style={{ padding: 6 }}>指示事項</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map(row => {
-              // 【機能改善・ユーザー要望】一覧を見ただけで、貨物自動車運送事業
-              // 輸送安全規則が求める記録内容（車両・地点・日時・確認結果）が
-              // 直接分かるよう、実施済み/未実施の記号だけでなく、実際の値を
-              // 各セルに要約して表示する。
+            {rows.flatMap(row => {
+              // 【機能追加・ユーザー要望】点呼記録簿（法定様式）と同じ書式で、
+              // 一目で分かるよう、業務前点呼・業務後点呼を、それぞれ1行として、
+              // 横に並べたテーブルにする。クリックすると、その日全体の
+              // 詳細（稼働時間・日報の全項目）を、モーダルで確認できる。
               const rep = row.shiftRep;
               const pc = row.precheck;
               const alcoholAbnormal = alcoholCheckHasAbnormal(pc);
@@ -8632,60 +8837,46 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
               const vc = pc?.vehicleCheck;
               const vehicleBadItems = vc ? [...(vc.required || []), ...(vc.optional || [])].filter(i => i.value === "repair").map(i => i.label) : [];
               if (vc?.prevAbnormal === "repair") vehicleBadItems.push("前回運行の異状");
-              return (
-                <tr key={row.date} onClick={() => setDetailRow(row)} style={{ borderBottom: "1px solid #eee", cursor: "pointer", verticalAlign: "top" }}>
-                  <td style={{ padding: 8 }}>{row.date}</td>
-                  <td style={{ padding: 8 }}>
-                    {row.shiftRec ? `${fmtTimeShort(row.shiftRec.startAt)} 〜 ${fmtTimeShort(row.shiftRec.endAt)}` : <span style={{ color: "#ccc" }}>—</span>}
+              const healthBadItems = pc?.healthCheck?.items?.filter(i => i.value === "bad" && i.label !== "飲酒・残酒はない").map(i => i.label) || [];
+
+              const trStyle = { borderBottom: "1px solid #eee", cursor: "pointer", verticalAlign: "top" };
+              const tdStyle = { padding: 6 };
+
+              const preRow = (
+                <tr key={`${row.date}-pre`} onClick={() => setDetailRow(row)} style={trStyle}>
+                  <td style={tdStyle} rowSpan={2}>
+                    {row.date}
+                    <div style={{ fontSize: 10, color: "#999", marginTop: 2 }}>保存期限：{addYearsToDateStr(row.date, 1)}</div>
                   </td>
-                  <td style={{ padding: 8 }}>
-                    {rep?.preSubmittedAt ? (
-                      <div>
-                        <div style={{ color: "#0f766e", fontWeight: 700 }}>✓ {fmtTimeShort(rep.preSubmittedAt)} 提出</div>
-                        <div style={{ color: "#666", fontSize: 12 }}>{rep.vehicle || "車両番号未記入"} ／ {rep.departureLoc || "出庫地未記入"}</div>
-                      </div>
-                    ) : <span style={{ color: "#ccc" }}>—</span>}
-                  </td>
-                  <td style={{ padding: 8 }}>
-                    {rep?.postSubmittedAt ? (
-                      <div>
-                        <div style={{ color: rep.abnormal === "yes" ? "#dc2626" : "#0f766e", fontWeight: 700 }}>
-                          {rep.abnormal === "yes" ? "⚠ 異常あり" : "✓"} {fmtTimeShort(rep.postSubmittedAt)} 提出
-                        </div>
-                        <div style={{ color: "#666", fontSize: 12 }}>
-                          走行 {(rep.odometerOut !== "" && rep.odometerOut != null && rep.odometerIn !== "" && rep.odometerIn != null) ? (Number(rep.odometerIn) - Number(rep.odometerOut)) : "—"}km ／ 休憩{rep.restTaken === "yes" ? `あり(${rep.restLoc || "場所未記載"})` : "なし"}
-                        </div>
-                        {rep.abnormal === "yes" && <div style={{ color: "#dc2626", fontSize: 12 }}>{rep.abnormalNote || "（詳細記載なし）"}</div>}
-                      </div>
-                    ) : <span style={{ color: "#ccc" }}>—</span>}
-                  </td>
-                  <td style={{ padding: 8 }}>
-                    {pc?.healthCheck ? (
-                      <div>
-                        <div style={{ color: alcoholAbnormal ? "#dc2626" : "#0f766e", fontWeight: 700 }}>
-                          {alcoholAbnormal ? "⚠ 酒気帯びあり" : "✓ 異常なし"}
-                        </div>
-                        <div style={{ color: "#666", fontSize: 12 }}>
-                          検知器：{alcoholDetectorUsed === true ? "使用" : alcoholDetectorUsed === false ? "未使用" : "未回答"}
-                        </div>
-                      </div>
-                    ) : <span style={{ color: "#ccc" }}>—</span>}
-                  </td>
-                  <td style={{ padding: 8 }}>
-                    {vc ? (
-                      vehicleAbnormal ? (
-                        <div>
-                          <div style={{ color: "#dc2626", fontWeight: 700 }}>⚠ 要確認</div>
-                          <div style={{ color: "#dc2626", fontSize: 12 }}>{vehicleBadItems.join("、")}</div>
-                        </div>
-                      ) : <div style={{ color: "#0f766e", fontWeight: 700 }}>✓ 異常なし</div>
-                    ) : <span style={{ color: "#ccc" }}>—</span>}
-                  </td>
+                  <td style={tdStyle}>業務前</td>
+                  <td style={tdStyle}>{rep?.preSubmittedAt ? fmtTimeShort(rep.preSubmittedAt) : row.missingPreCall ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ 未実施</span> : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{rep?.callMethod === "faceToFace" ? "対面" : rep?.callMethod === "other" ? `その他(${rep.callMethodOther || "—"})` : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{rep?.callExecutor || <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{alcoholDetectorUsed === true ? "使用" : alcoholDetectorUsed === false ? "未使用" : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{pc?.healthCheck ? (alcoholAbnormal ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ あり</span> : "なし") : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{pc?.healthCheck ? (healthBadItems.length > 0 ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ {healthBadItems.join("、")}</span> : "良好") : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{vc ? (vehicleAbnormal ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ {vehicleBadItems.join("、")}</span> : "良好") : row.missingDailyCheck ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ 未実施</span> : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{rep?.callInstruction || ""}</td>
                 </tr>
               );
+              const postRow = (
+                <tr key={`${row.date}-post`} onClick={() => setDetailRow(row)} style={trStyle}>
+                  <td style={tdStyle}>業務後</td>
+                  <td style={tdStyle}>{rep?.postSubmittedAt ? fmtTimeShort(rep.postSubmittedAt) : row.missingPostCall ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ 未実施</span> : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{rep?.postCallMethod === "faceToFace" ? "対面" : rep?.postCallMethod === "other" ? `その他(${rep.postCallMethodOther || "—"})` : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{rep?.postCallExecutor || <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{rep?.postAlcoholDetectorUsed === true ? "使用" : rep?.postAlcoholDetectorUsed === false ? "未使用" : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{rep?.postAlcoholStatus === "bad" ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ あり</span> : rep?.postAlcoholStatus === "ok" ? "なし" : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>{rep?.postSubmittedAt ? (rep.abnormal === "yes" ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ 異常あり</span> : "良好") : <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={tdStyle}>—</td>
+                  <td style={tdStyle}>{rep?.postCallInstruction || ""}</td>
+                </tr>
+              );
+              return [preRow, postRow];
             })}
           </tbody>
         </table>
+        </div>
       )}
 
       {detailRow && (
@@ -8693,6 +8884,7 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
           <DailyRecordDetail row={detailRow} />
         </Modal>
       )}
+      {showAuditPack && <AuditPackModal data={data} onClose={() => setShowAuditPack(false)} />}
     </div>
   );
 };
@@ -12686,6 +12878,38 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
         window.alert(`個数「${rawCount}」は整数で入力してください（小数は指定できません）。`);
         return;
       }
+      // 【重要・不具合修正】配達した荷物の個数は、物理的に0以上のはず。
+      // 以前は、マイナスの整数（例：-50）が、そのまま通ってしまい、
+      // 売上・支給額もマイナスのまま計算・保存されてしまっていた
+      // （実際にブラウザで、月間売上合計までマイナスになることを確認した、
+      // 重大な不具合）。
+      if (rawCount !== "" && numCount < 0) {
+        window.alert(`個数「${rawCount}」にマイナスの値は指定できません。0以上の数値を入力してください。`);
+        return;
+      }
+    }
+    // 【重要・不具合修正】個数と同様、単価・チャーター額・実費手当も、
+    // 物理的にマイナスにはなり得ない値である。以前は、これらの項目に
+    // マイナス値のチェックが一切無く、そのまま売上・支給額の計算に
+    // 使われてしまっていた（個数のマイナス値バグと、同じ根本原因）。
+    const nonNegativeFields = [
+      { key: "unitPrice", label: "売上単価" },
+      { key: "driverUnitPrice", label: "支払単価" },
+      { key: "charterSales", label: "チャーター売上" },
+      { key: "charterDriver", label: "チャーター支払" },
+      { key: "highwayFee", label: "高速代" },
+      { key: "parkingFee", label: "駐車場代" },
+      { key: "fuelAllowance", label: "燃料補助" },
+      { key: "otherAllowance", label: "その他支給" },
+    ];
+    for (const { key, label } of nonNegativeFields) {
+      const raw = String(recordForm[key] ?? "").trim();
+      if (raw === "") continue;
+      const num = Number(raw);
+      if (Number.isFinite(num) && num < 0) {
+        window.alert(`${label}「${raw}」にマイナスの値は指定できません。0以上の数値を入力してください。`);
+        return;
+      }
     }
 
     // 【重要】以前は、同じ日・同じドライバー・同じ顧客・同じ案件の実績を
@@ -16174,6 +16398,18 @@ const createEmptyDriverForm = () => ({
 
 const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenTroubleForDriver }) => {
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
+  // 【機能追加・監査で発見】ドライバー数が増えると、一覧から目的の
+  // ドライバーを探すのが難しくなるが、これまで検索手段が一切無かった
+  // （顧客管理・車両管理には、既に同様の検索機能があったにもかかわらず、
+  // この画面にだけ実装が漏れていた）。
+  const [driverSearch, setDriverSearch] = useState("");
+  const filteredDrivers = drivers.filter((d) => {
+    const name = d?.name || "";
+    const id = d?.id || "";
+    const phone = d?.phone || "";
+    const kana = d?.nameKana || "";
+    return name.includes(driverSearch) || id.includes(driverSearch) || phone.includes(driverSearch) || kana.includes(driverSearch);
+  });
   const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
   const allCustomers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const [showModal, setShowModal] = useState(false);
@@ -16316,6 +16552,14 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
     // 理由を明示する。
     if (!form.name || !form.name.trim()) {
       window.alert("氏名を入力してください。");
+      return;
+    }
+    // 【重要・不具合修正】氏名の文字数に、上限のチェックが無かったため、
+    // 誤って大量の文字を貼り付けてしまった場合、一覧のテーブル全体が
+    // 大きく崩れ、画面が実質的に使えなくなってしまっていた（実際に
+    // ブラウザで、1000文字の氏名を保存し、再現・確認した）。
+    if (form.name.trim().length > 50) {
+      window.alert(`氏名は50文字以内で入力してください（現在${form.name.trim().length}文字）。`);
       return;
     }
     // 緊急連絡先（emergencyPhone）は「母:090-1234-5678」のように
@@ -16484,9 +16728,8 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
     { id:"vehicle", label:"⑥車両情報" },
     { id:"routes", label:"⑦担当ルート" },
     { id:"payout", label:"⑧報酬・振込" },
-    { id:"records", label:"⑨点呼記録・日報" },
-    { id:"account", label:"⑩ログイン設定" },
-    { id:"history", label:"⑪変更履歴" },
+    { id:"account", label:"⑨ログイン設定" },
+    { id:"history", label:"⑩変更履歴" },
   ];
   /**
    * 【重要】配車担当（dispatcher）は業務上ドライバー管理ページ自体には
@@ -16507,7 +16750,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
   // 常に非表示になってしまっていた（実際にブラウザで発見・特定した
   // 重大な不具合）。編集中・詳細表示中のどちらでもない場合のみ、
   // 本当の「新規登録中」として扱う。
-  const detailOnlyTabIds = ["records", "history"];
+  const detailOnlyTabIds = ["history"];
   const tabs = allTabs.filter((t) =>
     !restrictedTabIds.includes(t.id) && !(!editingId && !selectedDriverId && detailOnlyTabIds.includes(t.id))
   );
@@ -16978,44 +17221,6 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
         </>
       );
     }
-    // 【機能追加・ユーザー要望】「運転者台帳の乗務前点検・乗務日報」を、
-    // 1つの「点呼記録・日報」タブに集約する。詳細表示モーダル側と
-    // まったく同じ内容を、編集モーダルからも見られるようにする。
-    if (tab === "records") {
-      const shiftRecords = Array.isArray(data?.shiftRecords) ? data.shiftRecords : [];
-      const shiftReports = Array.isArray(data?.shiftReports) ? data.shiftReports : [];
-      const precheckRecords = Array.isArray(data?.precheckRecords) ? data.precheckRecords : [];
-      const allDates = Array.from(new Set([
-        ...shiftRecords.filter(r => r?.driverId === viewDriverId).map(r => r.date),
-        ...shiftReports.filter(r => r?.driverId === viewDriverId).map(r => r.date),
-        ...precheckRecords.filter(r => r?.driverId === viewDriverId).map(r => (r?.checkedAt || "").slice(0, 10)),
-      ].filter(Boolean))).sort((a, b) => b.localeCompare(a)).slice(0, 30);
-      const dayRows = allDates.map(dateStr => ({
-        date: dateStr,
-        shiftRec: shiftRecords.find(r => r?.driverId === viewDriverId && r?.date === dateStr),
-        shiftRep: shiftReports.find(r => r?.driverId === viewDriverId && r?.date === dateStr),
-        precheck: precheckRecords.find(r => r?.driverId === viewDriverId && (r?.checkedAt || "").slice(0, 10) === dateStr),
-      }));
-      return (
-        <div style={{ fontSize: "12px" }}>
-          <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "12px", color: "#666" }}>
-            ハコログから届いた、点呼記録・日報です（直近30日分）。貨物軽自動車運送事業のため、車両点検・健康チェック自体の記録保存義務はありませんが、ドライバーが任意で実施した記録は、あわせて表示しています。
-          </div>
-          {dayRows.length === 0 ? (
-            <div style={{ color: "#999", padding: "20px 0", textAlign: "center" }}>記録はありません</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "480px", overflowY: "auto" }}>
-              {dayRows.map((row) => (
-                <div key={row.date} style={{ border: "1px solid #e8e8e8", borderRadius: "8px", padding: "12px", background: "#fff" }}>
-                  <div style={{ fontWeight: 700, color: "#007a74", marginBottom: "8px" }}>{row.date}</div>
-                  <DailyRecordDetail row={row} />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      );
-    }
     if (tab === "account" && !restrictedTabIds.includes("account")) return (
               <div style={{ fontSize: "12px" }}>
                 <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "12px", color: "#666" }}>
@@ -17102,6 +17307,10 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
         <div style={{ fontSize:"14px", fontWeight:700, color:"#222" }}>運転者台帳</div>
         <RetroBtn onClick={openAdd} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}ドライバー追加</RetroBtn>
       </div>
+      <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+        <span style={{ fontSize:"12px", color:"#666", fontWeight:600 }}>検索</span>
+        <RetroInput value={driverSearch} onChange={e=>setDriverSearch(e.target.value)} placeholder="氏名・ID・電話・フリガナで検索" style={{ width: isMobile ? "200px" : "260px", border:"1px solid #d0d0d0", borderRadius:"3px", background:"#fff" }}/>
+      </div>
       <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", overflow:"auto", maxHeight: isMobile ? "60vh" : "calc(100vh - 260px)" }}>
         <table style={{ minWidth:"100%", width:"max-content", borderCollapse:"collapse", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"12px" }}>
           <thead>
@@ -17112,7 +17321,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
             </tr>
           </thead>
           <tbody>
-            {drivers.slice(0, visibleDriverCount).map((driver) => (
+            {filteredDrivers.slice(0, visibleDriverCount).map((driver) => (
               <tr key={driver?.id} style={{ background:"#fff", borderBottom:"1px solid #f0f0f0" }}
                 onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"}
                 onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
@@ -17136,14 +17345,14 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
                 </td>
               </tr>
             ))}
-            {drivers.length===0&&<tr><td colSpan={7} style={{ padding:"16px", textAlign:"center", color:"#999" }}>データなし</td></tr>}
+            {filteredDrivers.length===0&&<tr><td colSpan={7} style={{ padding:"16px", textAlign:"center", color:"#999" }}>データなし</td></tr>}
           </tbody>
         </table>
       </div>
-      {drivers.length > visibleDriverCount && (
+      {filteredDrivers.length > visibleDriverCount && (
         <div style={{ textAlign:"center", padding:"14px" }}>
           <RetroBtn onClick={()=>setVisibleDriverCount(v=>v+100)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
-            さらに表示（残り{(drivers.length - visibleDriverCount).toLocaleString()}件）
+            さらに表示（残り{(filteredDrivers.length - visibleDriverCount).toLocaleString()}件）
           </RetroBtn>
         </div>
       )}
@@ -17152,15 +17361,6 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
         <Modal title={`運転者台帳 ${selectedDriver?.id||""} ${selectedDriver?.name||""}`} icon={driverIcon} onClose={()=>setSelectedDriverId(null)} width={680}>
           <TabBar value={activeTab} onChange={setActiveTab}/>
 
-          {/* 【重要】この詳細画面は閲覧専用で、編集への導線が無かった。
-              「編集」ボタンは一覧の行にしかなく、スマホでは横スクロールで
-              探さないと見つけられなかった。タップして開いたこの画面から
-              そのまま編集に入れるようにする。 */}
-          <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:"6px" }}>
-            <RetroBtn small onClick={()=>openEdit(selectedDriver)} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
-              編集する
-            </RetroBtn>
-          </div>
           <div style={{ minHeight:"300px" }}>
             {activeTab==="basic" && (
               <div style={{ display:"grid", gridTemplateColumns:"120px 1fr", rowGap:"6px", columnGap:"8px", fontSize:"12px", color:"#333" }}>
@@ -17347,47 +17547,6 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
                     {row("続柄", d?.emergencyRelation)}
                     {row("電話番号", d?.emergencyPhone)}
                   </div>
-                </div>
-              );
-            })()}
-            {activeTab==="records" && (() => {
-              // 【機能追加・ユーザー要望】「運転者台帳の乗務前点検・乗務日報」を、
-              // 1つの「点呼記録・日報」タブに集約する。直近30日分を、
-              // 日付ごとに、点呼記録簿の書式（業務前点呼・業務後点呼を含む）
-              // でカード表示する。表示ロジック自体は、共有部品
-              // （DailyRecordDetail）を使い、「稼働記録・日報」画面と、
-              // まったく同じ内容が表示されるようにする。
-              const shiftRecords = Array.isArray(data?.shiftRecords) ? data.shiftRecords : [];
-              const shiftReports = Array.isArray(data?.shiftReports) ? data.shiftReports : [];
-              const precheckRecords = Array.isArray(data?.precheckRecords) ? data.precheckRecords : [];
-              const allDates = Array.from(new Set([
-                ...shiftRecords.filter(r => r?.driverId === viewDriverId).map(r => r.date),
-                ...shiftReports.filter(r => r?.driverId === viewDriverId).map(r => r.date),
-                ...precheckRecords.filter(r => r?.driverId === viewDriverId).map(r => (r?.checkedAt || "").slice(0, 10)),
-              ].filter(Boolean))).sort((a, b) => b.localeCompare(a)).slice(0, 30);
-              const dayRows = allDates.map(dateStr => ({
-                date: dateStr,
-                shiftRec: shiftRecords.find(r => r?.driverId === viewDriverId && r?.date === dateStr),
-                shiftRep: shiftReports.find(r => r?.driverId === viewDriverId && r?.date === dateStr),
-                precheck: precheckRecords.find(r => r?.driverId === viewDriverId && (r?.checkedAt || "").slice(0, 10) === dateStr),
-              }));
-              return (
-                <div style={{ fontSize: "12px" }}>
-                  <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", marginBottom: "12px", color: "#666" }}>
-                    ハコログから届いた、点呼記録・日報です（直近30日分）。貨物軽自動車運送事業のため、車両点検・健康チェック自体の記録保存義務はありませんが、ドライバーが任意で実施した記録は、あわせて表示しています。
-                  </div>
-                  {dayRows.length === 0 ? (
-                    <div style={{ color: "#999", padding: "20px 0", textAlign: "center" }}>記録はありません</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "480px", overflowY: "auto" }}>
-                      {dayRows.map((row) => (
-                        <div key={row.date} style={{ border: "1px solid #e8e8e8", borderRadius: "8px", padding: "12px", background: "#fff" }}>
-                          <div style={{ fontWeight: 700, color: "#007a74", marginBottom: "8px" }}>{row.date}</div>
-                          <DailyRecordDetail row={row} />
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
               );
             })()}
@@ -17583,6 +17742,10 @@ const VehiclesPage = ({ data, setData, tenantId, userRole, isMobile, setPage, re
     // ユーザーには「保存ボタンが反応しない」ように見えてしまっていた。
     if (!form.plate || !form.plate.trim()) {
       window.alert("ナンバーを入力してください。");
+      return;
+    }
+    if (form.plate.trim().length > 30) {
+      window.alert(`ナンバーは30文字以内で入力してください（現在${form.plate.trim().length}文字）。`);
       return;
     }
     if (editingId) {
@@ -18267,11 +18430,22 @@ const UserMgmtPage = ({ tenantId, userRole }) => {
         .select("id, email, name, role, created_at")
         .eq("tenant_id", tenantId)
         .order("created_at", { ascending: true });
-      if (error) throw error;
+      // 【重要・不具合修正】「メンバーが1人もいない」という、正常な結果
+      // （空配列）を、誤ってエラー扱いしてしまわないよう、error に、
+      // 実際に意味のある内容（message か code）がある場合だけ、
+      // エラーとして扱う。以前は、error が truthy でありさえすれば、
+      // 中身が空でも例外を投げていたため、本来は正常な「0件」の
+      // 状態が、原因不明の「読み込みに失敗しました」という表示に
+      // なってしまっていた可能性がある。
+      if (error && (error.message || error.code)) throw error;
       setMembers(Array.isArray(rows) ? rows : []);
     } catch (err) {
       console.error("loadMembers:", err);
-      setLoadError(err.message || "読み込みに失敗しました");
+      // 【重要・不具合修正】以前は「読み込みに失敗しました」という
+      // 固定文言だけだったため、原因の特定ができなかった。実際の
+      // エラー内容（メッセージ・コード）を、あわせて表示する。
+      const detail = [err?.message, err?.code].filter(Boolean).join(" / ");
+      setLoadError(detail || "読み込みに失敗しました（詳細不明）。時間をおいて再度お試しください。");
     } finally {
       setLoading(false);
     }
@@ -18874,7 +19048,7 @@ const fetchTenantSyncState = async (tenantId) => {
   }
 };
 
-const fetchDataFromSupabase = async (tenantId) => {
+const fetchDataFromSupabase = async (tenantId, userRole) => {
   // tenantId が指定されていない場合に「絞り込みなし＝全テナントの全データを返す」という
   // 動作になっていると、将来この関数が想定外の場所から呼ばれたときに
   // 他社のデータを丸ごと取得してしまう重大なセキュリティリスクになる。
@@ -18898,12 +19072,32 @@ const fetchDataFromSupabase = async (tenantId) => {
       // （実際にブラウザでの動作確認中に、再現・特定した）。
       // 1つのテーブルの失敗を、必ずそのテーブルだけの失敗として閉じ込める。
       try {
-        let q = supabase.from(table).select("id,payload").eq("tenant_id", tenantId).order("id", { ascending: true });
+        // 【重要・セキュリティ修正】STEP2監査で発見：配車担当（dispatcher）
+        // ロールは、画面上「報酬・振込」タブが非表示になっているにも
+        // 関わらず、daily_records（ドライバーへの支払額を含む）の、
+        // 生データが、そのままフロントエンドに取得されてしまっていた。
+        // DB側（RLS）で daily_records への直接アクセスを禁止した上で、
+        // dispatcher ロールのときだけ、支払額をマスクした
+        // daily_records_masked ビューを、代わりに参照する。
+        const effectiveTable = (key === "dailyRecords" && userRole === "dispatcher")
+          ? "daily_records_masked"
+          : table;
+        let q = supabase.from(effectiveTable).select("id,payload").eq("tenant_id", tenantId).order("id", { ascending: true });
         // 実績・変更履歴だけは、際限なく増え続けるため直近分に絞って読み込む。
         // それ以外（ドライバー・顧客・請求書など）は件数の増え方が緩やかなため、
         // 従来通り全件読み込む（絞り込みによる複雑さのほうが害が大きいため）。
         if (key === "dailyRecords") q = q.gte("payload->>date", cutoff);
         if (key === "changeHistory") q = q.gte("payload->>changedAt", `${cutoff}T00:00:00`);
+        // 【機能追加・ユーザー要望】点呼記録・日報・稼働記録は、法令により
+        // 1年間の保存義務があり、日々、ほぼ全ドライバー分が積み上がる
+        // ため、実績・変更履歴と同じ理由で、際限なく増え続ける。
+        // 絞り込みが無いと、1年経過する頃には、毎回のデータ読み込みが、
+        // 確実に重くなっていく。cutoff（直近15ヶ月）は、法定の1年保存を
+        // 十分にカバーしているため、通常利用では、この絞り込みだけで
+        // 支障は無いはず。
+        if (key === "shiftReports") q = q.gte("payload->>date", cutoff);
+        if (key === "shiftRecords") q = q.gte("payload->>date", cutoff);
+        if (key === "precheckRecords") q = q.gte("payload->>checkedAt", `${cutoff}T00:00:00`);
         const { data: rows, error } = await q;
         return { key, table, rows, error, single };
       } catch (e) {
@@ -19357,6 +19551,15 @@ export const HakomaneLogo = ({ height = 44 }) => {
 export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile: mobileProp }) {
   const isMobileLocal = useIsMobile();
   const isMobile = typeof mobileProp === "boolean" ? mobileProp : isMobileLocal;
+  // 【重要・不具合修正】「孤立データを検出する」ボタンが、実際に、
+  // 削除済みドライバーを参照する実績を見つけた場合、金額を表示する
+  // ために yen() を呼び出していたが、この関数が、このコンポーネントの
+  // スコープには定義されていなかった（他のページでは、それぞれの
+  // ページ内で個別に定義されていた）。そのため、実際に問題が
+  // 見つかった、まさにその瞬間に、"yen is not defined" という
+  // JavaScriptエラーで、機能全体が停止してしまっていた
+  // （実際にブラウザで、削除済みドライバーの実績を作って、再現した）。
+  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
   // 変更履歴（監査ログ）に「誰が」を記録するため、ログイン中の本人を
   // グローバルに保持する。logHistoryEntry はコンポーネント外の関数のため、
   // props を渡せない箇所からも参照できるようにしておく。
@@ -19370,6 +19573,11 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const [profileResolved, setProfileResolved] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
+  // 【機能追加・ユーザー要望】削除済みデータの一覧が、件数が増えるほど
+  // 縦に長くなり続け、見づらくなっていた。カテゴリごとに折りたたみ、
+  // かつ、初期表示件数を絞ることで、量が増えても見やすい状態を保つ。
+  const [deletedDataExpanded, setDeletedDataExpanded] = useState({});
+  const [deletedDataVisibleCount, setDeletedDataVisibleCount] = useState({});
   // 設定（ネジマーク）から「会社情報設定」を選んだ時、請求管理ページに
   // 移動した上で、そのページ内のモーダルを自動的に開くための合図。
   const [autoOpenCompanySettings, setAutoOpenCompanySettings] = useState(false);
@@ -19398,13 +19606,65 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   const [saveErrorBanner, setSaveErrorBanner] = useState(null);
   // 【楽観的ロック】この画面が最後に確認した「サーバー側の最終更新時刻」。
   // 保存のたびにDBへ渡し、これより新しい更新がDB側に無いことを確認する。
-  // 競合が検出された場合は setSaveConflictBanner で警告を表示する
-  // （saveErrorBanner とは別扱い：自動再試行させないため）。
+  // 競合が検出された場合は、下の silentlyRefreshFromServer で、
+  // 警告を出さずに最新の内容を静かに取り込む。
   const lastKnownUpdatedAtRef = useRef(null);
-  const [saveConflictBanner, setSaveConflictBanner] = useState(false);
   const previousDataRef = useRef(createEmptyData());
   const latestDataRef = useRef(initialData);
   const saveGenerationRef = useRef(0);
+  // 【安全装置・不具合修正】「静かに再取得する」こと自体が、data の
+  // 更新を引き起こし、それが新たな保存サイクルを誘発する。もし、
+  // 何らかの理由で競合が続けて発生し続けた場合（非常に活発な同時
+  // 編集、あるいは万一のサーバー側の問題）、「保存→競合→再取得→
+  // data更新→保存→競合→…」が際限なく繰り返されてしまう危険が
+  // あることが、実際にテストで判明した。短時間に連続して発生した
+  // 回数を記録し、一定回数を超えたら、それ以上の自動再取得・
+  // 再試行を止める（無限ループと、無駄な通信の連発を防ぐ）。
+  const conflictRefreshTimestampsRef = useRef([]);
+  const conflictLoopStoppedRef = useRef(false);
+  // 【機能変更・ユーザー要望】以前は、他の場所での更新を検知すると、
+  // 「再読み込みしてください」という警告バナーを、消えるまで表示し
+  // 続けていた。これは「片方の変更を、無警告で消してしまう」という、
+  // 実際に一度起きた事故を防ぐための、意図的な安全機能だったが、
+  // 頻繁に出て煩わしいという要望のため、バナー表示は取りやめる。
+  // ただし、安全性そのものは失わないよう、代わりに、競合を検知した
+  // 時点で、最新のデータを裏側で静かに再取得し、この画面のデータと
+  // 「最後に確認したサーバー側の時刻」を、その場で最新化する。
+  // これにより、利用者には何も表示されないまま、次の操作からは
+  // 最新の内容の上に、正しく保存できるようになる（本人が気づかない
+  // 間に行った変更が、古い内容によって上書きされる、という事故は
+  // 引き続き防げる）。
+  const silentlyRefreshFromServer = async () => {
+    if (conflictLoopStoppedRef.current) return;
+    const now = Date.now();
+    const windowMs = 15000;
+    const maxInWindow = 4;
+    conflictRefreshTimestampsRef.current = conflictRefreshTimestampsRef.current.filter(t => now - t < windowMs);
+    conflictRefreshTimestampsRef.current.push(now);
+    if (conflictRefreshTimestampsRef.current.length > maxInWindow) {
+      conflictLoopStoppedRef.current = true;
+      console.warn(
+        "他の場所での更新が、短時間に何度も検出されたため、自動的な再取得を停止しました。" +
+        "編集を続けても問題ありませんが、念のため、手が空いたタイミングで、画面の再読み込みをおすすめします。"
+      );
+      return;
+    }
+    try {
+      const [remoteData, syncUpdatedAt] = await Promise.all([
+        fetchDataFromSupabase(tenantId, userRole),
+        fetchTenantSyncState(tenantId),
+      ]);
+      const { __failedTableKeys, ...remoteDataClean } = remoteData;
+      setData((prev) => ({ ...prev, ...remoteDataClean }));
+      previousDataRef.current = cloneData(remoteDataClean);
+      latestDataRef.current = remoteDataClean;
+      lastKnownUpdatedAtRef.current = syncUpdatedAt;
+    } catch (e) {
+      // 再取得自体に失敗した場合は、次回の保存サイクルで、通常の
+      // エラーバナー（通信エラー用）が出るため、ここでは静かに諦める。
+      console.warn("競合検知後の、静かな再読み込みに失敗しました:", e);
+    }
+  };
   // 【重要・不具合修正】読み込みに失敗したテーブルがあった場合、そのテーブル名を
   // 保持しておく。詳しい理由は fetchDataFromSupabase 内のコメントを参照。
   // 自動保存のたびに、このリストにあるテーブルだけは保存対象から除外し、
@@ -19520,7 +19780,6 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     // 前のテナントの「最終更新時刻」を持ち越さない
     // （別のテナントの時刻と比較してしまうのを防ぐ）。
     lastKnownUpdatedAtRef.current = null;
-    setSaveConflictBanner(false);
 
     const load = async () => {
       try {
@@ -19535,7 +19794,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         // どちらも同じ tenantId に対する読み取りで、互いに依存しないため
         // 並行して取得してよい。
         const [remoteData, syncUpdatedAt] = await Promise.race([
-          Promise.all([fetchDataFromSupabase(tenantId), fetchTenantSyncState(tenantId)]),
+          Promise.all([fetchDataFromSupabase(tenantId, userRole), fetchTenantSyncState(tenantId)]),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error("timeout")), LOAD_TIMEOUT_MS)
           ),
@@ -19729,7 +19988,6 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
           previousDataRef.current = cloneData(snapshot);
           lastKnownUpdatedAtRef.current = result?.updatedAt ?? expectedUpdatedAt;
           setSaveErrorBanner(null);
-          setSaveConflictBanner(false);
           // これ以降に新しい変更が無ければ、未保存は解消したとみなす。
           hasUnsavedChangesRef.current = false;
           // 【重要】result.skipped の場合（変更が無く、実際には何も保存
@@ -19745,15 +20003,17 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         hasUnsavedChangesRef.current = true;
 
         if (error?.isConflict) {
-          // 【重要・事故防止】他の場所（別の担当者、別のタブ、SQL Editorから
-          // の直接操作など）で、既にこのテナントのデータが更新されている。
+          // 【重要・事故防止、かつユーザー要望により表示は行わない】
+          // 他の場所（別の担当者、別のタブ、SQL Editorからの直接操作
+          // など）で、既にこのテナントのデータが更新されている。
           // ここで同じ古い内容（snapshot）を自動的に再送してしまうと、
           // その更新を無警告で消してしまう――実際に一度発生した事故と
-          // 全く同じ構図になる。そのため、競合を検出した場合は
-          // 絶対に自動再試行しない。利用者に再読み込みを促し、
-          // 最新の内容を取り込んでから改めて編集してもらう。
+          // 全く同じ構図になる。そのため、古い内容の再送は絶対にしない。
+          // 以前は、ここで警告バナーを表示し、手動での再読み込みを
+          // 促していたが、頻繁に出て煩わしいという要望のため、
+          // 代わりに、最新の内容を裏側で静かに取り込む。
           if (saveGenerationRef.current === gen) {
-            setSaveConflictBanner(true);
+            silentlyRefreshFromServer();
           }
         } else {
           setSaveErrorBanner(
@@ -19795,8 +20055,8 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                   if (saveGenerationRef.current === gen) {
                     if (retryError?.isConflict) {
                       // 再試行の時点で競合が判明した場合も同様に、
-                      // それ以上は自動再試行せず、再読み込みを促す。
-                      setSaveConflictBanner(true);
+                      // 古い内容の再送はせず、最新の内容を静かに取り込む。
+                      silentlyRefreshFromServer();
                     } else {
                       setSaveErrorBanner(
                         "データの保存に失敗しています。通信状態をご確認のうえ、画面を閉じずに何か操作を行ってください（保存を再試行します）。"
@@ -19880,7 +20140,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
       const isUnmodified = JSON.stringify(latestDataRef.current) === JSON.stringify(previousDataRef.current);
       if (!isUnmodified) return;
       try {
-        const remoteData = await fetchDataFromSupabase(tenantId);
+        const remoteData = await fetchDataFromSupabase(tenantId, userRole);
         // 【重要・不具合修正】この経路（タブ復帰時の再取得）でも同じ危険が
         // あるため、失敗したテーブルの記録を更新し、内部専用のマーカーは
         // 実際のアプリの状態には含めない。
@@ -20088,48 +20348,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
         </div>
       )}
 
-      {saveConflictBanner ? (
-        // 【楽観的ロック】競合（他の場所での更新）を検出した場合の専用バナー。
-        // 通常のエラーバナー（saveErrorBanner）とはあえて分けている：
-        // ・×ボタンだけで消せてしまうと、利用者が気づかないまま
-        // 　編集を続け、また保存を試みてしまう可能性があるため、
-        // 　「再読み込み」の導線を常に太く出しておく。
-        // ・自動再試行は行わない（行うと、今度は自分の側の変更で
-        // 　相手の更新を上書きしてしまう）。
-        <div
-          style={{
-            background: "#fff3e0",
-            borderBottom: "1px solid #e65100",
-            color: "#e65100",
-            fontSize: "12px",
-            fontWeight: 700,
-            padding: "8px 14px",
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-          }}
-        >
-          <span style={{ flex: 1 }}>
-            ⚠ 他の場所でこのデータが更新されたため、自動保存を中断しました。このまま編集を続けても保存されません。画面を再読み込みして、最新の内容を確認してください。
-          </span>
-          <button
-            onClick={() => window.location.reload()}
-            style={{
-              border: "1px solid #e65100",
-              background: "#e65100",
-              color: "#fff",
-              cursor: "pointer",
-              fontSize: "12px",
-              fontWeight: 700,
-              padding: "4px 10px",
-              borderRadius: "4px",
-              whiteSpace: "nowrap",
-            }}
-          >
-            今すぐ再読み込み
-          </button>
-        </div>
-      ) : saveErrorBanner && (
+      {saveErrorBanner && (
         <div
           style={{
             background: "#ffebee",
@@ -20431,6 +20650,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               <div style={{ fontSize:"13px", fontWeight:700, color:"#555", marginBottom:"10px" }}>会社情報設定</div>
               <RetroBtn small onClick={()=>{
                 setShowSettings(false);
+                setCompanySettingsReturnPage(page);
                 setPageWithHistory("invoices");
                 setAutoOpenCompanySettings(true);
               }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
@@ -20461,90 +20681,149 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
             const labelMap = { customers:"顧客", drivers:"ドライバー", vehicles:"車両", orders:"受注", invoices:"請求書", dailyRecords:"実績" };
             const deleted = (Array.isArray(data?.[key]) ? data[key] : []).filter(item => item?.deleted);
             if (deleted.length === 0) return null;
+            // 【機能追加・ユーザー要望】量が増えても見やすいよう、カテゴリ
+            // ごとに折りたたみ、初期状態では件数だけを表示する。開いた
+            // 場合も、最初は一定件数だけに絞り、「さらに表示」で追加分を
+            // 読み込む形にすることで、削除件数が積み重なっても、一覧が
+            // 際限なく縦に伸び続けることを防ぐ。
+            const isOpen = !!deletedDataExpanded[key];
+            const visibleCount = deletedDataVisibleCount[key] || 5;
+            const visibleItems = deleted.slice(0, visibleCount);
+            const hasMore = deleted.length > visibleCount;
             return (
-              <div key={key} style={{ marginBottom:"12px" }}>
-                <div style={{ fontSize:"12px", fontWeight:700, color:"#007a74", marginBottom:"6px" }}>{labelMap[key]}（{deleted.length}件）</div>
-                {deleted.map(item => {
-                  // 実績には name・plate・customerName が無いため、日付とドライバー・
-                  // 売上金額で識別できるようにする（他の種別のラベル生成は変更しない）。
-                  const label = key === "dailyRecords"
-                    ? `${item?.date || "—"}／ドライバー：${item?.driverId || "—"}／売上：¥${(Number(item?.salesAmount)||0).toLocaleString()}`
-                    : (item?.name || item?.plate || item?.customerName || item?.id || "—");
-                  return (
-                    <div key={item?.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff", marginBottom:"4px" }}>
-                      <span style={{ fontSize:"12px", color:"#333" }}>{item?.id} — {label}</span>
-                      <RetroBtn small onClick={()=>{
-                        // 【重要】「削除 → ほとぼりが冷めたら復元」という手順で、
-                        // 不正なデータを一時的に隠すことができてしまう。
-                        // 復元したこと自体を記録に残さないと、
-                        // 「いつの間にかデータが戻っている」状態を追跡できない。
-                        if (!window.confirm(
-                          `${labelMap[key]}「${item?.name || item?.id}」を復元します。\n\n` +
-                          `復元すると、このデータは再び集計・請求の対象に戻ります。\n` +
-                          `復元した記録（誰がいつ戻したか）が残ります。\n\n` +
-                          `復元しますか？`
-                        )) return;
-                        // 変更履歴に「復元前の状態（削除済み）」を残す。
-                        // これにより、後から「誰がいつ復元したか」を追跡できる。
-                        //
-                        // 【重要】変更履歴の種類は単数形（order / customer など）で
-                        // 統一されている。ここで複数形（orders / customers）のまま
-                        // 記録すると、履歴画面の絞り込みに引っかからず、
-                        // 種類も日本語で表示されない（英語のまま出てしまう）。
-                        const entityTypeMap = {
-                          customers: "customer", drivers: "driver",
-                          vehicles: "vehicle", orders: "order", invoices: "invoice",
-                          dailyRecords: "daily_record",
-                        };
-                        logHistoryEntry(setData, {
-                          entityType: entityTypeMap[key] || key,
-                          entityId: item?.id,
-                          entityLabel: `${labelMap[key]}：${item?.name || item?.id}（復元）`,
-                          before: item,
-                          userRole,
-                        });
-                        setData(d=>{
-                          const next = {
-                            ...d,
-                            [key]:(Array.isArray(d?.[key])?d[key]:[]).map(x=>x?.id===item?.id?{
-                              ...x,
-                              deleted:false,
-                              restoredAt: getTodayLocalStr(),
-                              restoredBy: (typeof window !== "undefined" && window.__hakomaneCurrentUser) || "不明",
-                            }:x)
-                          };
-                          // 【重要】請求書を削除したとき、実績に付いていた
-                          // 「請求済み」の印を外している。復元時に印を戻さないと、
-                          // 請求書は存在するのに実績は未請求のままとなり、
-                          // そこからもう1枚請求書を作れてしまう（＝二重請求）。
-                          if (key === "invoices") {
-                            const invId = item?.id;
-                            const inMonth = (r) =>
-                              r?.customerId === item?.customerId &&
-                              String(r?.date || "").startsWith(String(item?.issueDate || "").slice(0, 7));
-                            const remark = (list) => (Array.isArray(list) ? list : []).map((r) =>
-                              (!r?.deleted && !r?.invoicedInvoiceId && inMonth(r))
-                                ? { ...r, invoicedInvoiceId: invId }
-                                : r
-                            );
-                            // 【重要・統合対応】実績データは dailyRecords に統合されている
-                            // ため、この1行だけで（品質管理から入力された分も含めて）
-                            // 印を戻せる。
-                            next.dailyRecords = remark(d?.dailyRecords);
-                            next.orders = (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
-                              (!o?.deleted && !o?.invoicedInvoiceId &&
-                               o?.customerId === item?.customerId &&
-                               String(o?.deliveryDate || "").startsWith(String(item?.issueDate || "").slice(0, 7)))
-                                ? { ...o, invoicedInvoiceId: invId }
-                                : o
-                            );
-                          }
-                          return next;
-                        });
-                      }} style={{ background:"#e8f5e9", color:"#2e7d32", borderColor:"#4caf50" }}>復元</RetroBtn>
-                    </div>
-                  );
-                })}
+              <div key={key} style={{ marginBottom:"12px", border:"1px solid #eee", borderRadius:"6px", overflow:"hidden" }}>
+                <button
+                  onClick={() => setDeletedDataExpanded(v => ({ ...v, [key]: !v[key] }))}
+                  style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"8px 10px", background:"#f7f9fa", border:"none", cursor:"pointer", textAlign:"left" }}
+                >
+                  <span style={{ fontSize:"12px", fontWeight:700, color:"#007a74" }}>{labelMap[key]}（{deleted.length}件）</span>
+                  <span style={{ fontSize:"11px", color:"#999" }}>{isOpen ? "▲ 閉じる" : "▼ 開く"}</span>
+                </button>
+                {isOpen && (
+                  <div style={{ padding:"8px 10px" }}>
+                    {visibleItems.map(item => {
+                      // 実績には name・plate・customerName が無いため、日付とドライバー・
+                      // 売上金額で識別できるようにする（他の種別のラベル生成は変更しない）。
+                      const label = key === "dailyRecords"
+                        ? `${item?.date || "—"}／ドライバー：${item?.driverId || "—"}／売上：¥${(Number(item?.salesAmount)||0).toLocaleString()}`
+                        : (item?.name || item?.plate || item?.customerName || item?.id || "—");
+                      return (
+                        <div key={item?.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff", marginBottom:"4px", gap:"8px" }}>
+                          <span style={{ fontSize:"12px", color:"#333", flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item?.id} — {label}</span>
+                          <div style={{ display:"flex", gap:"4px", flexShrink:0 }}>
+                          <RetroBtn small onClick={()=>{
+                            // 【重要】「削除 → ほとぼりが冷めたら復元」という手順で、
+                            // 不正なデータを一時的に隠すことができてしまう。
+                            // 復元したこと自体を記録に残さないと、
+                            // 「いつの間にかデータが戻っている」状態を追跡できない。
+                            if (!window.confirm(
+                              `${labelMap[key]}「${item?.name || item?.id}」を復元します。\n\n` +
+                              `復元すると、このデータは再び集計・請求の対象に戻ります。\n` +
+                              `復元した記録（誰がいつ戻したか）が残ります。\n\n` +
+                              `復元しますか？`
+                            )) return;
+                            // 変更履歴に「復元前の状態（削除済み）」を残す。
+                            // これにより、後から「誰がいつ復元したか」を追跡できる。
+                            //
+                            // 【重要】変更履歴の種類は単数形（order / customer など）で
+                            // 統一されている。ここで複数形（orders / customers）のまま
+                            // 記録すると、履歴画面の絞り込みに引っかからず、
+                            // 種類も日本語で表示されない（英語のまま出てしまう）。
+                            const entityTypeMap = {
+                              customers: "customer", drivers: "driver",
+                              vehicles: "vehicle", orders: "order", invoices: "invoice",
+                              dailyRecords: "daily_record",
+                            };
+                            logHistoryEntry(setData, {
+                              entityType: entityTypeMap[key] || key,
+                              entityId: item?.id,
+                              entityLabel: `${labelMap[key]}：${item?.name || item?.id}（復元）`,
+                              before: item,
+                              userRole,
+                            });
+                            setData(d=>{
+                              const next = {
+                                ...d,
+                                [key]:(Array.isArray(d?.[key])?d[key]:[]).map(x=>x?.id===item?.id?{
+                                  ...x,
+                                  deleted:false,
+                                  restoredAt: getTodayLocalStr(),
+                                  restoredBy: (typeof window !== "undefined" && window.__hakomaneCurrentUser) || "不明",
+                                }:x)
+                              };
+                              // 【重要】請求書を削除したとき、実績に付いていた
+                              // 「請求済み」の印を外している。復元時に印を戻さないと、
+                              // 請求書は存在するのに実績は未請求のままとなり、
+                              // そこからもう1枚請求書を作れてしまう（＝二重請求）。
+                              if (key === "invoices") {
+                                const invId = item?.id;
+                                const inMonth = (r) =>
+                                  r?.customerId === item?.customerId &&
+                                  String(r?.date || "").startsWith(String(item?.issueDate || "").slice(0, 7));
+                                const remark = (list) => (Array.isArray(list) ? list : []).map((r) =>
+                                  (!r?.deleted && !r?.invoicedInvoiceId && inMonth(r))
+                                    ? { ...r, invoicedInvoiceId: invId }
+                                    : r
+                                );
+                                // 【重要・統合対応】実績データは dailyRecords に統合されている
+                                // ため、この1行だけで（品質管理から入力された分も含めて）
+                                // 印を戻せる。
+                                next.dailyRecords = remark(d?.dailyRecords);
+                                next.orders = (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
+                                  (!o?.deleted && !o?.invoicedInvoiceId &&
+                                   o?.customerId === item?.customerId &&
+                                   String(o?.deliveryDate || "").startsWith(String(item?.issueDate || "").slice(0, 7)))
+                                    ? { ...o, invoicedInvoiceId: invId }
+                                    : o
+                                );
+                              }
+                              return next;
+                            });
+                          }} style={{ background:"#e8f5e9", color:"#2e7d32", borderColor:"#4caf50" }}>復元</RetroBtn>
+                          {/* 【機能追加・ユーザー要望】これまでは「復元」しかできず、
+                              本当に不要になったデータを、一覧から完全に取り除く手段が
+                              無かった。取り消しできない操作のため、通常の削除より
+                              明確に重い確認（データの内容を、確認文言に含める）を行う。 */}
+                          <RetroBtn small onClick={()=>{
+                            const confirmLabel = key === "dailyRecords" ? label : (item?.name || item?.id);
+                            if (!window.confirm(
+                              `${labelMap[key]}「${confirmLabel}」を完全に削除します。\n\n` +
+                              `⚠️ この操作は取り消せません。「復元」で元に戻すことも、\n` +
+                              `二度とできなくなります。\n\n` +
+                              `本当によろしいですか？`
+                            )) return;
+                            if (!window.confirm(`最終確認：本当に完全削除しますか？（ID：${item?.id}）`)) return;
+                            const entityTypeMap = {
+                              customers: "customer", drivers: "driver",
+                              vehicles: "vehicle", orders: "order", invoices: "invoice",
+                              dailyRecords: "daily_record",
+                            };
+                            logHistoryEntry(setData, {
+                              entityType: entityTypeMap[key] || key,
+                              entityId: item?.id,
+                              entityLabel: `${labelMap[key]}：${confirmLabel}（完全削除）`,
+                              before: item,
+                              userRole,
+                            });
+                            setData(d => ({
+                              ...d,
+                              [key]: (Array.isArray(d?.[key]) ? d[key] : []).filter(x => x?.id !== item?.id),
+                            }));
+                          }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>完全に削除</RetroBtn>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {hasMore && (
+                      <button
+                        onClick={() => setDeletedDataVisibleCount(v => ({ ...v, [key]: (v[key] || 5) + 10 }))}
+                        style={{ width:"100%", padding:"6px", fontSize:"11px", color:"#00a09a", background:"#f0faf9", border:"1px dashed #00a09a", borderRadius:"4px", cursor:"pointer", marginTop:"4px" }}
+                      >
+                        さらに{Math.min(10, deleted.length - visibleCount)}件表示（残り{deleted.length - visibleCount}件）
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
