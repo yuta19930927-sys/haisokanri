@@ -11358,6 +11358,54 @@ const buildSystemAlerts = (data, alertDays = 30) => {
     return Math.round((t - today) / 86400000);
   };
 
+  // 【機能追加・法令調査に基づく】貨物軽自動車安全管理者の、選任・
+  // 定期講習の、見落としを防ぐ。会社（営業所）レベルの、たった1件の
+  // 情報のため、ドライバー一覧のような、他の警告と違い、埋もれやすい。
+  // 通知ベル（systemAlerts）に載せることで、ダッシュボードを見るだけで、
+  // 気づける状態にする。
+  {
+    const ci = data?.companyInfo;
+    if (!ci?.safetyManagerName) {
+      alerts.push({
+        id: "safety-manager-not-appointed",
+        level: "warn",
+        category: "法令対応",
+        page: "settings",
+        message: "貨物軽自動車安全管理者が、まだ選任されていません（2025年4月より義務化。既存事業者は2027年3月31日まで猶予）。",
+      });
+    } else if (ci?.safetyManagerTrainingDate) {
+      const trainingDate = new Date(`${ci.safetyManagerTrainingDate}T00:00:00`);
+      const dueDate = new Date(trainingDate);
+      dueDate.setFullYear(dueDate.getFullYear() + 2);
+      const daysLeft = Math.round((dueDate - today) / 86400000);
+      if (daysLeft < 0) {
+        alerts.push({
+          id: "safety-manager-training-overdue",
+          level: "danger",
+          category: "法令対応",
+          page: "settings",
+          message: `貨物軽自動車安全管理者（${ci.safetyManagerName}）の定期講習の期限（${formatDate(dueDate)}）を過ぎています。`,
+        });
+      } else if (daysLeft <= alertDays) {
+        alerts.push({
+          id: "safety-manager-training-soon",
+          level: "warn",
+          category: "法令対応",
+          page: "settings",
+          message: `貨物軽自動車安全管理者（${ci.safetyManagerName}）の定期講習の期限が、あと${daysLeft}日です（${formatDate(dueDate)}まで）。`,
+        });
+      }
+    } else {
+      alerts.push({
+        id: "safety-manager-no-training-record",
+        level: "warn",
+        category: "法令対応",
+        page: "settings",
+        message: `貨物軽自動車安全管理者（${ci.safetyManagerName}）の、講習修了日が、未記録です。`,
+      });
+    }
+  }
+
   /** 基準日から指定日数後の日付文字列を返す（「前回実施日＋365日」＝次回期限日、の計算に使う） */
   const addDays = (dateStr, days) => {
     const t = new Date(dateStr + "T00:00:00");
@@ -14432,6 +14480,13 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     // （実際には消えていない）という状態になっていた。
     yahooMapAppId: companyInfo?.yahooMapAppId || "",
     invoiceRegistrationNumber: companyInfo?.invoiceRegistrationNumber || "",
+    // 【機能追加・法令調査に基づく】貨物軽自動車安全管理者の選任情報。
+    // 上のコメントと同じ間違いを繰り返さないよう、フォーム側の項目と、
+    // この初期値リストを、必ずセットで追加する。
+    safetyManagerName: companyInfo?.safetyManagerName || "",
+    safetyManagerBirthDate: companyInfo?.safetyManagerBirthDate || "",
+    safetyManagerAppointedDate: companyInfo?.safetyManagerAppointedDate || "",
+    safetyManagerTrainingDate: companyInfo?.safetyManagerTrainingDate || "",
   });
   const [mailDraft, setMailDraft] = useState({ to: "", subject: "", body: "" });
 
@@ -16152,6 +16207,43 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
               onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), expiryAlertDays: Math.max(1, parseInt(e.target.value,10) || 30) }))}
             />
           </Fl>
+          {/* 【機能追加・法令調査に基づく】貨物軽自動車安全管理者の選任は、
+              2025年4月から、貨物軽自動車運送事業者に、営業所ごとに義務付けられた
+              （既存事業者は2027年3月31日まで猶予）。ドライバー1人ごとの属性ではなく、
+              「会社（営業所）として、誰を選任しているか」という情報のため、
+              運転者台帳ではなく、ここ（会社情報設定）で管理する。
+              運輸支局への届出に必要な項目（氏名・生年月日・選任年月日・
+              講習修了年月日）を、そのまま入力項目にしている。
+              選任後2年ごとに定期講習の受講が必要なため、
+              講習修了年月日から2年経過したら、警告を出す。 */}
+          <div style={{ marginTop:"16px", padding:"12px", background:"#f8fafc", borderRadius:"8px", border:"1px solid #e2e8f0" }}>
+            <div style={{ fontSize:"13px", fontWeight:700, color:"#222", marginBottom:"4px" }}>
+              貨物軽自動車安全管理者（法令上、営業所ごとに選任が必要）
+            </div>
+            <div style={{ fontSize:"11px", color:"#888", marginBottom:"10px", lineHeight:1.6 }}>
+              2025年4月より、貨物軽自動車運送事業者は、営業所ごとに「貨物軽自動車安全管理者」を選任する必要があります（既存事業者は2027年3月31日まで猶予）。
+              選任後は、2年ごとに定期講習の受講が必要です。運輸支局への届出には、氏名・生年月日・選任年月日・講習修了年月日の記載が必要です。
+            </div>
+            <Fl label="氏名"><RetroInput value={companyDraft.safetyManagerName || ""} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), safetyManagerName: e.target.value }))}/></Fl>
+            <Fl label="生年月日"><RetroInput type="date" value={companyDraft.safetyManagerBirthDate || ""} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), safetyManagerBirthDate: e.target.value }))}/></Fl>
+            <Fl label="選任年月日"><RetroInput type="date" value={companyDraft.safetyManagerAppointedDate || ""} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), safetyManagerAppointedDate: e.target.value }))}/></Fl>
+            <Fl label="直近の講習修了年月日（初回、または、定期講習）">
+              <RetroInput type="date" value={companyDraft.safetyManagerTrainingDate || ""} onChange={(e)=>setCompanyDraft((v)=>({ ...(v||{}), safetyManagerTrainingDate: e.target.value }))}/>
+            </Fl>
+            {companyDraft.safetyManagerTrainingDate && (() => {
+              const trainingDate = new Date(`${companyDraft.safetyManagerTrainingDate}T00:00:00`);
+              const dueDate = new Date(trainingDate);
+              dueDate.setFullYear(dueDate.getFullYear() + 2);
+              const daysLeft = Math.floor((dueDate - new Date()) / (1000 * 60 * 60 * 24));
+              if (daysLeft < 0) {
+                return <div style={{ marginTop:"8px", fontSize:"12px", color:"#dc2626", fontWeight:700 }}>⚠️ 定期講習の期限（{formatDate(dueDate)}）を過ぎています。至急、受講してください。</div>;
+              }
+              if (daysLeft <= 60) {
+                return <div style={{ marginTop:"8px", fontSize:"12px", color:"#d97706", fontWeight:700 }}>⚠️ 定期講習の期限が近づいています（あと{daysLeft}日：{formatDate(dueDate)}まで）。</div>;
+              }
+              return <div style={{ marginTop:"8px", fontSize:"11px", color:"#888" }}>次回の定期講習の期限：{formatDate(dueDate)}</div>;
+            })()}
+          </div>
           <div style={{ marginTop:"4px" }}>
             <button onClick={()=>setShowCompanyHistory(v=>!v)} style={{
               border:"none", background:"none", color:"#00a09a", fontSize:"12px", fontWeight:700, cursor:"pointer", padding:"4px 0",
