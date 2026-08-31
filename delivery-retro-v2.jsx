@@ -16558,7 +16558,26 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
         { body: { driverId, tenantId, password: password.trim() } }
       );
       if (provisionError || provisionData?.error) {
-        setPwMessage(`❌ 設定に失敗しました：${provisionData?.error || provisionError?.message || "不明なエラー"}`);
+        // 【重要・不具合修正】Edge Functionが、エラーを返した場合、
+        // supabase-jsの error.message には、"Edge Function returned a
+        // non-2xx status code" のような、実際には、何の役にも立たない、
+        // 汎用的な文言しか、入らない。実際に、Edge Function側で、
+        // 設定した、詳しい理由（例：「アカウントの作成に失敗しました：
+        // ...」）は、error.context という、別の場所（レスポンス
+        // そのもの）に、入っているため、明示的に、JSONとして、
+        // 取り出す必要がある。これを、怠っていたため、実際に、500
+        // エラーが起きても、本当の原因が、一切、画面に出てこなかった。
+        let detail = provisionData?.error || provisionError?.message || "不明なエラー";
+        if (provisionError?.context && typeof provisionError.context.json === "function") {
+          try {
+            const body = await provisionError.context.json();
+            if (body?.error) detail = body.error;
+          } catch (_unused10) {
+            // レスポンスの本文が、JSONとして、読み取れない場合は、
+            // 上で用意した、通常のdetailを、そのまま使う。
+          }
+        }
+        setPwMessage(`❌ 設定に失敗しました：${detail}`);
         setPwSaving(false);
         return;
       }
@@ -16626,13 +16645,21 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
         { body: { driverId, tenantId } }
       );
       if (provisionError || provisionData?.error) {
+        // 上の、setDriverPassword と、同じ理由で、error.context から、
+        // 実際の、詳しい理由を、取り出す。
+        let detail = provisionData?.error || provisionError?.message || "不明なエラー";
+        if (provisionError?.context && typeof provisionError.context.json === "function") {
+          try {
+            const body = await provisionError.context.json();
+            if (body?.error) detail = body.error;
+          } catch (_unused11) {}
+        }
         setResetCodeResult({
-          error: `ログインアカウントの準備に失敗しました：${provisionData?.error || provisionError?.message || "不明なエラー"}`,
+          error: `ログインアカウントの準備に失敗しました：${detail}`,
         });
         setResetCodeSaving(false);
         return;
       }
-
       // 6桁の数字コード。他人に推測されにくく、電話口でも伝えやすい桁数。
       const code = String(Math.floor(100000 + Math.random() * 900000));
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24時間後
