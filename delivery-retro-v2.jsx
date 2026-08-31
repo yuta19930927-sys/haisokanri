@@ -12016,6 +12016,10 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
   const [rejectTarget, setRejectTarget] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
   const [confirmBulk, setConfirmBulk] = useState(null);
+  // 【機能追加・ユーザー要望】承認・却下を間違えて操作した場合に、
+  // 取り消して「承認待ち」に戻せるようにする。承認待ち一覧と、
+  // 承認・却下済みの履歴（取消可能）を切り替えるためのタブ。
+  const [viewMode, setViewMode] = useState("pending"); // pending / decided
 
   const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
   const driverName = (id) => drivers.find(d => d?.id === id)?.name || "(不明)";
@@ -12062,6 +12066,18 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
   const clean = pending.filter(r => !r._riskLevel);
   const shown = filter === "risky" ? risky : filter === "clean" ? clean : pending;
 
+  // 【機能追加・ユーザー要望】承認済み・却下済みの実績を、決定日時の
+  // 新しい順に一覧表示する（誤操作の取消のため）。
+  const decided = useMemo(() => {
+    return dailyRecords
+      .filter(r => r && (r.approvalStatus === APPROVAL.APPROVED || r.approvalStatus === APPROVAL.REJECTED))
+      .sort((a, b) => {
+        const ta = a.approvalStatus === APPROVAL.APPROVED ? a.approvedAt : a.rejectedAt;
+        const tb = b.approvalStatus === APPROVAL.APPROVED ? b.approvedAt : b.rejectedAt;
+        return String(tb || "").localeCompare(String(ta || ""));
+      });
+  }, [dailyRecords]);
+
   const totalPendingSales = pending.reduce((s, r) => s + (Number(r.salesAmount) || 0), 0);
   const totalPendingPay = pending.reduce((s, r) => s + (Number(r.driverAmount) || 0), 0);
 
@@ -12104,6 +12120,73 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
     setConfirmBulk(null);
   };
 
+  /**
+   * 【機能修正・ユーザー要望】以前は「承認・却下の決定を取り消し、承認待ちに
+   * 戻す」機能だったが、ユーザーの意図は「ドライバーからの申請自体を、
+   * まるごと削除したい」というものだった（例：ドライバーが誤って重複で
+   * 申請してしまった場合など）。
+   *
+   * 【重要・見落とし防止】実績一覧画面の既存の削除機能（deleteRecord、
+   * 別コンポーネント）には、「請求書に含まれている実績は消せない」
+   * 「受注から自動作成された実績は、受注との食い違いに注意を促す」という、
+   * 重要な安全チェックが既に存在していた。承認画面からの削除も、同じ
+   * データ（dailyRecords）を対象にする以上、同じ危険が起こり得るため、
+   * 同じチェックを、ここでも必ず行う。
+   */
+  const deleteRecord = (id) => {
+    const rec = dailyRecords.find(r => r?.id === id);
+    if (!rec) return;
+    const month = String(rec.date || "").slice(0, 7);
+    if (isMonthClosed(data?.companyInfo, month)) {
+      window.alert(`${month} は締め処理が済んでいるため、削除できません。`);
+      return;
+    }
+    // 請求書に含まれている実績は、削除すると帳簿と請求書が食い違うため、消せない。
+    if (rec.invoicedInvoiceId) {
+      const inv = (Array.isArray(data?.invoices) ? data.invoices : [])
+        .find((i) => i?.id === rec.invoicedInvoiceId && !i?.deleted);
+      if (inv) {
+        window.alert(
+          `この実績は請求書 ${inv.id}（${yen(inv.total)}）に含まれています。\n\n` +
+          `削除すると、請求書は残ったまま売上だけが消え、\n` +
+          `帳簿と請求書が食い違ってしまいます。\n\n` +
+          `金額を直したい場合は、請求管理から「赤伝を発行」して訂正してください。\n` +
+          `請求そのものを取り消す場合は、先に請求書を削除してください。`
+        );
+        return;
+      }
+    }
+    // 受注から自動作成された実績は、削除しても元の受注が「配送完了」のまま
+    // 残ってしまう（売上は消えるのに、荷主への請求対象には残り続ける）ため、
+    // 必ず知らせたうえで、それでも削除するか確認する。
+    const linkedOrder = rec.orderId
+      ? (Array.isArray(data?.orders) ? data.orders : []).find((o) => o?.id === rec.orderId && !o?.deleted)
+      : null;
+    let msg = `この申請（${rec.date} ${driverName(rec.driverId)}）を、完全に削除しますか？\n※この操作は取り消せません。ドライバーの申請自体が無かったことになります。`;
+    if (linkedOrder) {
+      msg =
+        `この実績は受注 ${linkedOrder.id} から自動作成されたものです。\n\n` +
+        `実績だけを削除すると、受注は「配送完了」のまま残るため、\n` +
+        `売上には計上されないのに、荷主への請求対象には含まれ続けます。\n\n` +
+        `※受注ごと取り消したい場合は、受注管理から受注を削除するか、\n` +
+        `　「戻る」で配送完了を取り消してください。\n\n` +
+        `それでもこの実績だけを削除しますか？`;
+    }
+    if (!window.confirm(msg)) return;
+
+    setData(prev => ({
+      ...prev,
+      dailyRecords: (Array.isArray(prev?.dailyRecords) ? prev.dailyRecords : []).map(r =>
+        r?.id === id ? { ...r, deleted: true, deletedAt: new Date().toISOString() } : r
+      ),
+    }));
+    setSelected(prev => prev.filter(x => x !== id));
+    setDetailId(null);
+    setRejectTarget(null);
+    setRejectReason("");
+    setConfirmBulk(null);
+  };
+
   const toggle = (id) => setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   const toggleAll = () => {
     const ids = shown.map(r => r?.id);
@@ -12137,7 +12220,83 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
         </div>
       </div>
 
-      {pending.length === 0 ? (
+      <div style={{ display: "flex", gap: "6px" }}>
+        <button onClick={() => setViewMode("pending")} style={{
+          border: "1px solid #d0d0d0", borderRadius: "4px", padding: "6px 12px", fontSize: "12px", fontWeight: 600, cursor: "pointer",
+          background: viewMode === "pending" ? "#00a09a" : "#fff", color: viewMode === "pending" ? "#fff" : "#555",
+        }}>承認待ち（{pending.length}）</button>
+        <button onClick={() => setViewMode("decided")} style={{
+          border: "1px solid #d0d0d0", borderRadius: "4px", padding: "6px 12px", fontSize: "12px", fontWeight: 600, cursor: "pointer",
+          background: viewMode === "decided" ? "#00a09a" : "#fff", color: viewMode === "decided" ? "#fff" : "#555",
+        }}>承認・却下の履歴（削除可能）</button>
+      </div>
+
+      {viewMode === "pending" && pending.length > 0 && (
+        <div style={{ fontSize: "11px", color: "#888", padding: "2px 2px" }}>
+          ※明らかに誤り・重複した申請は、内容確認画面から「申請を削除」できます。
+        </div>
+      )}
+
+      {viewMode === "decided" ? (
+        decided.length === 0 ? (
+          <div style={{ border: cardBorder, borderRadius: "6px", background: "#fff", padding: "40px 20px", textAlign: "center" }}>
+            <div style={{ fontSize: "14px", fontWeight: 700, color: "#555" }}>承認・却下した実績はまだありません</div>
+          </div>
+        ) : (
+          <div style={{ border: cardBorder, borderRadius: "6px", background: "#fff", overflow: "auto" }}>
+            <table style={{ minWidth: "100%", width: "max-content", borderCollapse: "collapse", fontFamily: "'Noto Sans JP', sans-serif", fontSize: "12px" }}>
+              <thead>
+                <tr style={{ background: "#fafbfc" }}>
+                  {["状態", "日付", "ドライバー", "案件", "売上", "支払", "決定日時", "操作"].map((h) => (
+                    <th key={h} style={{
+                      color: "#666", fontSize: "11px", padding: "8px 10px", fontWeight: 700, whiteSpace: "nowrap",
+                      borderBottom: cardBorder, textAlign: ["売上", "支払"].includes(h) ? "right" : "left",
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {decided.map(r => {
+                  const isApproved = r.approvalStatus === APPROVAL.APPROVED;
+                  const decidedAt = isApproved ? r.approvedAt : r.rejectedAt;
+                  const month = String(r.date || "").slice(0, 7);
+                  const closed = isMonthClosed(companyInfo, month);
+                  return (
+                    <tr key={r.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{
+                          fontSize: "10px", fontWeight: 700, padding: "2px 6px", borderRadius: "3px",
+                          color: isApproved ? "#00695c" : "#c62828",
+                          background: isApproved ? "#e0f2f1" : "#ffebee",
+                        }}>{isApproved ? "承認済み" : "却下"}</span>
+                      </td>
+                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>{r.date}</td>
+                      <td style={{ padding: "8px 10px", fontWeight: 700, whiteSpace: "nowrap" }}>{driverName(r.driverId)}</td>
+                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                        {customerName(r.customerId)}
+                        <div style={{ fontSize: "10px", color: "#999" }}>{jobName(r.jobTypeId)}</div>
+                      </td>
+                      <td style={{ padding: "8px 10px", textAlign: "right", color: "#007a74" }}>{yen(r.salesAmount)}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right", color: "#e65100", fontWeight: 700 }}>{yen(r.driverAmount)}</td>
+                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap", fontSize: "11px", color: "#888" }}>
+                        {decidedAt ? String(decidedAt).slice(0, 16).replace("T", " ") : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                        {closed ? (
+                          <span style={{ fontSize: "11px", color: "#999" }}>締め済みのため変更不可</span>
+                        ) : (
+                          <RetroBtn small onClick={() => deleteRecord(r.id)}
+                            style={{ background: "#fff", borderColor: "#c62828", color: "#c62828" }}>削除</RetroBtn>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : pending.length === 0 ? (
         <div style={{ border: cardBorder, borderRadius: "6px", background: "#fff", padding: "40px 20px", textAlign: "center" }}>
           <div style={{ fontSize: "32px", marginBottom: "8px" }}>✅</div>
           <div style={{ fontSize: "14px", fontWeight: 700, color: "#00695c" }}>承認待ちの実績はありません</div>
@@ -12315,6 +12474,10 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
           </div>
 
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: "16px", gap: "6px", flexWrap: "wrap" }}>
+            <RetroBtn onClick={() => deleteRecord(detail.id)}
+              style={{ background: "#fff", color: "#999", borderColor: "#ccc" }}>
+              申請を削除
+            </RetroBtn>
             <RetroBtn onClick={() => { setRejectTarget(detail.id); setRejectReason(""); }}
               style={{ background: "#fff", color: "#c62828", borderColor: "#c62828" }}>
               差し戻す
