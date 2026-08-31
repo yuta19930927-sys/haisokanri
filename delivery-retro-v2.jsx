@@ -16562,6 +16562,29 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
         setPwSaving(false);
         return;
       }
+
+      // 【重要・不具合修正】上のEdge Functionは、実際の、ログイン用の
+      // アカウント（auth.users）と、パスワードを、正しく作成・設定
+      // していたが、driver_auth テーブルへの、登録が、抜けていた。
+      // ハコログの、ログイン処理は、まず、driver_auth テーブルを見て、
+      // 「このドライバーIDは、どの会社のものか」を確認してから、
+      // ログイン用の、合成メールアドレスを、組み立てる仕組みのため、
+      // driver_auth に、行が無いと、パスワード自体は正しく設定されて
+      // いても、ログインの最初の一歩で、必ず失敗してしまっていた
+      // （実際に、この症状を再現・特定した）。
+      const { data: existingAuth, error: selErr } = await supabase
+        .from("driver_auth")
+        .select("id")
+        .eq("tenant_id", tenantId)
+        .eq("driver_id", driverId);
+      if (selErr) throw selErr;
+      if (!existingAuth || existingAuth.length === 0) {
+        const { error: insErr } = await supabase
+          .from("driver_auth")
+          .insert({ tenant_id: tenantId, driver_id: driverId, password_hash: "" });
+        if (insErr) throw insErr;
+      }
+
       setPwMessage("✅ パスワードを設定しました（ドライバーは、このパスワードで、すぐにログインできます）");
       setNewPassword("");
     } catch (e) {
