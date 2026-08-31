@@ -16574,6 +16574,15 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
    */
   const setDriverPassword = async (driverId, password) => {
     if (!driverId || !password.trim()) return;
+    // 【重要・不具合修正】Supabase Auth側で、「パスワードは6文字以上」
+    // という、必須のルールがあるが、画面には「6文字以上を推奨」としか
+    // 書いておらず、"できれば"程度の、任意の目安に、見えてしまっていた。
+    // 実際に、4桁の数字で、保存しようとして、失敗する事例が、あった
+    // ため、送信前に、分かりやすい、日本語で、案内する。
+    if (password.trim().length < 6) {
+      setPwMessage(`❌ パスワードは6文字以上にしてください（現在${password.trim().length}文字）`);
+      return;
+    }
     setPwSaving(true);
     setPwMessage("");
     try {
@@ -17410,7 +17419,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
                       type="text"
                       value={newPassword}
                       onChange={e => setNewPassword(e.target.value)}
-                      placeholder="6文字以上を推奨"
+                      placeholder="6文字以上（必須）"
                     />
                   </Fl>
                   <RetroBtn
@@ -17739,7 +17748,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
                       type="text"
                       value={newPassword}
                       onChange={e => setNewPassword(e.target.value)}
-                      placeholder="6文字以上を推奨"
+                      placeholder="6文字以上（必須）"
                     />
                   </Fl>
                   <RetroBtn
