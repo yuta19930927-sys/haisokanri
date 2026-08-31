@@ -11345,6 +11345,41 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
  * @returns {Array} [{ id, level, category, message, page }]
  *   level: "danger"（期限切れ・今すぐ対応）/ "warn"（接近中）/ "info"（確認推奨）
  */
+// 【重要・不具合修正】supabase-js の functions.invoke() 経由だと、
+// Edge Function が、エラー（非2xx）を返した場合に、実際の、詳しい
+// エラー内容が、確実には、取り出せない（バージョンによって、
+// error.message が、汎用的な文言にしかならなかったり、
+// error.context.json() が、期待通りに、動かないことがある）。
+// supabase-jsを経由せず、直接、fetchで、呼び出すことで、常に、
+// 確実に、実際のレスポンス本文（エラーの詳しい理由）を、読み取れる
+// ようにする。
+const invokeEdgeFunction = async (fnName, body) => {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData?.session?.access_token;
+  if (!accessToken) {
+    throw new Error("ログインセッションが確認できません。ページを再読み込みしてから、もう一度お試しください。");
+  }
+  const SUPABASE_PROJECT_URL = "https://qccxztvroptltgaajetd.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFjY3h6dHZyb3B0bHRnYWFqZXRkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0Mjg1NjcsImV4cCI6MjA5MjAwNDU2N30.2eJ32hclM8S0PZBZaY1ALlIAPJxXcsOv0Zpo724KQtU";
+  const res = await fetch(`${SUPABASE_PROJECT_URL}/functions/v1/${fnName}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${accessToken}`,
+      "apikey": SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+  const responseBody = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    // 【重要】ここで、Edge Function自身が返した、実際の、詳しい
+    // エラー理由（例：「アカウントの作成に失敗しました：...」）が、
+    // 確実に、そのまま、取得できる。
+    throw new Error(responseBody?.error || `Edge Functionがエラーを返しました（status: ${res.status}）`);
+  }
+  return responseBody;
+};
+
 const buildSystemAlerts = (data, alertDays = 30) => {
   const alerts = [];
   const todayStr = getTodayLocalStr();
@@ -16553,31 +16588,11 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
       // Edge Function（provision-driver-account）を通じて、
       // 実際の、Supabase Authのアカウントに、このパスワードを、
       // 直接、反映する。
-      const { data: provisionData, error: provisionError } = await supabase.functions.invoke(
-        "provision-driver-account",
-        { body: { driverId, tenantId, password: password.trim() } }
-      );
-      if (provisionError || provisionData?.error) {
-        // 【重要・不具合修正】Edge Functionが、エラーを返した場合、
-        // supabase-jsの error.message には、"Edge Function returned a
-        // non-2xx status code" のような、実際には、何の役にも立たない、
-        // 汎用的な文言しか、入らない。実際に、Edge Function側で、
-        // 設定した、詳しい理由（例：「アカウントの作成に失敗しました：
-        // ...」）は、error.context という、別の場所（レスポンス
-        // そのもの）に、入っているため、明示的に、JSONとして、
-        // 取り出す必要がある。これを、怠っていたため、実際に、500
-        // エラーが起きても、本当の原因が、一切、画面に出てこなかった。
-        let detail = provisionData?.error || provisionError?.message || "不明なエラー";
-        if (provisionError?.context && typeof provisionError.context.json === "function") {
-          try {
-            const body = await provisionError.context.json();
-            if (body?.error) detail = body.error;
-          } catch (_unused10) {
-            // レスポンスの本文が、JSONとして、読み取れない場合は、
-            // 上で用意した、通常のdetailを、そのまま使う。
-          }
-        }
-        setPwMessage(`❌ 設定に失敗しました：${detail}`);
+      let provisionData;
+      try {
+        provisionData = await invokeEdgeFunction("provision-driver-account", { driverId, tenantId, password: password.trim() });
+      } catch (provisionErr) {
+        setPwMessage(`❌ 設定に失敗しました：${provisionErr.message}`);
         setPwSaving(false);
         return;
       }
@@ -16640,22 +16655,11 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
       // まず、専用のEdge Function（provision-driver-account）を呼び、
       // ログインアカウントが、確実に存在する状態にしてから、
       // コードを発行する。
-      const { data: provisionData, error: provisionError } = await supabase.functions.invoke(
-        "provision-driver-account",
-        { body: { driverId, tenantId } }
-      );
-      if (provisionError || provisionData?.error) {
-        // 上の、setDriverPassword と、同じ理由で、error.context から、
-        // 実際の、詳しい理由を、取り出す。
-        let detail = provisionData?.error || provisionError?.message || "不明なエラー";
-        if (provisionError?.context && typeof provisionError.context.json === "function") {
-          try {
-            const body = await provisionError.context.json();
-            if (body?.error) detail = body.error;
-          } catch (_unused11) {}
-        }
+      try {
+        await invokeEdgeFunction("provision-driver-account", { driverId, tenantId });
+      } catch (provisionErr) {
         setResetCodeResult({
-          error: `ログインアカウントの準備に失敗しました：${detail}`,
+          error: `ログインアカウントの準備に失敗しました：${provisionErr.message}`,
         });
         setResetCodeSaving(false);
         return;
@@ -16688,7 +16692,12 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
       }
       setResetCodeResult({ code, expiresAt });
     } catch (e) {
-      setResetCodeResult({ error: "コードの発行に失敗しました。driver_auth テーブルの設定をご確認ください（reset_code 列が必要です）。" });
+      // 【重要・不具合修正】setDriverPassword と、同様に、実際の、
+      // 詳しいエラー理由を、表示する（以前は、固定の、大雑把な
+      // メッセージしか、出ておらず、setDriverPasswordとの一貫性も
+      // 無かった）。
+      const detail = e?.message || e?.error_description || JSON.stringify(e);
+      setResetCodeResult({ error: `コードの発行に失敗しました：${detail}` });
     }
     setResetCodeSaving(false);
   };
