@@ -16542,31 +16542,30 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
     setPwSaving(true);
     setPwMessage("");
     try {
-      const hashed = await hashPassword(driverId, password);
-      // 既存の認証情報があれば更新、無ければ新規作成する。
-      const { data: existing, error: selErr } = await supabase
-        .from("driver_auth")
-        .select("id")
-        .eq("tenant_id", tenantId)
-        .eq("driver_id", driverId);
-      if (selErr) throw selErr;
-
-      if (existing && existing.length > 0) {
-        const { error } = await supabase
-          .from("driver_auth")
-          .update({ password_hash: hashed })
-          .eq("id", existing[0].id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from("driver_auth")
-          .insert({ tenant_id: tenantId, driver_id: driverId, password_hash: hashed });
-        if (error) throw error;
+      // 【重要・不具合修正】以前は、ここで、hashPassword という、
+      // 独自のSHA-256方式で、driver_auth.password_hash に、
+      // 書き込むだけだった。この列は、Supabase Auth移行後、実際の
+      // ログイン処理からは、一切、参照されなくなっていたため、
+      // 「✅パスワードを設定しました」と表示されるにも関わらず、
+      // 実際には、そのパスワードで、ドライバーは、絶対にログイン
+      // できない、という、重大な不具合になっていた（コードを
+      // 追跡し、確認した）。
+      // Edge Function（provision-driver-account）を通じて、
+      // 実際の、Supabase Authのアカウントに、このパスワードを、
+      // 直接、反映する。
+      const { data: provisionData, error: provisionError } = await supabase.functions.invoke(
+        "provision-driver-account",
+        { body: { driverId, tenantId, password: password.trim() } }
+      );
+      if (provisionError || provisionData?.error) {
+        setPwMessage(`❌ 設定に失敗しました：${provisionData?.error || provisionError?.message || "不明なエラー"}`);
+        setPwSaving(false);
+        return;
       }
-      setPwMessage("✅ パスワードを設定しました");
+      setPwMessage("✅ パスワードを設定しました（ドライバーは、このパスワードで、すぐにログインできます）");
       setNewPassword("");
     } catch (e) {
-      setPwMessage("❌ 保存に失敗しました。driver_auth テーブルの設定をご確認ください。");
+      setPwMessage("❌ 設定に失敗しました。時間をおいて再度お試しください。");
     }
     setPwSaving(false);
   };
@@ -16584,6 +16583,27 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
     setResetCodeSaving(true);
     setResetCodeResult(null);
     try {
+      // 【重要・不具合修正】以前は、ここで、driver_authテーブルに、
+      // コードを書き込むだけで、肝心の、Supabase Auth側の、
+      // 正式なログインアカウント（auth.users）を、作成する処理が、
+      // 一切行われていなかった。そのため、新しく追加したドライバーは、
+      // コードを発行しても、実際には、一切ログインできない状態に
+      // なっていた（実際にコードを追跡し、確認した重大な不具合）。
+      // まず、専用のEdge Function（provision-driver-account）を呼び、
+      // ログインアカウントが、確実に存在する状態にしてから、
+      // コードを発行する。
+      const { data: provisionData, error: provisionError } = await supabase.functions.invoke(
+        "provision-driver-account",
+        { body: { driverId, tenantId } }
+      );
+      if (provisionError || provisionData?.error) {
+        setResetCodeResult({
+          error: `ログインアカウントの準備に失敗しました：${provisionData?.error || provisionError?.message || "不明なエラー"}`,
+        });
+        setResetCodeSaving(false);
+        return;
+      }
+
       // 6桁の数字コード。他人に推測されにくく、電話口でも伝えやすい桁数。
       const code = String(Math.floor(100000 + Math.random() * 900000));
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24時間後
