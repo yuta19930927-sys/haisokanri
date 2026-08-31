@@ -16588,7 +16588,13 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
       setPwMessage("✅ パスワードを設定しました（ドライバーは、このパスワードで、すぐにログインできます）");
       setNewPassword("");
     } catch (e) {
-      setPwMessage("❌ 設定に失敗しました。時間をおいて再度お試しください。");
+      // 【重要・不具合修正】以前は、実際の、エラーの内容を、
+      // まったく、表示していなかった。「設定に失敗しました」としか
+      // 出ないと、原因（権限の問題か、通信の問題か、その他か）が、
+      // まったく分からず、調査ができない。実際の、エラーメッセージを、
+      // そのまま、表示するようにする。
+      const detail = e?.message || e?.error_description || JSON.stringify(e);
+      setPwMessage(`❌ 設定に失敗しました：${detail}`);
     }
     setPwSaving(false);
   };
