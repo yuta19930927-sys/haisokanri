@@ -7414,6 +7414,11 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [amountEditForm, setAmountEditForm] = useState({ salesAmount: "", driverAmount: "" });
   const emptyForm = { customerId:"", driverId:"", vehicleId:"", jobTypeId:"", salesAmount:"", driverPayAmount:"", daysOfWeek:[1,2,3,4,5], note:"", active:true };
   const [form, setForm] = useState(emptyForm);
+  // 【機能追加・ユーザー要望】カレンダーから複数日をまとめて選んで、
+  // 「稼働あり／稼働なし」として一括登録するためのモーダル用state。
+  const [bulkModalTarget, setBulkModalTarget] = useState(null); // 対象の定期便（null=閉じている）
+  const [bulkMonth, setBulkMonth] = useState(getTodayLocalStr().slice(0, 7));
+  const [bulkSelectedDates, setBulkSelectedDates] = useState([]);
 
   const today = getTodayLocalStr();
   const todayWeekday = new Date(`${today}T00:00:00`).getDay();
@@ -7545,6 +7550,66 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         };
       });
     }
+  };
+
+  /**
+   * 【機能追加・ユーザー要望】「本日の確認」を1日ずつ押すのではなく、
+   * カレンダーから複数の日付を選んで（曜日パターンに縛られない、
+   * 飛び飛びの日でもよい）、まとめて「稼働あり／稼働なし」として
+   * 登録できるようにする。既存の setStatus と全く同じ安全確認
+   * （締め済み月のチェック・重複記録の防止・契約形態のスナップショット）
+   * を、複数日分まとめて1回の setData で行う。
+   * 締め済みの月が混ざっていた場合は、その日だけスキップし、
+   * まとめて1回のメッセージで知らせる（1件ずつ alert が出て
+   * 作業が止まってしまうのを防ぐ）。
+   */
+  const bulkConfirmDates = (r, dates, status) => {
+    const closedDates = dates.filter(date => isMonthClosed(data?.companyInfo, date.slice(0, 7)));
+    const targetDates = dates.filter(date => !closedDates.includes(date));
+
+    if (targetDates.length === 0) {
+      window.alert("選択された日は、すべて締め済みの月のため、登録できませんでした。");
+      return { registered: 0, skipped: closedDates.length };
+    }
+
+    setData(d => {
+      const currentDailyRecords = Array.isArray(d?.dailyRecords) ? d.dailyRecords : [];
+      const currentConfirmations = Array.isArray(d?.recurringConfirmations) ? d.recurringConfirmations : [];
+      const contractType = (Array.isArray(d?.drivers) ? d.drivers : [])
+        .find((dr) => dr?.id === r?.driverId)?.contractType || "業務委託";
+
+      let nextConfirmations = currentConfirmations.filter(
+        c => !(c?.recurringId === r?.id && targetDates.includes(c?.date))
+      );
+      let nextDailyRecords = [...currentDailyRecords];
+
+      targetDates.forEach(date => {
+        nextConfirmations = [
+          ...nextConfirmations,
+          { id: generateUniqueBusinessId(nextConfirmations, "RCF"), recurringId: r?.id, date, status },
+        ];
+        if (status === "worked") {
+          const alreadyRecorded = nextDailyRecords.some(dr => !dr?.deleted && dr?.recurringId === r?.id && dr?.date === date);
+          if (!alreadyRecorded) {
+            nextDailyRecords = [
+              ...nextDailyRecords,
+              {
+                id: generateUniqueBusinessId(nextDailyRecords, "DR"),
+                recurringId: r?.id, date, driverId: r?.driverId, customerId: r?.customerId,
+                jobTypeId: r?.jobTypeId || "", count: 1,
+                salesAmount: Number(r?.salesAmount) || 0, driverAmount: Number(r?.driverPayAmount) || 0,
+                driverContractTypeAtRecord: contractType,
+                note: "定期便より自動記録（カレンダー一括登録）",
+              },
+            ];
+          }
+        }
+      });
+
+      return { ...d, recurringConfirmations: nextConfirmations, dailyRecords: nextDailyRecords };
+    });
+
+    return { registered: targetDates.length, skipped: closedDates.length };
   };
 
   const undoStatus = (r, date) => {
@@ -7713,12 +7778,109 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                     売上¥{(Number(r?.salesAmount)||0).toLocaleString()}　報酬¥{(Number(r?.driverPayAmount)||0).toLocaleString()}
                   </div>
                 </div>
-                <RetroBtn small onClick={(e)=>{ e.stopPropagation(); removeItem(r?.id); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+                <div style={{ display:"flex", gap:"4px", flexShrink:0 }}>
+                  <RetroBtn small onClick={(e)=>{
+                    e.stopPropagation();
+                    setBulkModalTarget(r);
+                    setBulkMonth(getTodayLocalStr().slice(0, 7));
+                    setBulkSelectedDates([]);
+                  }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>カレンダーで一括登録</RetroBtn>
+                  <RetroBtn small onClick={(e)=>{ e.stopPropagation(); removeItem(r?.id); }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+                </div>
               </div>
             ))}
           </div>
         )}
       </Panel>
+
+      {/* 【機能追加・ユーザー要望】曜日パターンに縛られず、カレンダーから
+          好きな日をいくつでも選んで、まとめて「稼働あり／稼働なし」として
+          登録できるモーダル。 */}
+      {bulkModalTarget && (() => {
+        const r = bulkModalTarget;
+        const [y, m] = bulkMonth.split("-").map(Number);
+        const firstWeekday = new Date(y, m - 1, 1).getDay();
+        const daysInThisMonth = new Date(y, m, 0).getDate();
+        const cells = [];
+        for (let i = 0; i < firstWeekday; i++) cells.push(null);
+        for (let d = 1; d <= daysInThisMonth; d++) cells.push(d);
+
+        const toDateStr = (d) => `${bulkMonth}-${String(d).padStart(2, "0")}`;
+        const toggleDate = (dateStr) => {
+          setBulkSelectedDates(prev => prev.includes(dateStr) ? prev.filter(x => x !== dateStr) : [...prev, dateStr].sort());
+        };
+
+        return (
+          <Modal title={`カレンダーで一括登録：${customerName(r?.customerId)} — ${driverName(r?.driverId)}`} onClose={()=>{ setBulkModalTarget(null); setBulkSelectedDates([]); }} width={480}>
+            <div style={{ fontSize:"12px", color:"#666", marginBottom:"10px", lineHeight:1.7 }}>
+              曜日パターンに関係なく、仕事を入れたい日をカレンダーから自由に選べます。<br/>
+              飛び飛びの日（例：5日と12日と20日だけ）でも構いません。
+            </div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"8px" }}>
+              <RetroBtn small onClick={() => {
+                const d = new Date(y, m - 2, 1);
+                setBulkMonth(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+              }}>‹ 前月</RetroBtn>
+              <div style={{ fontSize:"13px", fontWeight:700, color:"#333" }}>{y}年{m}月</div>
+              <RetroBtn small onClick={() => {
+                const d = new Date(y, m, 1);
+                setBulkMonth(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+              }}>翌月 ›</RetroBtn>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:"3px", marginBottom:"6px" }}>
+              {WEEKDAY_LABELS.map(w => (
+                <div key={w} style={{ textAlign:"center", fontSize:"11px", color:"#999", fontWeight:700, padding:"2px 0" }}>{w}</div>
+              ))}
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:"3px", marginBottom:"12px" }}>
+              {cells.map((d, idx) => {
+                if (d === null) return <div key={`empty-${idx}`} />;
+                const dateStr = toDateStr(d);
+                const isSelected = bulkSelectedDates.includes(dateStr);
+                const status = getStatus(r?.id, dateStr);
+                const closed = isMonthClosed(data?.companyInfo, dateStr.slice(0, 7));
+                return (
+                  <button
+                    key={dateStr}
+                    onClick={() => !closed && toggleDate(dateStr)}
+                    disabled={closed}
+                    title={closed ? "締め済みの月です" : status === "worked" ? "既に「稼働あり」で登録済み" : status === "no_work" ? "既に「稼働なし」で登録済み" : ""}
+                    style={{
+                      aspectRatio:"1", borderRadius:"6px", fontSize:"12px", cursor: closed ? "not-allowed" : "pointer",
+                      border: isSelected ? "2px solid #00a09a" : "1px solid #e0e0e0",
+                      background: closed ? "#f5f5f5" : isSelected ? "#e0f7f5" : status === "worked" ? "#e8f5e9" : status === "no_work" ? "#fafafa" : "#fff",
+                      color: closed ? "#bbb" : "#333", fontWeight: isSelected ? 700 : 400,
+                    }}
+                  >
+                    {d}
+                    {status === "worked" && !isSelected && <div style={{ fontSize:"9px", color:"#2e7d32" }}>済</div>}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize:"11px", color:"#888", marginBottom:"10px" }}>
+              薄緑＝既に「稼働あり」登録済み　／　枠が太い＝今回選択中（{bulkSelectedDates.length}日）
+            </div>
+            <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px" }}>
+              <RetroBtn onClick={()=>{ setBulkModalTarget(null); setBulkSelectedDates([]); }}>キャンセル</RetroBtn>
+              <RetroBtn onClick={()=>{
+                if (bulkSelectedDates.length === 0) { window.alert("日付を選んでください。"); return; }
+                if (!window.confirm(`選択した ${bulkSelectedDates.length}日を「稼働なし」として登録しますか？`)) return;
+                const result = bulkConfirmDates(r, bulkSelectedDates, "no_work");
+                window.alert(`${result.registered}日を登録しました。${result.skipped > 0 ? `（締め済みのため ${result.skipped}日はスキップしました）` : ""}`);
+                setBulkModalTarget(null); setBulkSelectedDates([]);
+              }} style={{ background:"#fff", color:"#666", borderColor:"#ccc" }}>選択日を「稼働なし」で登録</RetroBtn>
+              <RetroBtn onClick={()=>{
+                if (bulkSelectedDates.length === 0) { window.alert("日付を選んでください。"); return; }
+                if (!window.confirm(`選択した ${bulkSelectedDates.length}日を「稼働あり」として登録しますか？\n\n売上¥${(Number(r?.salesAmount)||0).toLocaleString()}／報酬¥${(Number(r?.driverPayAmount)||0).toLocaleString()} が、それぞれの日に記録されます。`)) return;
+                const result = bulkConfirmDates(r, bulkSelectedDates, "worked");
+                window.alert(`${result.registered}日を登録しました。${result.skipped > 0 ? `（締め済みのため ${result.skipped}日はスキップしました）` : ""}`);
+                setBulkModalTarget(null); setBulkSelectedDates([]);
+              }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>選択日を「稼働あり」で登録</RetroBtn>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {/* その日の金額を直すフォーム。実績データも一緒に直すため、
           売上管理・報酬計算にもそのまま反映される。 */}
@@ -19927,6 +20089,10 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   // かつ、初期表示件数を絞ることで、量が増えても見やすい状態を保つ。
   const [deletedDataExpanded, setDeletedDataExpanded] = useState({});
   const [deletedDataVisibleCount, setDeletedDataVisibleCount] = useState({});
+  // 【機能追加・ユーザー要望】完全削除を、1件ずつではなく、チェックボックスで
+  // 選択して一括でできるようにする。カテゴリ（顧客・ドライバー等）ごとに、
+  // 選択中のIDを配列で持つ。
+  const [deletedDataSelected, setDeletedDataSelected] = useState({});
   // 設定（ネジマーク）から「会社情報設定」を選んだ時、請求管理ページに
   // 移動した上で、そのページ内のモーダルを自動的に開くための合図。
   const [autoOpenCompanySettings, setAutoOpenCompanySettings] = useState(false);
@@ -21050,6 +21216,69 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                 </button>
                 {isOpen && (
                   <div style={{ padding:"8px 10px" }}>
+                    {/* 【機能追加・ユーザー要望】1件ずつしか完全削除できなかったのを、
+                        チェックボックスで選択して、一括で完全に削除できるようにする。
+                        通常の削除より重い操作のため、確認は個別削除と同じ水準
+                        （内容の確認＋最終確認の2段階）を維持する。 */}
+                    {(() => {
+                      const selectedIds = deletedDataSelected[key] || [];
+                      const visibleIds = visibleItems.map(item => item?.id);
+                      const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.includes(id));
+                      return (
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"8px", paddingBottom:"8px", borderBottom:"1px dashed #e0e0e0" }}>
+                          <label style={{ display:"flex", alignItems:"center", gap:"6px", fontSize:"11px", color:"#666", cursor:"pointer" }}>
+                            <input
+                              type="checkbox"
+                              checked={allVisibleSelected}
+                              onChange={(e) => {
+                                setDeletedDataSelected(v => ({
+                                  ...v,
+                                  [key]: e.target.checked ? Array.from(new Set([...(v[key] || []), ...visibleIds])) : (v[key] || []).filter(id => !visibleIds.includes(id)),
+                                }));
+                              }}
+                            />
+                            表示中を全選択（{selectedIds.length}件選択中）
+                          </label>
+                          {selectedIds.length > 0 && (
+                            <RetroBtn small onClick={() => {
+                              const targets = deleted.filter(item => selectedIds.includes(item?.id));
+                              if (!window.confirm(
+                                `${labelMap[key]}を ${targets.length}件、まとめて完全に削除します。\n\n` +
+                                `⚠️ この操作は取り消せません。「復元」で元に戻すことも、\n` +
+                                `二度とできなくなります。\n\n` +
+                                `本当によろしいですか？`
+                              )) return;
+                              if (!window.confirm(`最終確認：本当に ${targets.length}件を完全削除しますか？`)) return;
+                              const entityTypeMap = {
+                                customers: "customer", drivers: "driver",
+                                vehicles: "vehicle", orders: "order", invoices: "invoice",
+                                dailyRecords: "daily_record",
+                              };
+                              targets.forEach(item => {
+                                const itemLabel = key === "dailyRecords"
+                                  ? `${item?.date || "—"}／ドライバー：${item?.driverId || "—"}／売上：¥${(Number(item?.salesAmount)||0).toLocaleString()}`
+                                  : (item?.name || item?.plate || item?.customerName || item?.id || "—");
+                                logHistoryEntry(setData, {
+                                  entityType: entityTypeMap[key] || key,
+                                  entityId: item?.id,
+                                  entityLabel: `${labelMap[key]}：${itemLabel}（一括完全削除）`,
+                                  before: item,
+                                  userRole,
+                                });
+                              });
+                              const targetIdSet = new Set(targets.map(item => item?.id));
+                              setData(d => ({
+                                ...d,
+                                [key]: (Array.isArray(d?.[key]) ? d[key] : []).filter(x => !targetIdSet.has(x?.id)),
+                              }));
+                              setDeletedDataSelected(v => ({ ...v, [key]: [] }));
+                            }} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>
+                              選択した{selectedIds.length}件を完全に削除
+                            </RetroBtn>
+                          )}
+                        </div>
+                      );
+                    })()}
                     {visibleItems.map(item => {
                       // 実績には name・plate・customerName が無いため、日付とドライバー・
                       // 売上金額で識別できるようにする（他の種別のラベル生成は変更しない）。
@@ -21058,6 +21287,18 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                         : (item?.name || item?.plate || item?.customerName || item?.id || "—");
                       return (
                         <div key={item?.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", border:"1px solid #e8e8e8", borderRadius:"6px", background:"#fff", marginBottom:"4px", gap:"8px" }}>
+                          <input
+                            type="checkbox"
+                            checked={(deletedDataSelected[key] || []).includes(item?.id)}
+                            onChange={(e) => {
+                              setDeletedDataSelected(v => {
+                                const cur = v[key] || [];
+                                const next = e.target.checked ? [...cur, item?.id] : cur.filter(id => id !== item?.id);
+                                return { ...v, [key]: next };
+                              });
+                            }}
+                            style={{ flexShrink:0, cursor:"pointer" }}
+                          />
                           <span style={{ fontSize:"12px", color:"#333", flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item?.id} — {label}</span>
                           <div style={{ display:"flex", gap:"4px", flexShrink:0 }}>
                           <RetroBtn small onClick={()=>{
