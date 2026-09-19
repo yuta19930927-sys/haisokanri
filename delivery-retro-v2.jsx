@@ -11626,8 +11626,20 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   // ここで確実に除去しておく。
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => d && !d.deleted);
   const vehicles = (Array.isArray(data?.vehicles) ? data.vehicles : []).filter(v => v && !v.deleted);
-  const records = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(Boolean);
-  const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
+  // 【重要・不具合修正】ドライバー・車両は削除済みを除外していたのに、
+  // 実績（dailyRecords）と案件（jobTypes）だけ除外が抜けていた。そのため、
+  // 削除したはずの実績・案件を根拠にした通知が、通知ベルに出続けていた。
+  // 特に実害が大きかったのが「【承認待ち】◯件の実績が未承認です」で、
+  // 承認待ちの実績を削除しても、ベルの通知だけが永久に消えなかった
+  // （ダッシュボードの「◯件 未承認」で見つかったものと、全く同じ原因が、
+  // 通知ベル側にも残っていた）。以下の警告すべてが、この2行に依存している：
+  //   ・振込先未登録（稼働実績があるのに口座が未登録）
+  //   ・単価未設定（直近30日に実績がある案件の報酬が0円）
+  //   ・ロイヤリティ未設定（先月稼働したドライバー）
+  //   ・承認待ちの実績
+  // 個別に直すと、また今回のように一部だけ漏れるため、元の定義で一度に除外する。
+  const records = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(r => r && !r.deleted);
+  const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(j => j && !j.deleted);
 
   // --- 自社のインボイス登録番号が未設定 ---
   // 【重要】インボイス制度では、請求書に発行事業者の登録番号を記載することが
