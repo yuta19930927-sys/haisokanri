@@ -8020,9 +8020,18 @@ const isApprovedRecord = (r) => {
   return s === APPROVAL.APPROVED;
 };
 
-/** まだ確定していない（会社の対応が必要な）実績か */
+/**
+ * まだ確定していない（会社の対応が必要な）実績か。
+ *
+ * 【重要・不具合修正】以前は「承認状態」しか見ておらず、削除済み
+ * （deleted）かどうかを判定していなかった。そのため、承認待ちの実績を
+ * 削除しても、ダッシュボードの「◯件 未承認」や、締め処理の警告に
+ * カウントされ続け、いつまでも消えなかった（実際に発見・確認した）。
+ * この関数は、ダッシュボード・承認画面・締め処理など、複数の重要な
+ * 画面が共通で使っているため、ここで一度に直すのが最も確実。
+ */
 const isPendingRecord = (r) =>
-  !!r && (r.approvalStatus === APPROVAL.SUBMITTED || r.approvalStatus === APPROVAL.DRAFT);
+  !!r && !r.deleted && (r.approvalStatus === APPROVAL.SUBMITTED || r.approvalStatus === APPROVAL.DRAFT);
 
 /**
  * ===== 月次ロック（締め処理）=====
@@ -8954,7 +8963,7 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
           onClick={() => setShowAuditPack(true)}
           style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #555", background: "#fff", color: "#555", cursor: "pointer", fontWeight: 700 }}
         >
-          📦 監査対応パック（期間指定）
+          監査対応パック（期間指定）
         </button>
       </div>
 
