@@ -95,6 +95,45 @@ const formatDate = (date) => {
 const getTodayLocalStr = () => formatDate(new Date());
 
 /**
+ * 【重要・不具合修正】ハコログは点検・日報の時刻を世界標準時（例："2026-09-07T23:00:00.000Z"）
+ * で保存している。これを先頭10文字で日付にすると、日本時間の朝9時より前の記録
+ * （＝朝の日常点検・業務前点呼のほぼすべて）が「前日」の記録として扱われ、
+ * 当日は「未実施」と表示されていた（法定記録の表示ミス）。日本時間の日付に直す。
+ */
+const toJstDateStr = (value) => {
+  if (!value) return "";
+  const str = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  const t = Date.parse(str);
+  if (!Number.isFinite(t)) return str.slice(0, 10);
+  return new Date(t + 9 * 3600000).toISOString().slice(0, 10);
+};
+
+/**
+ * 【不具合修正】変更履歴・承認日時・チャット・ログイン履歴などの日時は世界標準時
+ * （例："2026-09-26T01:00:00.000Z"）で保存されている。先頭16文字をそのまま表示すると
+ * 日本時間より9時間ずれた時刻（10:00 → 01:00）が表示されていた。日本時間に直して表示する。
+ */
+const fmtJstDateTime = (value) => {
+  if (!value) return "";
+  const str = String(value);
+  const t = Date.parse(str);
+  if (!/T/.test(str) || !Number.isFinite(t)) return str.slice(0, 16).replace("T", " ");
+  // タイムゾーンの指定が無い日時（ローカル時刻として保存されたもの）はそのまま
+  if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(str)) return str.slice(0, 16).replace("T", " ");
+  return new Date(t + 9 * 3600000).toISOString().slice(0, 16).replace("T", " ");
+};
+
+/**
+ * 【不具合修正】チャットの本文は、ハコマネからの送信は text、ハコログ（ドライバー）からの送信は
+ * body に入っている。ハコマネは text しか表示していなかったため、ドライバーからの
+ * メッセージが空の吹き出しになっていた。両方を読む。
+ */
+const chatMsgText = (m) => String(m?.text ?? m?.body ?? "");
+/** 添付のURLは http(s) のものだけを表示に使う（javascript: 等を開かせない） */
+const safeChatUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : "");
+
+/**
  * "HH:MM" 形式の時刻文字列を、0時からの経過分数に変換する。
  * 解析できない場合は null を返す（呼び出し側で「時刻不明」として扱う）。
  */
@@ -136,7 +175,172 @@ const ordersTimeOverlap = (orderA, orderB) => {
  * 税率変更が必要になったら、このTAX_RATE定数とこの関数だけを直せばよい。
  */
 const TAX_RATE = 0.1;
-const calcTax = (amount) => Math.round((Number(amount) || 0) * TAX_RATE);
+// 【重要・不具合修正】小数を含む掛け算（例：17.9km × 55円 ＝ 984.5円）は、コンピューターの
+// 内部では 984.4999999… になることがあり、そのまま四捨五入すると 985円 ではなく 984円 になっていた。
+// 千分の一円の位で一度そろえてから四捨五入し、電卓と同じ結果にする。
+const roundYen = (value) => Math.round(Math.round((Number(value) || 0) * 1000) / 1000);
+const calcTax = (amount) => roundYen((Number(amount) || 0) * TAX_RATE);
+// 【重要】請求書1枚ぶんの消費税を、明細の課税区分を考慮して計算する。
+// 以前は請求書の税額を「税抜合計×10%」で一律に計算していたため、
+// 仕事種別を「非課税」に設定していても、請求書には税が乗ってしまっていた
+// （月次集計の画面では非課税として表示されるのに、発行した請求書だけ税込みになる）。
+// インボイス制度では、消費税の端数処理は「1枚の請求書につき、税率ごとに1回」と
+// 決められているため、課税の明細だけを合計してから1回だけ税を計算する。
+// taxable が false の明細だけを非課税とし、未設定（以前からある明細）は課税として扱う。
+const calcInvoiceTaxFromItems = (items) => {
+  const taxableSum = (Array.isArray(items) ? items : [])
+    .filter((it) => it && it.taxable !== false)
+    .reduce((s, it) => s + (Number(it.subtotal) || 0), 0);
+  return calcTax(Math.round(taxableSum));
+};
+// ===== 単価の決め方（全画面共通）=====
+// 【重要・不具合修正】同じ仕事でも、入力する画面によって金額が変わっていた。
+// ・ハコログ（ドライバー入力）…「担当ルートの個別単価 → 仕事種別の標準単価」
+// ・ハコマネの個建実績入力 …「担当ルートの個別単価」だけ（未設定だと0円）
+// ・ハコマネの売上管理（日次入力）…「仕事種別の標準単価」だけ（個別単価を無視）
+// すべての画面を、ハコログと同じ「個別単価があればそれ、無ければ標準単価」にそろえる。
+const pickRoutePrice = (routeValue, jobTypeValue) =>
+  (routeValue !== "" && routeValue != null) ? routeValue : (jobTypeValue ?? "");
+// ドライバーの担当ルートのうち、この仕事種別（と顧客）に合うもの
+const findDriverRoute = (driver, jobTypeId, customerId) => {
+  const routes = Array.isArray(driver?.routes) ? driver.routes : [];
+  return routes.find((r) => r?.jobTypeId === jobTypeId && customerId && r?.customerId === customerId)
+    || routes.find((r) => r?.jobTypeId === jobTypeId && (!customerId || !r?.customerId))
+    || null;
+};
+// デカ宅のサイズ別単価：サイズごとに「個別単価があればそれ、無ければ標準単価」
+const mergeDekaRates = (routeRates, jobTypeRates, sizes) => {
+  const rr = Array.isArray(routeRates) ? routeRates : [];
+  const jr = Array.isArray(jobTypeRates) ? jobTypeRates : [];
+  const allSizes = [...new Set([...(sizes || []), ...jr.map((x) => x?.size), ...rr.map((x) => x?.size)].filter(Boolean))];
+  return allSizes.map((size) => {
+    const r = rr.find((x) => x?.size === size) || {};
+    const j = jr.find((x) => x?.size === size) || {};
+    return {
+      size,
+      unitPrice: pickRoutePrice(r.unitPrice, j.unitPrice),
+      driverUnitPrice: pickRoutePrice(r.driverPrice ?? r.driverUnitPrice, j.driverPrice ?? j.driverUnitPrice),
+    };
+  });
+};
+
+// ===== 口座の入出金1行を、画面で使う形に変換する（口座・入金画面とアプリ起動時で共通）=====
+const mapBankTransactionRow = (row) => ({
+  id: row?.id,
+  date: row?.transaction_date || "",
+  transaction_date: row?.transaction_date || "",
+  description: row?.description || "",
+  counterparty: row?.counterparty || "",
+  amount: Number(row?.deposit_amount) || Number(row?.withdrawal_amount) || 0,
+  deposit_amount: Number(row?.deposit_amount) || 0,
+  withdrawal_amount: Number(row?.withdrawal_amount) || 0,
+  status: row?.match_status || "unmatched",
+  match_status: row?.match_status || "unmatched",
+  matchedInvoice: row?.matched_invoice_id || null,
+  matched_invoice_id: row?.matched_invoice_id || null,
+  // 【重要】これが無いと、ページを再読み込みした瞬間に「手動入力かどうか」の
+  // 判定が失われ、編集・削除ボタンが二度と出なくなる。
+  bank_name: row?.bank_name || "",
+  bankName: row?.bank_name || "",
+});
+
+// ===== 実績1件の「配送個数」（全画面共通）=====
+// 【重要・不具合修正】個数は入力元によって入る項目が違う。
+// ・売上管理／ハコログの通常入力 … count
+// ・ハコマネ個建実績入力（チビ宅など）… 配完個数
+// ・ハコログのデカ宅 … dekaCounts（サイズ別）／ハコマネのデカ宅 … deka_サイズ
+// 以前は count しか見ていなかったため、報酬画面・報酬明細の「配送個数」や
+// 経営分析の個数に、これらの入力分が0個として集計されていた。
+const recordParcelCount = (r) => {
+  if (!r) return 0;
+  const c = Number(r.count);
+  if (Number.isFinite(c) && c > 0) return c;
+  const done = Number(r["配完個数"]);
+  if (Number.isFinite(done) && done > 0) return done;
+  let deka = 0;
+  if (r.dekaCounts && typeof r.dekaCounts === "object") {
+    Object.values(r.dekaCounts).forEach((v) => { deka += Number(v) || 0; });
+  }
+  if (deka === 0) {
+    Object.keys(r).forEach((k) => { if (k.startsWith("deka_")) deka += Number(r[k]) || 0; });
+  }
+  return deka;
+};
+
+// 【検証（ハコログ2回目）で追加】一覧・明細の「数量」表示（ハコログの recordQtyLabel と同じ）。
+// 距離制・時間制・定額の仕事が「0」個と表示されていたため、距離は km、時間は 時間 で出し、量の無い定額は「—」にする。
+const recordQtyLabel = (r) => {
+  if (!r) return "";
+  if (Number(r.distance) > 0) return `${Number(r.distance)}km`;
+  if (Number(r.hours) > 0) return `${Number(r.hours)}時間`;
+  const c = recordParcelCount(r);
+  return c > 0 ? `${c.toLocaleString()}個` : "";
+};
+
+// ===== 顧客請求書の「未回収残額」「延滞」の共通判定 =====
+// 【重要・不具合修正】未回収・延滞の計算が画面ごとにバラバラで、
+// ・赤伝（マイナスの請求書）で減額した分が、元の請求書の未回収から引かれない
+// ・赤伝そのもの（未払い扱い・マイナス金額）が「延滞」として数えられ、督促対象になる
+// ・一部入金の残額ではなく請求額の全額で計算している箇所がある
+// といった食い違いがあった。全画面でこの関数を使い、同じ数字になるようにする。
+const invoicePayloadOf = (row) => (row && row.payload != null && typeof row.payload === "object") ? row.payload : (row || {});
+// 元の請求書ID → その請求書に対して発行された赤伝の合計（マイナス値）
+const buildCreditNoteTotals = (invoiceRows) => {
+  const m = new Map();
+  (Array.isArray(invoiceRows) ? invoiceRows : []).forEach((row) => {
+    const p = invoicePayloadOf(row);
+    if (!p?.isCreditNote || !p?.originalInvoiceId || p?.deleted || row?.deleted) return;
+    m.set(p.originalInvoiceId, (m.get(p.originalInvoiceId) || 0) + (Number(p.total) || 0));
+  });
+  return m;
+};
+// 顧客請求書1枚の、まだ回収すべき残額（請求額 − 入金済み額 − 赤伝での減額）
+const calcInvoiceOutstanding = (row, creditTotals) => {
+  const p = invoicePayloadOf(row);
+  if (!p || p.deleted || row?.deleted || p.type === "driver_invoice" || p.isCreditNote) return 0;
+  if (p.status === "paid" || p.status === "bad_debt") return 0;
+  const total = Number(p.total_amount ?? p.total) || 0;
+  const paid = Number(p.paidAmount ?? p.paid_amount ?? 0) || 0;
+  const credit = creditTotals ? (creditTotals.get(p.id) || 0) : 0;
+  return Math.max(0, total - paid + credit);
+};
+// 延滞＝支払期日を過ぎても、まだ回収すべき残額が残っている顧客請求書
+const isInvoiceOverdue = (row, todayStr, creditTotals) => {
+  const p = invoicePayloadOf(row);
+  if (p.isCreditNote || p.type === "driver_invoice") return false;
+  const pastDue = p.status === "overdue" || ((p.status === "unpaid" || p.status === "partial") && (p.dueDate || "") < todayStr);
+  return pastDue && calcInvoiceOutstanding(row, creditTotals) > 0;
+};
+
+// 配送実績から、請求書の明細（仕事種別ごとに1行）を作る。
+// 仕事種別ごとに分けることで、課税／非課税を明細単位で正しく区別できる。
+// 【重要】数量×単価で小計を作ると、単価を平均で丸めた分だけ
+// 請求書を開いて保存し直したときに金額が変わってしまうため、
+// 数量は1、単価＝その種別の合計額とし、件数は品目名に書く。
+const buildInvoiceItemsFromRecords = (records, jobTypes, label) => {
+  const jts = Array.isArray(jobTypes) ? jobTypes : [];
+  const groups = new Map();
+  (Array.isArray(records) ? records : []).forEach((r) => {
+    if (!r) return;
+    const key = r.jobTypeId || "none";
+    if (!groups.has(key)) groups.set(key, { jobTypeId: r.jobTypeId || "", count: 0, sum: 0 });
+    const g = groups.get(key);
+    g.count += 1;
+    g.sum += Number(r.salesAmount) || 0;
+  });
+  return [...groups.values()].map((g, idx) => {
+    const jt = jts.find((j) => j?.id === g.jobTypeId);
+    const amount = Math.round(g.sum);
+    return {
+      id: `LI-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
+      name: `${label ? `${label} ` : ""}${jt?.name || "配送業務"}（${g.count}件）`,
+      qty: 1,
+      unitPrice: amount,
+      subtotal: amount,
+      taxable: jt?.taxable !== false,
+    };
+  });
+};
 
 // 【重要】電話番号・メールアドレスの欄には、これまで形式のチェックが
 // 一切無く、「あいうえお」のような明らかに誤った値でも保存できていた。
@@ -516,6 +720,34 @@ const calcDueDateByTerms = (deliveredDate, closingDay = 31, paymentSite = "翌�
 };
 
 /**
+ * ある日付が、取引先の「どの締め期間」に入るかを返す（全画面共通）。
+ * 例：20日締めの取引先なら 2026-09-24 → 2026-09-21〜2026-10-20。
+ * 月末締め（31）なら暦の1か月と同じ。
+ *
+ * 【重要・不具合修正】請求の候補や一括発行が「暦の月（1日〜末日）」で
+ * まとめられていたため、20日締め・25日締めなどの取引先では
+ * ・2つの締め期間の実績が1枚の請求書に混ざり、前の期間の分まで支払期日が1か月遅れる
+ * ・締め日（9/20）より後に配送した分（9/21〜）が、9/20付けの請求書に入る
+ * といった食い違いが起きていた。締め日ごとの期間でまとめるための共通関数。
+ */
+const closingPeriodOf = (dateStr, closingDay = 31) => {
+  const base = parseDate(dateStr);
+  if (!base) return null;
+  const cd = Number(closingDay) || 31;
+  const y = base.getFullYear();
+  const m = base.getMonth();
+  const closeOf = (yy, mm) => {
+    const last = new Date(yy, mm + 1, 0).getDate();
+    return new Date(yy, mm, cd >= 31 ? last : Math.min(cd, last));
+  };
+  let end = closeOf(y, m);
+  if (base.getDate() > end.getDate()) end = closeOf(y, m + 1);
+  const prevEnd = closeOf(end.getFullYear(), end.getMonth() - 1);
+  const start = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), prevEnd.getDate() + 1);
+  return { start: formatDate(start), end: formatDate(end) };
+};
+
+/**
  * 受注を「配送完了」にする処理（実績データ・請求書の自動生成を含む）。
  * OrdersPage（次へボタン）・DispatchPage（配送完了ボタン）の両方から
  * 同じ結果になるよう、ロジックを1箇所にまとめている。
@@ -571,7 +803,10 @@ const applyOrderDeliveredTransition = (d, orderId) => {
     // 新しい実績が作られず、売上が一切計上されなくなる不具合が起きる。
     // 削除済みは必ず除外する。
     .filter((r) => !r?.deleted)
-    .some((r) => r?.orderId === targetOrder?.id && r?.date === actualDeliveryDate);
+    // 【重要・不具合修正】以前は「同じ受注・同じ日付」の実績があるかだけを見ていたため、
+    // 配達日を変えてもう一度「配送完了」にすると、同じ受注の実績が2件でき、
+    // 売上・報酬が二重に計上されていた。同じ受注の実績が1件でもあれば作らない。
+    .some((r) => r?.orderId === targetOrder?.id);
   const nextDailyRecords = alreadyInSales
     ? (Array.isArray(d?.dailyRecords) ? d.dailyRecords : [])
     : [
@@ -611,8 +846,9 @@ const applyOrderDeliveredTransition = (d, orderId) => {
           // 入力されている。にもかかわらず、さらにロイヤリティ（売上の◯%）を
           // 引くと、会社が二重に取ることになり、支払いが不足する。
           // 個別に決めた分だと分かるよう印を付け、ロイヤリティの対象外にする。
-          fixedDriverPay: targetOrder?.driverPayAmount != null,
-          note: targetOrder?.driverPayAmount == null
+          // 空欄（""）も「未設定」として扱う（以前は空欄でも「設定済み」と判定されていた）
+          fixedDriverPay: targetOrder?.driverPayAmount != null && targetOrder?.driverPayAmount !== "",
+          note: (targetOrder?.driverPayAmount == null || targetOrder?.driverPayAmount === "")
             ? `受注 ${targetOrder?.id} より自動連携（⚠️ドライバー報酬額が未設定のため0円で記録）`
             : `受注 ${targetOrder?.id} より自動連携`,
         },
@@ -848,15 +1084,17 @@ const SearchableSelect = ({ value, onChange, options, placeholder = "入力し�
   // 結局スクロールして探すことになり、候補表示の意味が無くなる。
   // 名前に加えて「よみがな（kana）」でも検索できるようにする。
   // カタカナ・ひらがなの違いも吸収する（「ツボクラ」でも「つぼくら」でも探せる）。
-  const toHiragana = (s) => String(s || "").replace(/[\u30a1-\u30f6]/g, (c) =>
+  // 【検証11回目で修正】半角カタカナ（口座名義の「ｶﾜｲ ﾀﾞｲｷ」など）は、ひらがなで検索しても
+  // 見つからなかった。NFKCで全角にそろえてから、ひらがなに変換し、空白も無視して比べる。
+  const toHiragana = (s) => String(s || "").normalize("NFKC").replace(/[\u30a1-\u30f6]/g, (c) =>
     String.fromCharCode(c.charCodeAt(0) - 0x60)
-  );
+  ).replace(/[\s　]/g, "");
   const matches = (o, kw) => {
     const k = toHiragana(kw).toLowerCase();
     if (!k) return true;
     const name = String(o?.name || "");
-    const kana = toHiragana(o?.kana || "");
-    return name.includes(kw) || name.toLowerCase().includes(k) || kana.includes(k);
+    const kana = toHiragana(o?.kana || "").toLowerCase();
+    return name.includes(kw) || toHiragana(name).toLowerCase().includes(k) || kana.includes(k);
   };
   const filtered = keyword.trim() ? list.filter((o) => matches(o, keyword.trim())) : list;
 
@@ -881,6 +1119,8 @@ const SearchableSelect = ({ value, onChange, options, placeholder = "入力し�
 
   // キーボードだけで操作できるようにする（マウスに持ち替える手間を無くす）
   const onKeyDown = (e) => {
+    // 日本語入力の変換中（ひらがなで検索している途中）の Enter・矢印キーは、変換操作として扱い候補の選択はしない
+    if (e.nativeEvent?.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setHighlight((h) => Math.min(h + 1, filtered.length - 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
     else if (e.key === "Enter") {
@@ -1027,7 +1267,7 @@ const HistoryPanel = ({ data, entityType, entityId, labelMap = {}, hideKeys = []
             }}
           >
             <span>
-              <b>{String(h.changedAt || "").slice(0, 16).replace("T", " ")}</b>
+              <b>{fmtJstDateTime(h.changedAt)}</b>
               　{roleLabel[h.changedByRole] || h.changedByRole || "不明"}が変更{h.changedBy && h.changedBy !== "unknown" ? "（" + h.changedBy + "）" : ""}
             </span>
             <span style={{ color: "#999" }}>{openId === h.id ? "閉じる ▲" : "詳細 ▼"}</span>
@@ -1130,10 +1370,10 @@ const StatusPill = ({ s, context }) => {
   // 支払予定（お金を払う側）なら「支払済」と意味が逆になる。
   // context="payable" のときだけラベルを上書きし、紛らわしい表示を防ぐ。
   if (context === "payable" && s === "paid") {
-    return <span style={{ background:"#e8f5e9", color:"#2e7d32", fontSize:"11px", fontWeight:700, padding:"2px 8px", fontFamily:"'Noto Sans JP', sans-serif", border:"1px solid #4caf50", borderRadius:"999px", display:"inline-flex", alignItems:"center" }}>支払済</span>;
+    return <span style={{ background:"#e8f5e9", color:"#2e7d32", fontSize:"11px", fontWeight:700, padding:"2px 8px", fontFamily:"'Noto Sans JP', sans-serif", border:"1px solid #4caf50", borderRadius:"999px", display:"inline-flex", alignItems:"center", whiteSpace:"nowrap", flexShrink:0 }}>支払済</span>;
   }
   const [label,bg,fg,border] = map[s]||[s,"#e8e8e8","#555","#d0d0d0"];
-  return <span style={{ background:bg, color:fg, fontSize:"11px", fontWeight:700, padding:"2px 8px", fontFamily:"'Noto Sans JP', sans-serif", border:`1px solid ${border}`, borderRadius:"999px", display:"inline-flex", alignItems:"center" }}>{label}</span>;
+  return <span style={{ background:bg, color:fg, fontSize:"11px", fontWeight:700, padding:"2px 8px", fontFamily:"'Noto Sans JP', sans-serif", border:`1px solid ${border}`, borderRadius:"999px", display:"inline-flex", alignItems:"center", whiteSpace:"nowrap", flexShrink:0 }}>{label}</span>;
 };
 const RetroTable = ({ headers, rows, maxHeight = "280px" }) => (
   <div style={{ border:cardBorder, borderRadius:"6px", background:"#fff", overflow:"auto", maxHeight }}>
@@ -1408,6 +1648,17 @@ const DELIVERY_TYPE_LABEL = { route:"ルート配送", charter:"チャーター�
 // 雇った際、支払いの性質を誤解させかねない不整合だった。
 // 対象ドライバーがまだ確定していない場面（受注登録時など）では、
 // 判定材料が無いため、これまで通りの表現に留める。
+// 【利用者の指示で追加】正社員・パートは給与として別に支払うため、
+// 報酬・振込画面の振込データ（振込一覧CSV・全銀データ）の対象から外す。
+// 【重要・不具合修正】ドライバー登録画面は「フリガナ」を furigana という項目に保存するのに、
+// 検索・通知は nameKana だけを見ていたため、フリガナで検索できず、口座名義との照合も働いていなかった。
+const driverKanaOf = (d) => String(d?.nameKana || d?.furigana || "");
+// ひらがな・全角カタカナ・半角カタカナ・空白の違いをそろえて比べるための正規化
+const normalizeKanaForCompare = (v) => String(v || "").normalize("NFKC")
+  .replace(/[\u3041-\u3096]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60))
+  .replace(/[\s　]/g, "");
+const isEmployeeDriver = (driver) => driver?.contractType === "正社員" || driver?.contractType === "パート";
+
 const getDriverPayLabel = (driver) => {
   if (driver?.contractType === "正社員" || driver?.contractType === "パート") {
     return "ドライバー給与額（雇用契約の支払額）";
@@ -1460,7 +1711,8 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
   const orders = isDriverView
     ? (myDriverRecord ? allOrders.filter((o) => o?.driverId === myDriverRecord.id) : [])
     : allOrders;
-  const allEvents = Array.isArray(data?.events) ? data.events : [];
+  // 【重要・不具合修正】お知らせ配信で削除した（deleted の印が付いた）予定も表示されていた。
+  const allEvents = (Array.isArray(data?.events) ? data.events : []).filter((e) => e && !e.deleted);
   const events = isDriverView
     ? allEvents.filter((ev) => orders.some((o) => o?.id === ev?.orderId))
     : allEvents;
@@ -1521,15 +1773,16 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
         sourceId: order?.id,
         date: targetDate,
         type: "delivery",
-        title: `${DELIVERY_TYPE_LABEL[order?.deliveryType] || "ルート配送"}：${order?.customerName || "未設定"}`,
-        subtitle: driver?.name || "未配車",
+        // 【不具合修正】キャンセルした受注も「未配車」と表示され、まだ動いている案件に見えていた。
+        title: `${order?.status === "cancelled" ? "【キャンセル】" : ""}${DELIVERY_TYPE_LABEL[order?.deliveryType] || "ルート配送"}：${order?.customerName || "未設定"}`,
+        subtitle: order?.status === "cancelled" ? "キャンセル" : (driver?.name || "未配車"),
         deliveryType: order?.deliveryType || "route",
         // 受注に入力された集荷・配達の時刻を、カレンダーにも渡す。
         // これが無いと、配送予定だけ時刻順に並ばず、
         // その日の動きが読み取れない。
         startTime: order?.pickupTime || order?.deliveryTime || "",
         endTime: order?.deliveryTime || "",
-        color: order?.deliveryType === "charter" ? "#008800" : "#0000cc",
+        color: order?.status === "cancelled" ? "#9e9e9e" : order?.deliveryType === "charter" ? "#008800" : "#0000cc",
         raw: order,
       };
     });
@@ -2248,26 +2501,16 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [rematchVersion, setRematchVersion] = useState(0);
 
   const todayStr2 = getTodayLocalStr();
-  const unmatchedBanks = bankTransactions.filter(b=>b?.status==="unmatched");
-  const totalUnmatched = unmatchedBanks.reduce((s,b)=>s+(Number(b?.amount)||0),0);
+  // 【重要・不具合修正】以前は出金（燃料費の引き落とし等）まで「未照合の入金」に
+  // 数えられ、入金額として合計されていた。請求書と照合するのは入金だけなので、入金に限る。
+  const unmatchedBanks = bankTransactions.filter(b=>b?.status==="unmatched" && getBankDepositAmount(b) > 0);
+  const totalUnmatched = unmatchedBanks.reduce((s,b)=>s+getBankDepositAmount(b),0);
+  // 顧客への請求書だけ（ドライバーからの請求書は「こちらが払うお金」なので入金照合の対象外）
+  const customerInvoicesForBank = invoices.filter(i => getEntityPayload(i)?.type !== "driver_invoice");
+  const creditTotalsForBank = buildCreditNoteTotals(invoices);
   const overdueTotal = invoices
-    .filter((i) => {
-      const p = getEntityPayload(i);
-      // 【重要】一部入金（partial）の請求書も、期日を過ぎていれば延滞として
-      // 検知する必要がある。以前は unpaid だけを見ていたため、
-      // 「一部だけ入金されたまま期日を過ぎた請求書」が延滞から漏れていた。
-      // 貸倒処理済みのものは、回収を諦めた分なので延滞には含めない。
-      if (p.status === "bad_debt" || p.status === "paid") return false;
-      return p.status === "overdue" || ((p.status === "unpaid" || p.status === "partial") && (p.dueDate || "") < todayStr2);
-    })
-    .reduce((s, i) => {
-      const p = getEntityPayload(i);
-      // 延滞額は「請求額の全額」ではなく「未回収の残額」。
-      // 一部入金があった分を差し引かないと、延滞額が実態より大きく見える。
-      const total = Number(p.total_amount ?? p.total) || 0;
-      const paid = Number(p.paidAmount ?? p.paid_amount ?? 0) || 0;
-      return s + Math.max(0, total - paid);
-    }, 0);
+    .filter((i) => isInvoiceOverdue(i, todayStr2, creditTotalsForBank))
+    .reduce((s, i) => s + calcInvoiceOutstanding(i, creditTotalsForBank), 0);
 
   useEffect(() => {
     let alive = true;
@@ -2290,25 +2533,7 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           return;
         }
         if (!alive) return;
-        const mapped = (rows || []).map((row) => ({
-          id: row?.id,
-          date: row?.transaction_date || "",
-          transaction_date: row?.transaction_date || "",
-          description: row?.description || "",
-          counterparty: row?.counterparty || "",
-          amount: Number(row?.deposit_amount) || Number(row?.withdrawal_amount) || 0,
-          deposit_amount: Number(row?.deposit_amount) || 0,
-          withdrawal_amount: Number(row?.withdrawal_amount) || 0,
-          status: row?.match_status || "unmatched",
-          match_status: row?.match_status || "unmatched",
-          matchedInvoice: row?.matched_invoice_id || null,
-          matched_invoice_id: row?.matched_invoice_id || null,
-          // 【重要】これが無いと、ページを再読み込みした瞬間に「手動入力かどうか」の
-          // 判定が失われ、編集・削除ボタンが二度と出なくなる。
-          // 追加した直後は直せても、リロード後は永久に浮いたままになっていた。
-          bank_name: row?.bank_name || "",
-          bankName: row?.bank_name || "",
-        }));
+        const mapped = (rows || []).map(mapBankTransactionRow);
         setBankTransactions(mapped);
         // ダッシュボード（DashboardPage）は data?.bankTransactions を参照しているが、
         // 以前はこのページ内のローカル state（setBankTransactions）にしか反映していなかったため、
@@ -2339,6 +2564,18 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     // 含まれていないため、ページをリロードすると手動追加した入出金が
     // 消えてしまうバグがあった。ここで明示的にSupabaseへ保存する。
     const amountValue = Math.max(0, parseInt(form.amount, 10) || 0);
+    // 【不具合修正】金額0円・日付なしでも登録できてしまっていた
+    if (!form.date) { window.alert("日付を入力してください。"); return; }
+    if (amountValue <= 0) { window.alert("金額を1円以上で入力してください。"); return; }
+    // 【重要・不具合修正】照合済みの取引を編集すると、照合が外れて「未照合」に戻る一方で、
+    // 請求書は入金済みのまま残り、入金の記録が食い違っていた。先に照合を解除してもらう。
+    if (editingTxId) {
+      const editing = bankTransactions.find((t) => t?.id === editingTxId);
+      if (editing?.matchedInvoice || editing?.matched_invoice_id) {
+        window.alert("この入出金は請求書と照合済みのため編集できません。\n先に「照合を解除」してから編集してください。");
+        return;
+      }
+    }
     const newRow = {
       transaction_date: form.date,
       description: form.description,
@@ -2428,6 +2665,93 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       direction: Number(tx?.withdrawal_amount) > 0 ? "out" : "in",
     });
     setAddTx(true);
+  };
+
+  /**
+   * 【機能追加・不具合修正】照合を解除する。
+   * 以前は、入金を間違った請求書に照合してしまっても元に戻す手段が無く、
+   * その請求書は入金済みのまま・入金は照合済みのまま固定されてしまっていた
+   * （削除しようとすると「先に照合を解除してください」と出るのに、解除ボタンが無かった）。
+   * 照合したときに請求書へ記録した「この入金の分」だけを差し引き、状態を計算し直す。
+   */
+  const unmatchTx = async (tx) => {
+    const invDbId = tx?.matched_invoice_id || tx?.matchedInvoice;
+    if (!tx?.id || !invDbId) return;
+    const inv = invoices.find((i) => getInvoiceDbId(i) === invDbId || getEntityPayload(i)?.id === invDbId);
+    // 【重要】まとめ入金として複数の請求書に振り分けた入金は、振り分け先の請求書すべてを戻す。
+    const affected = [
+      ...(inv ? [inv] : []),
+      ...invoices.filter((i) => i !== inv && (getEntityPayload(i)?.paymentHistory || []).some((h) => h?.bankTxId === tx.id)),
+    ];
+    const badDebt = affected.find((i) => getEntityPayload(i)?.status === "bad_debt");
+    if (badDebt) {
+      window.alert(`請求書 ${getEntityPayload(badDebt)?.id || ""} は貸倒処理済みのため、照合を解除できません。`);
+      return;
+    }
+    const ids = affected.map((i) => getEntityPayload(i)?.id).filter(Boolean);
+    if (!window.confirm(
+      `${tx.date || ""} の入金 ¥${(Number(tx.amount) || 0).toLocaleString()} と、請求書 ${ids.join("・")} の照合を解除しますか？\n\n` +
+      `請求書の入金額からこの入金の分を差し引き、未払い（または一部入金）に戻します。`
+    )) return;
+    try {
+      const credits = buildCreditNoteTotals(invoices);
+      const revert = (row) => {
+        const p = getEntityPayload(row || {});
+        const history = Array.isArray(p.paymentHistory) ? p.paymentHistory : [];
+        const entry = history.find((h) => h?.bankTxId === tx.id);
+        const amount = Number(entry?.amount ?? getBankDepositAmount(tx)) || 0;
+        const nextHistory = entry ? history.filter((h) => h !== entry) : history;
+        const prevPaid = Number(p.paidAmount ?? p.paid_amount ?? 0) || 0;
+        const newPaid = Math.max(0, prevPaid - amount);
+        const total = Number(p.total_amount ?? p.total) || 0;
+        const credit = credits.get(p.id) || 0;
+        const next = { ...p, paidAmount: newPaid, paid_amount: newPaid, paymentHistory: nextHistory };
+        delete next._dbId;
+        delete next.transferFee;
+        delete next.overpaidAmount;
+        if (newPaid <= 0) {
+          next.status = "unpaid"; next.paidDate = null; next.paid_at = null;
+          next.remainingAmount = Math.max(0, total + credit);
+        } else {
+          const rest = total + credit - newPaid;
+          next.status = rest <= 0 ? "paid" : "partial";
+          next.remainingAmount = Math.max(0, rest);
+          if (rest < 0) next.overpaidAmount = Math.abs(rest);
+          next.paidDate = nextHistory.length > 0 ? nextHistory[nextHistory.length - 1].date : p.paidDate;
+        }
+        next.note = `${p.note || ""}${p.note ? " / " : ""}照合解除（${getTodayLocalStr()}・¥${amount.toLocaleString()}）`;
+        return { dbId: getInvoiceDbId(row), before: p, next, newPaid };
+      };
+      const results = affected.map(revert);
+      results.forEach((r) => logHistoryEntry(setData, { entityType: "invoice", entityId: r.before.id, entityLabel: `${r.before.id}（照合解除）`, before: r.before, userRole }));
+      const { error: txErr } = await supabase.from("bank_transactions")
+        .update({ match_status: "unmatched", matched_invoice_id: null, matched_at: null, matched_by: null })
+        .eq("id", tx.id).eq("tenant_id", tenantId);
+      if (txErr) throw txErr;
+      for (const r of results) {
+        const { error: invErr } = await supabase.from("invoices").update({ payload: r.next }).eq("id", r.dbId).eq("tenant_id", tenantId);
+        if (invErr) throw invErr;
+      }
+      const byDbId = new Map(results.map((r) => [r.dbId, r]));
+      const byId = new Map(results.map((r) => [r.before.id, r]));
+      const clearTx = (row) => row?.id === tx.id
+        ? { ...row, status: "unmatched", match_status: "unmatched", matched_invoice_id: null, matchedInvoice: null, matched_at: null, matched_by: null }
+        : row;
+      setBankTransactions((prev) => prev.map(clearTx));
+      setData((d) => ({
+        ...d,
+        bankTransactions: (Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).map(clearTx),
+        invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((i) => {
+          const r = byDbId.get(i?._dbId ?? i?.id) || byId.get(i?.id);
+          // 古い内容と混ぜると、消したはずの項目（過入金・振込手数料など）が残るため、新しい内容で置き換える
+          return r ? { ...r.next, _dbId: r.dbId } : i;
+        }),
+      }));
+      window.alert(`照合を解除しました（${results.map((r) => `${r.before.id}：入金済み ¥${r.newPaid.toLocaleString()}`).join("、")}）。`);
+    } catch (err) {
+      console.error("unmatchTx error:", err);
+      window.alert("照合の解除に失敗しました：" + (err?.message || String(err)));
+    }
   };
 
   /** 手動入力した入出金を削除する（照合済みは対象外にする） */
@@ -2611,6 +2935,12 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
         if (paidLike.includes(invStatus)) return;
         if (invAmount <= 0) return;
+        // 【重要・不具合修正】貸倒・赤伝・ドライバーからの請求書は入金照合の対象外。
+        // また、一部入金済みや赤伝で減額済みの請求書は、荷主は「残額」を振り込んでくるため、
+        // 請求額ではなく残額と入金額を比べる（残額での入金も一致候補に出す）。
+        if (invStatus === "bad_debt" || invPayload.isCreditNote || invPayload.type === "driver_invoice") return;
+        const invOutstanding = calcInvoiceOutstanding(inv, creditTotalsForBank);
+        if (invOutstanding <= 0) return;
 
         // 【重要】以前はここで invoiceごとに customerRows.find(...) を呼んでいた。
         // 「入出金N件 × 請求書M件 × 顧客C件」という三重ループになっており、
@@ -2632,8 +2962,8 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         // 一般的な振込手数料の上限（880円程度）までの差額は、
         // 「手数料差引による入金」として一致候補に含める。
         const BANK_FEE_TOLERANCE = 880;
-        const shortfall = invAmount - deposit;
-        const amountMatch = deposit === invAmount;
+        const shortfall = invOutstanding - deposit;
+        const amountMatch = deposit === invOutstanding || deposit === invAmount;
         const feeDeductedMatch = shortfall > 0 && shortfall <= BANK_FEE_TOLERANCE;
         let normalizedPayerKana = payerKanaCache.get(payerKana);
         if (normalizedPayerKana === undefined) {
@@ -2697,15 +3027,20 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     // ネイティブのプルダウンはそもそも数百件を人が選ぶのにも向かないため、
     // 表示件数そのものに上限を設ける（多い場合は候補一覧・検索で対応する）。
     const MAX_DROPDOWN_OPTIONS = 100;
-    const all = invoices.filter(i => !invoiceIsPaid(i));
+    // 【重要・不具合修正】以前は貸倒・赤伝・ドライバーからの請求書（¥0）まで候補に並び、
+    // 誤って選ぶと入金の記録がおかしくなる危険があった。まだ回収すべき残額がある
+    // 顧客への請求書だけを並べ、一部入金済みなどは残額も表示する。
+    const all = customerInvoicesForBank.filter(i => calcInvoiceOutstanding(i, creditTotalsForBank) > 0);
     const limited = all.slice(0, MAX_DROPDOWN_OPTIONS).map(i => {
       const p = getEntityPayload(i);
       const rowId = getInvoiceDbId(i);
-      const amount = (Number(p?.total_amount ?? p?.total) || 0).toLocaleString();
-      return { rowId, label: `${p?.id || "—"} ${p?.customerName || ""} ¥${amount}` };
+      const totalNum = Number(p?.total_amount ?? p?.total) || 0;
+      const rest = calcInvoiceOutstanding(i, creditTotalsForBank);
+      const amount = totalNum.toLocaleString();
+      return { rowId, label: `${p?.id || "—"} ${p?.customerName || ""} ¥${amount}${rest !== totalNum ? `（残 ¥${rest.toLocaleString()}）` : ""}` };
     });
     return { options: limited, truncated: all.length > MAX_DROPDOWN_OPTIONS, total: all.length };
-  }, [invoices]);
+  }, [invoices]); // customerInvoicesForBank・creditTotalsForBank は invoices から毎回作られる
 
   const getDisplayMatchStatus = (tx) => {
     const current = tx?.match_status || tx?.status || "unmatched";
@@ -2778,7 +3113,10 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
       // 未回収の残額。振込手数料の範囲内（880円以下）の不足は
       // 「手数料差引による入金」とみなし、完済として扱う。
-      const remaining = invoiceTotal - cumulativePaid;
+      // 【重要・不具合修正】赤伝で減額済みの請求書は、荷主は減額後の金額を振り込んでくる。
+      // 赤伝の分を差し引かないと、全額を受け取っても「一部入金」のまま残り続けていた。
+      const creditForThisInvoice = creditTotalsForBank.get(invPayloadNext.id) || 0;
+      const remaining = invoiceTotal + creditForThisInvoice - cumulativePaid;
       const BANK_FEE_TOLERANCE = 880;
       let nextStatus;
       if (remaining <= 0) {
@@ -2792,10 +3130,15 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
       invPayloadNext.status = nextStatus;
       invPayloadNext.paid_at = nowIso;
-      invPayloadNext.paidDate = String(nowIso).slice(0, 10);
+      // 【重要・不具合修正】入金日は「照合ボタンを押した日（しかも世界標準時の日付）」ではなく、
+      // 実際にお金が入った日（取引日）にする。以前は、例えば9/30の入金を10/2に照合すると
+      // 入金日が10/2になり、月ごとの入金額・会計仕訳の日付がずれていた。
+      const depositDate = tx?.transaction_date || tx?.date || getTodayLocalStr();
+      invPayloadNext.paidDate = depositDate;
       invPayloadNext.paid_amount = cumulativePaid;
       invPayloadNext.paidAmount = cumulativePaid;
-      invPayloadNext.remainingAmount = Math.max(0, remaining);
+      // 手数料差引とみなして完済にした場合は、残額も0として記録する（状態と残額を食い違わせない）
+      invPayloadNext.remainingAmount = nextStatus === "paid" ? 0 : Math.max(0, remaining);
       // 過入金（請求額より多く入金された）も記録しておく。
       // 次回請求で相殺するか返金するか、経理の判断材料になる。
       if (remaining < 0) invPayloadNext.overpaidAmount = Math.abs(remaining);
@@ -2803,9 +3146,97 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       // 入金の履歴を残す（いつ・いくら入金されたか）。
       // 一部入金が複数回に分かれる場合、経緯が追えないと帳簿が説明できない。
       const history = Array.isArray(invPayloadNext.paymentHistory) ? invPayloadNext.paymentHistory : [];
-      invPayloadNext.paymentHistory = [...history, { date: String(nowIso).slice(0, 10), amount: paidAmount, bankTxId }];
+      invPayloadNext.paymentHistory = [...history, { date: depositDate, amount: paidAmount, bankTxId }];
 
-      if (nextStatus === "partial") {
+      // 【重要・不具合修正（利用者の実務で頻発）】取引先が2か月分などの請求書をまとめて
+      // 1回で振り込んでくることはよくある。以前は1つの入金を1つの請求書にしか照合できず、
+      // 片方は「過入金」、もう片方は「未払い（延滞・督促の対象）」のまま残っていた。
+      // 入金が選んだ請求書の残額より多いときは、同じ取引先の未払いの請求書に、
+      // 支払期日の古い順で残りを充てられるようにする。
+      const extraUpdates = []; // 振り分けた先の請求書 [{ dbId, payload }]
+      let allocatedTotal = 0;
+      if (remaining < 0) {
+        const custId = invPayloadNext.customerId;
+        const others = invoices
+          .filter((i) => getInvoiceDbId(i) !== invoiceDbId)
+          .filter((i) => {
+            const ip = getEntityPayload(i);
+            return ip?.customerId === custId && !ip?.isCreditNote && ip?.type !== "driver_invoice" && !ip?.deleted && !i?.deleted
+              && ip?.status !== "bad_debt" && calcInvoiceOutstanding(i, creditTotalsForBank) > 0;
+          })
+          .sort((a, b) => String(getEntityPayload(a)?.dueDate || "").localeCompare(String(getEntityPayload(b)?.dueDate || "")));
+        if (others.length > 0) {
+          const excess = Math.abs(remaining);
+          const outOf = (i) => calcInvoiceOutstanding(i, creditTotalsForBank);
+          // 振り分け先の決め方：
+          //  ①残りの金額と（振込手数料の範囲で）ぴったり合う請求書の組み合わせ（3枚まで）があれば、それを優先
+          //    （例：7月分¥110,000＋8月分¥220,000 をまとめて振り込んだ → 8月分¥220,000 に充てる）
+          //  ②無ければ、支払期日の古い順に充てる
+          let plan = null;
+          const cand = others.slice(0, 12);
+          const fits = (sum) => sum >= excess - BANK_FEE_TOLERANCE && sum <= excess;
+          for (let size = 1; size <= 3 && !plan; size++) {
+            const pick = (start, chosen, sum) => {
+              if (plan) return;
+              if (chosen.length === size) { if (fits(sum)) plan = chosen.slice(); return; }
+              for (let k = start; k < cand.length; k++) pick(k + 1, [...chosen, cand[k]], sum + outOf(cand[k]));
+            };
+            pick(0, [], 0);
+          }
+          const targets = plan || others;
+          // 予定の金額を先に計算して、確認画面で見せる
+          const preview = [];
+          { let left = excess; targets.forEach((i) => { if (left <= 0) return; const apply = Math.min(left, outOf(i)); left -= apply; preview.push({ i, apply }); }); }
+          const list = preview.map(({ i, apply }) => {
+            const ip = getEntityPayload(i);
+            return `・${ip.id}（期日 ${ip.dueDate || "—"}・残 ¥${outOf(i).toLocaleString()}）に ¥${apply.toLocaleString()}`;
+          }).join("\n");
+          const ok = window.confirm(
+            `この入金 ¥${paidAmount.toLocaleString()} は、${invPayloadNext.id} の残額より ¥${excess.toLocaleString()} 多くなっています。\n\n` +
+            `同じ取引先の、まだ支払われていない請求書に、残りを次のように充てますか？\n` +
+            `${plan ? "（金額がぴったり合う請求書に充てます）" : "（支払期日の古い順に充てます）"}\n\n${list}\n\n` +
+            `「OK」：まとめての入金として振り分ける\n「キャンセル」：${invPayloadNext.id} の過入金として記録する`
+          );
+          if (ok) {
+            let left = excess;
+            targets.forEach((i, idx) => {
+              if (left <= 0) return;
+              const op = { ...getEntityPayload(i) };
+              const out = outOf(i);
+              const apply = Math.min(left, out);
+              left -= apply;
+              const rest = out - apply;
+              const prev = Number(op.paidAmount ?? op.paid_amount ?? 0) || 0;
+              op.paidAmount = prev + apply;
+              op.paid_amount = prev + apply;
+              op.paidDate = depositDate;
+              op.paid_at = nowIso;
+              // 最後の1枚の不足が振込手数料の範囲（880円以下）なら、手数料差引として完済にする
+              const isLastApplied = left <= 0 || idx === targets.length - 1;
+              if (rest <= 0) { op.status = "paid"; op.remainingAmount = 0; }
+              else if (isLastApplied && rest <= BANK_FEE_TOLERANCE) { op.status = "paid"; op.remainingAmount = 0; op.transferFee = rest; }
+              else { op.status = "partial"; op.remainingAmount = rest; }
+              op.paymentHistory = [...(Array.isArray(op.paymentHistory) ? op.paymentHistory : []), { date: depositDate, amount: apply, bankTxId }];
+              op.note = `${op.note || ""}${op.note ? " / " : ""}${depositDate} のまとめ入金（¥${paidAmount.toLocaleString()}）から ¥${apply.toLocaleString()} を充当${op.transferFee ? `（振込手数料 ¥${op.transferFee.toLocaleString()} 差引）` : ""}`;
+              delete op._dbId;
+              extraUpdates.push({ dbId: getInvoiceDbId(i), payload: op });
+              allocatedTotal += apply;
+            });
+            // 選んだ請求書には、振り分けなかった分だけを入金として残す
+            const keep = paidAmount - allocatedTotal;
+            invPayloadNext.paidAmount = prevPaid + keep;
+            invPayloadNext.paid_amount = prevPaid + keep;
+            invPayloadNext.paymentHistory = [...history, { date: depositDate, amount: keep, bankTxId }];
+            const restAfter = invoiceTotal + creditForThisInvoice - (prevPaid + keep);
+            delete invPayloadNext.overpaidAmount;
+            if (restAfter < 0) invPayloadNext.overpaidAmount = Math.abs(restAfter);
+          }
+        }
+      }
+
+      if (allocatedTotal > 0) {
+        invPayloadNext.note = `${invPayloadNext.note || ""}${invPayloadNext.note ? " / " : ""}まとめ入金 ¥${paidAmount.toLocaleString()}（うち ¥${allocatedTotal.toLocaleString()} を他の請求書へ充当）${invPayloadNext.overpaidAmount ? `・過入金 ¥${invPayloadNext.overpaidAmount.toLocaleString()}` : ""}`.trim();
+      } else if (nextStatus === "partial") {
         invPayloadNext.note = `${invPayloadNext.note || ""}${invPayloadNext.note ? " / " : ""}一部入金 ¥${cumulativePaid.toLocaleString()}（残 ¥${remaining.toLocaleString()}）`.trim();
       } else if (invPayloadNext.transferFee) {
         invPayloadNext.note = `${invPayloadNext.note || ""}${invPayloadNext.note ? " / " : ""}振込手数料 ¥${invPayloadNext.transferFee.toLocaleString()} 差引`.trim();
@@ -2843,11 +3274,16 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         .eq("id", invoiceDbId)
         .eq("tenant_id", tenantId);
       if (invErr) throw invErr;
+      for (const u of extraUpdates) {
+        const { error: exErr } = await supabase.from("invoices").update({ payload: u.payload }).eq("id", u.dbId).eq("tenant_id", tenantId);
+        if (exErr) throw exErr;
+      }
+      const extraByDbId = new Map(extraUpdates.map((u) => [u.dbId, u.payload]));
 
       setBankTransactions((prev) =>
         prev.map((row) =>
           row?.id === bankTxId
-            ? { ...row, status: "matched", match_status: "matched", matched_invoice_id: invoiceDbId, matched_at: nowIso, matched_by: userId }
+            ? { ...row, status: "matched", match_status: "matched", matched_invoice_id: invoiceDbId, matchedInvoice: invoiceDbId, matched_at: nowIso, matched_by: userId }
             : row
         )
       );
@@ -2861,17 +3297,27 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         ...d,
         bankTransactions: (Array.isArray(d?.bankTransactions) ? d.bankTransactions : []).map((row) =>
           row?.id === bankTxId
-            ? { ...row, status: "matched", match_status: "matched", matched_invoice_id: invoiceDbId, matched_at: nowIso, matched_by: userId }
+            ? { ...row, status: "matched", match_status: "matched", matched_invoice_id: invoiceDbId, matchedInvoice: invoiceDbId, matched_at: nowIso, matched_by: userId }
             : row
         ),
         invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
           (inv?._dbId ?? inv?.id) === invoiceDbId || inv?.id === invBusinessId
-            ? { ...inv, ...invPayloadNext, _dbId: invoiceDbId }
-            : inv
+            // 古い内容と混ぜると、消したはずの項目（過入金・振込手数料など）が残るため、新しい内容で置き換える
+            ? { ...invPayloadNext, _dbId: invoiceDbId }
+            : extraByDbId.has(inv?._dbId)
+              ? { ...extraByDbId.get(inv._dbId), _dbId: inv._dbId }
+              : inv
         ),
       }));
 
-      window.alert("照合確定しました（" + customerNameForEvent + " / " + invBusinessId + "）");
+      window.alert(
+        "照合確定しました（" + customerNameForEvent + " / " + invBusinessId + "）" +
+        (extraUpdates.length > 0
+          ? "\n\nまとめ入金として振り分けました：\n" +
+            `・${invBusinessId}　¥${(paidAmount - allocatedTotal).toLocaleString()}\n` +
+            extraUpdates.map((u) => `・${u.payload.id}　¥${(u.payload.paymentHistory[u.payload.paymentHistory.length - 1]?.amount || 0).toLocaleString()}（${u.payload.status === "paid" ? "入金済" : "一部入金"}）`).join("\n")
+          : "")
+      );
     } catch (err) {
       console.error("confirmMatch error:", err);
       window.alert("照合確定に失敗しました：" + (err?.message || String(err)));
@@ -3127,9 +3573,12 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"8px" }}>
         {[
           ["未照合入金", "¥"+totalUnmatched.toLocaleString(), "#ff9800"],
-          ["未払い請求", "¥"+invoices.filter(i=>!invoiceIsPaid(i)).reduce((s,i)=>s+(Number(getEntityPayload(i).total_amount??getEntityPayload(i).total)||0),0).toLocaleString(), "#2196f3"],
+          // 【重要・不具合修正】以前は請求額の全額で合計しており、一部入金で受け取った分・
+          // 貸倒処理した分・赤伝で減額した分が反映されず、ドライバーからの請求書まで混ざっていた。
+          // ダッシュボード・請求管理の「未回収」「入金済」と同じ計算にそろえる。
+          ["未払い請求", "¥"+customerInvoicesForBank.reduce((s,i)=>s+calcInvoiceOutstanding(i, creditTotalsForBank),0).toLocaleString(), "#2196f3"],
           ["延滞金額", "¥"+overdueTotal.toLocaleString(), "#e63946"],
-          ["入金済", "¥"+invoices.filter(i=>invoiceIsPaid(i)).reduce((s,i)=>s+(Number(getEntityPayload(i).total_amount??getEntityPayload(i).total)||0),0).toLocaleString(), "#4caf50"],
+          ["入金済", "¥"+customerInvoicesForBank.reduce((s,i)=>s+(Number(getEntityPayload(i).paidAmount ?? getEntityPayload(i).paid_amount ?? 0)||0),0).toLocaleString(), "#4caf50"],
         ].map(([l,v,c])=>(
           <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
             <div style={{ fontSize:"11px", color:"#888", marginBottom:"3px", fontWeight:700 }}>{l}</div>
@@ -3194,7 +3643,9 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                         <div key={`${b?.id}-${invRowId}-${candidate?.matchType}`} style={{ border:`1px solid ${tone.border}`, background:tone.bg, borderRadius:"6px", padding:"8px 10px" }}>
                           <div style={{ fontSize:"12px", fontWeight:700, color:tone.color }}>{tone.title}</div>
                           <div style={{ fontSize:"12px", color:"#333", marginTop:"4px" }}>
-                            顧客: {ip?.customerName || "—"} / 請求書: {ip?.id || "—"} / 金額: ¥{(Number(ip?.total_amount ?? ip?.total)||0).toLocaleString()} / 発行日: {ip?.issueDate || ip?.issue_date || "—"}
+                            顧客: {ip?.customerName || "—"} / 請求書: {ip?.id || "—"} / 金額: ¥{(Number(ip?.total_amount ?? ip?.total)||0).toLocaleString()}
+                            {calcInvoiceOutstanding(inv, creditTotalsForBank) !== (Number(ip?.total_amount ?? ip?.total)||0) && `（残 ¥${calcInvoiceOutstanding(inv, creditTotalsForBank).toLocaleString()}）`}
+                            {" "}/ 発行日: {ip?.issueDate || ip?.issue_date || "—"}
                           </div>
                           {!isExact && <div style={{ fontSize:"11px", color:"#666", marginTop:"2px" }}>理由: {candidate?.reason || "部分一致"}</div>}
                           <div style={{ marginTop:"6px" }}>
@@ -3249,18 +3700,25 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               <StatusPill s={b?.status}/>,
               b?.matchedInvoice ? (
                 <span style={{ color:"#2e7d32", fontSize:"11px" }}>
-                  {b.matchedInvoice} / {matchedName}
+                  {/* 内部ID（本番では英数字の長い文字列）ではなく、人が見て分かる請求書番号を出す */}
+                  {getEntityPayload(matchedInv || {}).id || b.matchedInvoice} / {matchedName}
                 </span>
               ) : "—",
               // 【重要】銀行明細から自動取込した行は編集・削除させない。
               // 実際の入出金の記録であり、勝手に書き換えると通帳と食い違う。
               // 手動で追加した行（bank_name: "手動入力"）だけを対象にする。
-              b?.bank_name === "手動入力" || b?.bankName === "手動入力" ? (
-                <div style={{ display:"flex", gap:"4px" }}>
-                  <RetroBtn small onClick={()=>openEditTx(b)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
-                  <RetroBtn small onClick={()=>deleteTx(b)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
-                </div>
-              ) : <span style={{ fontSize:"10px", color:"#999" }}>明細取込</span>,
+              <div style={{ display:"flex", gap:"4px", alignItems:"center", flexWrap:"wrap" }}>
+                {/* 照合済みの行は、手動・明細取込のどちらでも照合を解除できる（間違えて照合した場合の訂正用） */}
+                {(b?.matchedInvoice || b?.matched_invoice_id) && (
+                  <RetroBtn small onClick={()=>unmatchTx(b)} style={{ background:"#fff", color:"#e65100", borderColor:"#e65100", whiteSpace:"nowrap" }}>照合を解除</RetroBtn>
+                )}
+                {b?.bank_name === "手動入力" || b?.bankName === "手動入力" ? (
+                  <>
+                    <RetroBtn small onClick={()=>openEditTx(b)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>編集</RetroBtn>
+                    <RetroBtn small onClick={()=>deleteTx(b)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>削除</RetroBtn>
+                  </>
+                ) : <span style={{ fontSize:"10px", color:"#999" }}>明細取込</span>}
+              </div>,
             ];
           })}
         />
@@ -3277,22 +3735,29 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
       <Panel title="入金管理（請求書別）" icon={invoiceIcon}>
         <RetroTable
-          headers={["請求書","顧客","発行日","期日","金額","状態","メモ"]}
-          rows={invoices.slice(0, visibleInvCount).map((inv) => {
+          headers={["請求書","顧客","発行日","期日","金額","未回収","状態","メモ"]}
+          rows={customerInvoicesForBank.slice(0, visibleInvCount).map((inv) => {
             const p = getEntityPayload(inv);
+            const rest = calcInvoiceOutstanding(inv, creditTotalsForBank);
             return [
               <span style={{ color:"#007a74", fontWeight:700 }}>{p?.id||getInvoiceDbId(inv)||"—"}</span>,
               p?.customerName||"", p?.issueDate||p?.issue_date||"", p?.dueDate||p?.due_date||"",
               <span style={{ fontWeight:700 }}>¥{(Number(p?.total_amount??p?.total)||0).toLocaleString()}</span>,
-              <StatusPill s={p?.status}/>,
+              // 一部入金・赤伝での減額を差し引いた、まだ回収すべき額
+              <span style={{ fontWeight:700, color: rest > 0 ? "#e63946" : "#bbb" }}>{rest > 0 ? `¥${rest.toLocaleString()}` : "—"}</span>,
+              p?.isCreditNote
+                ? <span style={{ fontSize:"11px", fontWeight:700, color:"#e65100", background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:"999px", padding:"2px 8px" }}>赤伝</span>
+                : (p?.status !== "paid" && p?.status !== "bad_debt" && (creditTotalsForBank.get(p?.id) || 0) < 0 && rest === 0)
+                  ? <span style={{ fontSize:"11px", fontWeight:700, color:"#555", background:"#f1f3f5", border:"1px solid #d0d0d0", borderRadius:"999px", padding:"2px 8px", whiteSpace:"nowrap" }}>赤伝で相殺済</span>
+                  : <StatusPill s={p?.status}/>,
               <span style={{ fontSize:"11px", color:"#999" }}>{p?.note||"—"}</span>,
             ];
           })}
         />
-        {invoices.length > visibleInvCount && (
+        {customerInvoicesForBank.length > visibleInvCount && (
           <div style={{ textAlign:"center", padding:"14px", borderTop:"1px solid #eee" }}>
             <RetroBtn onClick={()=>setVisibleInvCount(v=>v+100)} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
-              さらに表示（残り{(invoices.length - visibleInvCount).toLocaleString()}件）
+              さらに表示（残り{(customerInvoicesForBank.length - visibleInvCount).toLocaleString()}件）
             </RetroBtn>
           </div>
         )}
@@ -3349,6 +3814,14 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       {addTx&&(
         <Modal title={editingTxId ? "入出金を編集" : "入出金を手動追加"} icon={bankIcon} onClose={()=>{ setAddTx(false); setEditingTxId(null); setForm({ date:todayStr2, amount:"", description:"", direction:"in" }); }} width={400}>
           <Fl label="日付"><RetroInput type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/></Fl>
+          {/* 【重要・不具合修正】入金・出金を選ぶ欄が無かったため、手動で追加した取引は
+              すべて「入金」として登録され、出金（引き落とし・現金払い等）を記録できなかった。 */}
+          <Fl label="入金／出金">
+            <RetroSelect value={form.direction || "in"} onChange={e=>setForm(f=>({...f,direction:e.target.value}))}>
+              <option value="in">入金（お金が入った）</option>
+              <option value="out">出金（お金が出た）</option>
+            </RetroSelect>
+          </Fl>
           <Fl label="金額（円）"><RetroInput type="number" min="0" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="50000"/></Fl>
           <Fl label="摘要・振込名義"><RetroInput value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="タナカシヨウジ　カブ"/></Fl>
           <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"10px" }}>
@@ -3363,7 +3836,8 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
 // ===== DASHBOARD =====
 const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, requestOpenOrder, requestOpenCompanySettings }) => {
-  const events = Array.isArray(data?.events) ? data.events : [];
+  // 【重要・不具合修正】削除済みの予定（お知らせ配信で削除したもの等）が「本日の予定」に出ていた。
+  const events = (Array.isArray(data?.events) ? data.events : []).filter((e) => e && !e.deleted);
   // 【業務監査で追加】受注登録には顧客・仕事種別（単価）の両方が
   // 必須のため、セットアップ案内にこの2つも含める。
   const onboardingCustomers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
@@ -3417,7 +3891,15 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
   // ===== 実績承認待ちの件数 =====
   // ハコログからドライバーが提出した実績のうち、まだ承認されていないものの件数。
   // ダッシュボードで気づいてすぐ実績承認画面に移動できるようにする。
-  const pendingApprovalCount = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter(isPendingRecord).length;
+  // 【重要・不具合修正】以前はドライバーが「一時保存」しただけの（まだ提出していない）
+  // 実績まで数えていたため、ここに「4件」と出ていても、押して開いた実績承認画面や
+  // 通知には「3件」しか出ず、残りの1件をどこでも承認できなかった。
+  // 承認できるのは提出済みのものだけなので、件数は提出済みに合わせ、
+  // 一時保存中のものは「ドライバーの提出待ち」として別に表示する。
+  const pendingApprovalCount = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+    .filter(r => r && !r.deleted && r.approvalStatus === APPROVAL.SUBMITTED).length;
+  const draftRecordCount = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+    .filter(r => r && !r.deleted && r.approvalStatus === APPROVAL.DRAFT).length;
   // 配達日を過ぎているのに「配送完了」になっていない受注。
   // 押し忘れたまま放置されると、売上も報酬も計上されないため、
   // ダッシュボードで必ず気づけるようにする。
@@ -3480,21 +3962,25 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
       return ta.localeCompare(tb);
     });
   const todayBanks = bankTransactions.filter(b=>b?.date===todayStr);
-  const unmatchedCount = bankTransactions.filter(b=>b?.status==="unmatched").length;
-  const overdueCount = invoices.filter(i=>i?.status==="overdue"||((i?.status==="unpaid"||i?.status==="partial")&&(i?.dueDate||"")<todayStr)).length;
+  // 出金（引き落とし）は請求書と照合するものではないため、未照合の「入金」だけを数える
+  const unmatchedCount = bankTransactions.filter(b=>b?.status==="unmatched" && (Number(b?.deposit_amount) > 0 || (!(Number(b?.withdrawal_amount) > 0) && Number(b?.amount) > 0))).length;
+  const creditTotalsForDashboard = buildCreditNoteTotals(invoices);
+  const overdueCount = invoices.filter(i => isInvoiceOverdue(i, todayStr, creditTotalsForDashboard)).length;
   const activeOrders = orders.filter(o=>["pending","scheduled","in_transit"].includes(o?.status)).length;
   const availableDrivers = drivers.filter(d=>d?.status==="available").length;
   // 実際に入金された額（振込手数料が引かれている場合はその額）で集計する。
   // 請求額（total）で集計すると、手数料差引分だけ実際より多く見えてしまう。
   // 一部入金（partial）も実際に入ってきたお金なので必ず含める。
+  // 【重要・不具合修正】以前は「入金済」「一部入金」の請求書だけを数えていたため、
+  // 一部入金の後に残りを貸倒処理した請求書で実際に受け取ったお金が抜け、
+  // 請求管理・口座入金画面の「入金済」と金額が合わなかった。
+  // 状態に関係なく、実際に入金された額（paidAmount）をすべて合計する。
   const totalRevenue = invoices
-    .filter(i=>i?.status==="paid" || i?.status==="partial")
     .reduce((s,i)=>s+(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0),0);
   // 一部入金がある場合は、その分を差し引いた「本当の未回収額」を表示する。
   // 貸倒（回収不能として処理済み）は未回収から除く。
-  const unpaidTotal = invoices
-    .filter(i=>i?.status!=="paid" && i?.status!=="bad_debt")
-    .reduce((s,i)=>s+Math.max(0,(Number(i?.total)||0)-(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0)),0);
+  // 赤伝で減額した分も差し引く（calcInvoiceOutstanding）。
+  const unpaidTotal = invoices.reduce((s,i)=>s+calcInvoiceOutstanding(i, creditTotalsForDashboard),0);
   // 支払予定（会社が取引先に支払う側のお金）も経営状況の把握に必要なため、
   // 入金側（売上・未回収）だけでなく支出側もダッシュボードに表示する。
   const unpaidPayables = payables.filter(p=>p?.status!=="paid");
@@ -3507,17 +3993,24 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
     .reduce((s,p)=>s+(Number(p?.amount)||0),0);
   // キャッシュフローの見通し：今月の入金予定（未回収のうち今月期日）から
   // 今月の支払予定を引いた金額。マイナスなら資金繰りに注意が必要というサインになる。
+  // 【重要・不具合修正】以前は請求額（total）の全額で計算していたため、
+  // 一部入金で既に受け取った分や、貸倒処理した分、赤伝で減額した分まで
+  // 「今月入ってくるお金」に数えられ、資金繰りが実際より良く見えていた。
+  // 今月が期日で、まだ回収していない残額だけを入金予定とする。
   const invoicesDueThisMonthTotal = invoices
-    .filter(i=>i?.status!=="paid" && (i?.dueDate||"").slice(0,7) === currentMonthKeyForDashboard)
-    .reduce((s,i)=>s+(Number(i?.total)||0),0);
+    .filter(i=>(i?.dueDate||"").slice(0,7) === currentMonthKeyForDashboard)
+    .reduce((s,i)=>s+calcInvoiceOutstanding(i, creditTotalsForDashboard),0);
   // 【重要】以前は、手動登録した支払予定（payables）だけを支出として
   // 見ており、運送会社にとって最大の支出である「委託ドライバーへの支払」
   // が資金繰りの計算に一切含まれていなかった。
   // その結果、実際には資金が足りないのに「今月は黒字」と表示され、
   // 支払い直前になって資金不足に気づく、という事態になりかねなかった。
+  // 【重要・不具合修正】ドライバー請求書の金額は控除（ロイヤリティ・リース料など）前の
+  // 支給額だが、実際に振り込むのは控除後の額。請求額のまま見積もると、控除の分だけ
+  // 支出を多く見積もってしまう。振込額（transferAmount）があればそれを使う。
   const driverPaymentsDueThisMonth = driverInvoices
     .filter(i => i?.status !== "paid" && (i?.dueDate || "").slice(0,7) === currentMonthKeyForDashboard)
-    .reduce((s,i)=>s+(Number(i?.total)||0),0);
+    .reduce((s,i)=>s+(i?.transferAmount != null ? (Number(i.transferAmount)||0) : (Number(i?.total)||0)),0);
   const totalOutgoingThisMonth = payablesDueThisMonthTotal + driverPaymentsDueThisMonth;
   const netCashFlowThisMonth = invoicesDueThisMonthTotal - totalOutgoingThisMonth;
   // ドライバーロールは経理情報（売上・未回収額・口座照合）や
@@ -3526,7 +4019,8 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
   const isDriverView = userRole === "driver";
 
   const alertCard = (bg, color, title, body, onClick) => (
-    <div style={{ background:bg, border:cardBorder, borderLeft:`4px solid ${color}`, borderRadius:"6px", padding:"10px 12px", flex:1, cursor:"pointer" }} onClick={onClick} {...makeKeyboardClickable(onClick)}>
+    // スマホ幅で4枚が1列に詰め込まれ、文字が細長く折り返して読みにくかったため、最小幅を決めて折り返す
+    <div style={{ background:bg, border:cardBorder, borderLeft:`4px solid ${color}`, borderRadius:"6px", padding:"10px 12px", flex:"1 1 150px", minWidth:"150px", cursor:"pointer" }} onClick={onClick} {...makeKeyboardClickable(onClick)}>
       <div style={{ color, fontWeight:700, fontSize:"12px", marginBottom:"2px" }}>{title}</div>
       <div style={{ color:"#666", fontSize:"12px" }}>{body}</div>
     </div>
@@ -3652,7 +4146,7 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
       })()}
       <div style={{ display:"flex", gap:"10px", flexWrap:"wrap" }}>
         {unmatchedCount>0 && alertCard("#fff3e0", "#ff9800", "未照合入金があります", `${unmatchedCount}件の入金照合が未処理です`, ()=>setPage("bank"))}
-        {overdueCount>0 && alertCard("#ffebee", "#e63946", "支払延滞があります", `${overdueCount}件の延滞が発生しています`, ()=>setPage("bank"))}
+        {overdueCount>0 && alertCard("#ffebee", "#e63946", "入金の延滞があります", `支払期日を過ぎても入金されていない請求書が ${overdueCount}件 あります`, ()=>setPage("bank"))}
         {payablesOverdueCount>0 && alertCard("#fff3e0", "#e65100", "支払期日を過ぎた支払予定があります", `${payablesOverdueCount}件、未払いのまま期日を過ぎています`, ()=>setPage("bank"))}
         {upcomingLicenseExpirations.length>0 && alertCard("#f3e5f5", "#9933cc", "免許更新が近いドライバーがいます",
           summarizeExpiringList(upcomingLicenseExpirations, x => `${x.d?.name||""}（あと${x.days}日）`),
@@ -3667,7 +4161,9 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
 
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:"10px" }}>
         {[
-          ["稼働中案件",activeOrders+"件","#00a09a"],
+          // 【検証8回目で修正】ここは未配車・配車済・配送中をすべて数えているのに「稼働中」と表示しており、
+          // 画面下の「稼働案件（配送中だけ）」と数字が食い違って見えていた。実際の中身どおりの名前にする。
+          ["未完了の案件",activeOrders+"件","#00a09a"],
           ["待機ドライバー",availableDrivers+"名","#2196f3"],
           // 【重要】以下は経理情報（売上・未回収・支払予定・資金繰り）のため、
           // ドライバーだけでなく配車担当にも見せない。配車担当は日々の配車・
@@ -3676,7 +4172,7 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
             ["入金済売上","¥"+totalRevenue.toLocaleString(),"#7b1fa2"],
             ["未回収","¥"+unpaidTotal.toLocaleString(),"#e63946"],
             ["今月の支払予定","¥"+totalOutgoingThisMonth.toLocaleString(),"#e65100"],
-            ["今月の資金繰り見通し", (netCashFlowThisMonth>=0?"+":"") + "¥"+netCashFlowThisMonth.toLocaleString(), netCashFlowThisMonth>=0 ? "#2e7d32" : "#e63946"],
+            ["今月の資金繰り見通し", (netCashFlowThisMonth>0?"+":netCashFlowThisMonth<0?"−":"") + "¥"+Math.abs(netCashFlowThisMonth).toLocaleString(), netCashFlowThisMonth>=0 ? "#2e7d32" : "#e63946"],
           ]),
         ].map(([l,v,c])=>(
           <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
@@ -3746,11 +4242,18 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
           style={{
             background: "#fff3e0", border: "1px solid #ffcc80",
             borderRadius: "6px", padding: "12px 16px", cursor: "pointer",
-            display: "flex", justifyContent: "space-between", alignItems: "center",
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px",
           }}
         >
-          <div style={{ fontSize:"12px", fontWeight:700, color:"#555" }}>実績承認待ち</div>
-          <span style={{ fontSize:"20px", fontWeight:700, color:"#e65100" }}>{pendingApprovalCount}件 未承認 ›</span>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize:"12px", fontWeight:700, color:"#555" }}>実績承認待ち</div>
+            {draftRecordCount > 0 && (
+              <div style={{ fontSize:"11px", color:"#888", marginTop:"2px" }}>
+                ほかに、ドライバーが一時保存中（未提出）の実績が {draftRecordCount}件 あります
+              </div>
+            )}
+          </div>
+          <span style={{ fontSize:"20px", fontWeight:700, color:"#e65100", whiteSpace:"nowrap", flexShrink:0 }}>{pendingApprovalCount}件 未承認 ›</span>
         </div>
       )}
 
@@ -3831,7 +4334,8 @@ const DashboardPage = ({ data, setData, setPage, tenantId, userRole, isMobile, r
           <Panel title="口座照合が必要な入金" icon={<Icon size={14}><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>}>
             <RetroTable
               headers={["日付","金額","摘要","状態"]}
-              rows={bankTransactions.filter(b=>b?.status==="unmatched").map(b=>[
+              // 出金（引き落とし）は請求書と照合するものではないため、入金だけを並べる
+              rows={bankTransactions.filter(b=>b?.status==="unmatched" && (Number(b?.deposit_amount) > 0 || (!(Number(b?.withdrawal_amount) > 0) && Number(b?.amount) > 0))).map(b=>[
                 b?.date||"",
                 <span style={{ color:"#007a74", fontWeight:700 }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
                 <span style={{ fontSize:"12px" }}>{b?.description||""}</span>,
@@ -4101,7 +4605,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
   // 「受注に紐づく実績を削除する」などの確認ダイアログで、普段はあまり
   // 通らない分岐だったため、これまで実際に踏まれずに見過ごされていた
   // （踏むと ReferenceError で画面がクラッシュする状態だった）。
-  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
   // 【業務監査で追加】受注キャンセル時に、割り当て済みドライバーの氏名を
   // 確認メッセージに表示するために必要。
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
@@ -4419,7 +4923,10 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
       // 「請求した額」と「売上として計上した額」がズレたままになる。
       // インボイス制度上も、金額を訂正する場合は修正した適格請求書を
       // 改めて交付する必要があるため、必ず明示的に警告する。
-      const issuedInvoiceId = before?.invoicedInvoiceId;
+      // 【検証9回目で修正】受注から作られた実績が「売上管理の月次請求書」などで請求済みの場合、
+      // 受注側には請求書番号が付かないため、この警告が出ずに金額だけが変わっていた。実績側の請求書番号も見る。
+      const issuedInvoiceId = before?.invoicedInvoiceId
+        || (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).find((r) => r?.orderId === orderDraft.id && !r?.deleted && r?.invoicedInvoiceId)?.invoicedInvoiceId;
       if (issuedInvoiceId) {
         const proceed = window.confirm(
           `⚠️ この受注は既に請求書（${issuedInvoiceId}）を発行済みです。\n\n` +
@@ -4466,14 +4973,21 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
       dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) => {
         if (!(r?.orderId === orderDraft.id && !r?.deleted)) return r;
         const wasExplicitlyApproved = r.approvalStatus === APPROVAL.APPROVED;
+        // 【検証9回目で修正】実績に後から入れた高速代・駐車場代などの立替・手当は、報酬額（driverAmount）に
+        // 含まれている。受注の金額を直すと報酬額が受注の報酬だけに置き換わり、立替分がドライバーの報酬から
+        // 消えていた（高速代の欄は残るため、基本報酬が立替分だけ減って見える）。立替・手当は残して足し直す。
+        const extras = (Number(r.charterDriver) || 0) + (Number(r.highwayFee) || 0) + (Number(r.parkingFee) || 0)
+          + (Number(r.fuelAllowance) || 0) + (Number(r.otherAllowance) || 0);
+        const nextRecordDriverAmount = (nextDriverPay ?? 0) + extras;
+        const nextRecordSales = nextAmount + (Number(r.charterSales) || 0);
         const amountReallyChanged =
-          (Number(r.salesAmount) || 0) !== nextAmount ||
-          (Number(r.driverAmount) || 0) !== (nextDriverPay ?? 0);
+          (Number(r.salesAmount) || 0) !== nextRecordSales ||
+          (Number(r.driverAmount) || 0) !== nextRecordDriverAmount;
         return {
           ...r,
           date: orderDraft.deliveryDate || r.date,
-          salesAmount: nextAmount,
-          driverAmount: nextDriverPay ?? 0,
+          salesAmount: nextRecordSales,
+          driverAmount: nextRecordDriverAmount,
           customerId: orderDraft.customerId || r.customerId,
           ...(wasExplicitlyApproved && amountReallyChanged
             ? {
@@ -4526,7 +5040,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
     let msg = `選択した ${movable.length}件 を次の状態へ進めます。\n\n`;
     if (toDelivered.length > 0) {
       const totalSales = toDelivered.reduce((s, m) => s + (Number(m.order?.amount) || 0), 0);
-      const noPay = toDelivered.filter((m) => m.order?.driverPayAmount == null);
+      const noPay = toDelivered.filter((m) => m.order?.driverPayAmount == null || m.order?.driverPayAmount === "");
       msg += `うち ${toDelivered.length}件 が「配送完了」になり、実績（売上 ${yen(totalSales)}）が記録されます。\n`;
       if (noPay.length > 0) {
         msg += `⚠️ ${noPay.length}件 はドライバー報酬額が未設定のため、報酬0円で記録されます。\n`;
@@ -4767,7 +5281,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
       // 【重要】配送完了にすると実績データが自動生成され、その時点の
       // ドライバー報酬額がそのまま確定してしまう。未設定のまま進めると
       // 気づかないうちに報酬0円で記録されてしまうため、ここで一度確認する。
-      if (targetOrderForCheck && targetOrderForCheck.driverPayAmount == null) {
+      if (targetOrderForCheck && (targetOrderForCheck.driverPayAmount == null || targetOrderForCheck.driverPayAmount === "")) {
         const proceed = window.confirm(
           "この受注には「ドライバー報酬額」が設定されていません。\n" +
           "このまま配送完了にすると、実績データに報酬額0円で記録されます。\n\n" +
@@ -5415,7 +5929,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
               type="time"
               value={form.pickupTime}
               onChange={e => setForm(f => ({ ...f, pickupTime: e.target.value }))}
-              style={{ width:"100%", padding:"6px", border:"1px solid #ddd", borderRadius:"4px" }}
+              style={{ width:"100%", boxSizing:"border-box", padding:"9px 10px", border:"1px solid #d0d0d0", borderRadius:"4px", fontSize:"13px" }}
             />
           </Fl>
           <Fl label="配達時間">
@@ -5423,7 +5937,7 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
               type="time"
               value={form.deliveryTime}
               onChange={e => setForm(f => ({ ...f, deliveryTime: e.target.value }))}
-              style={{ width:"100%", padding:"6px", border:"1px solid #ddd", borderRadius:"4px" }}
+              style={{ width:"100%", boxSizing:"border-box", padding:"9px 10px", border:"1px solid #d0d0d0", borderRadius:"4px", fontSize:"13px" }}
             />
           </Fl>
         </div>
@@ -5655,6 +6169,13 @@ const OrdersPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenOrder
                         ...d,
                         invoices: [nextInvoice, ...currentInvoices],
                         orders: (Array.isArray(d?.orders) ? d.orders : []).map((o) => o?.id === targetOrder?.id ? { ...o, invoicedInvoiceId: invoiceId } : o),
+                        // 【重要・二重請求防止】この受注から作られた実績にも同じ印を付ける。
+                        // 付けないと、実績側から見ると「未請求」のままになり、
+                        // 請求管理の「実績入力ぶんの未請求」や売上管理の月次請求書から
+                        // 同じ売上をもう一度請求できてしまう。
+                        dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+                          (r?.orderId === targetOrder?.id && !r?.deleted && !r?.invoicedInvoiceId) ? { ...r, invoicedInvoiceId: invoiceId } : r
+                        ),
                       };
                     });
                   }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
@@ -5819,7 +6340,9 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const pending = orders.filter(o=>o?.status==="pending");
   const scheduled = orders.filter(o=>o?.status==="scheduled");
   const doAssign = () => {
-    if(!sel||!aD||!aV) return;
+    if(!sel) return;
+    // 【検証11回目で修正】ドライバーか車両が未選択のまま「配車確定」を押しても、何も起きず理由も出なかった
+    if(!aD||!aV) { window.alert(!aD && !aV ? "ドライバーと車両を選んでください。" : !aD ? "ドライバーを選んでください。" : "車両を選んでください。（車両が無い場合は、先に車両管理で登録してください）"); return; }
     setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(o=>o?.id===sel?{...o,driverId:aD,vehicleId:aV,status:"scheduled",
       // 配車確定時にドライバー報酬額を入力していれば、ここで受注に反映する。
       // 未入力ならこの受注が元々持っていた値（未設定なら未設定のまま）を維持する。
@@ -5834,7 +6357,8 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     setRPay(order?.driverPayAmount != null ? String(order.driverPayAmount) : "");
   };
   const doReassign = () => {
-    if (!reassignId || !rD || !rV) return;
+    if (!reassignId) return;
+    if (!rD || !rV) { window.alert(!rD ? "ドライバーを選んでください。" : "車両を選んでください。"); return; }
     setData(d=>({...d,orders:(Array.isArray(d?.orders) ? d.orders : []).map(o=>o?.id===reassignId?{...o,driverId:rD,vehicleId:rV,
       ...(rPay !== "" ? { driverPayAmount: parseInt(rPay, 10) || 0 } : {})
     }:o)}));
@@ -5858,7 +6382,8 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       window.alert(`配達日（${target.deliveryDate}）の月は既に締められています。この状態のまま配送完了にはできません。管理者に月の締めを解除してもらうか、配達日を修正してください。`);
       return;
     }
-    if (target.driverPayAmount == null) {
+    // 空欄（""）も未設定として扱う（配送完了時の実績作成側と同じ判定にそろえる）
+    if (target.driverPayAmount == null || target.driverPayAmount === "") {
       const proceed = window.confirm(
         "この受注には「ドライバー報酬額」が設定されていません。\n" +
         "このまま配送完了にすると、実績データに報酬額0円で記録されます。\n\n" +
@@ -5909,9 +6434,10 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               const isContractEnded = d?.contractEnd && d.contractEnd < getTodayLocalStr();
               return {
                 id: d?.id || "",
-                name: `${isContractEnded ? "⚠契約終了済み " : ""}${d?.name || ""}（${d?.license || ""}）`,
+                // 免許の種類が未登録だと「山田 太郎（）」と空のカッコが出ていたため、ある時だけ付ける
+                name: `${isContractEnded ? "⚠契約終了済み " : ""}${d?.name || ""}${(d?.license || d?.licenseType) ? `（${d?.license || d?.licenseType}）` : ""}`,
                 // ひらがな・カタカナで検索できるよう、登録済みのカナも渡す
-                kana: d?.nameKana || d?.accountHolderKana || "",
+                kana: driverKanaOf(d) || d?.accountHolderKana || "",
               };
             })}
           /></Fl>
@@ -5985,7 +6511,7 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                     {!vh && o?.vehicleId && <span style={{ background:"#fff3e0", color:"#e65100", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{truckIcon}使用車両削除済み</span>}
                     {/* 報酬額が未設定のまま配送完了させると実績が0円で記録されてしまうため、
                         配車済み一覧の時点で気づけるよう、ここでも警告バッジを出す。 */}
-                    {userRole !== "dispatcher" && o?.driverPayAmount == null && <span style={{ background:"#ffebee", color:"#c62828", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{warnIcon}報酬額未設定</span>}
+                    {userRole !== "dispatcher" && (o?.driverPayAmount == null || o?.driverPayAmount === "") && <span style={{ background:"#ffebee", color:"#c62828", fontSize:"10px", padding:"2px 8px", borderRadius:"999px", display:"inline-flex", alignItems:"center", gap:"4px" }}>{warnIcon}報酬額未設定</span>}
                   </div>
                 </div>
                 {reassignId===o?.id && (
@@ -5996,7 +6522,7 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                         {/* 現在アサイン中のドライバー自身も選べるよう、available限定にしない（他の受注の都合で待機中になっていない場合もあるため） */}
                         {drivers.filter(d=>d?.status==="available" || d?.id===o?.driverId).map(d=>{
                           const isContractEnded = d?.contractEnd && d.contractEnd < getTodayLocalStr();
-                          return <option key={d?.id} value={d?.id}>{isContractEnded ? "⚠契約終了済み " : ""}{d?.name||""}（{d?.license||""}）</option>;
+                          return <option key={d?.id} value={d?.id}>{isContractEnded ? "⚠契約終了済み " : ""}{d?.name||""}{(d?.license||d?.licenseType) ? `（${d?.license||d?.licenseType}）` : ""}</option>;
                         })}
                       </RetroSelect>
                     </Fl>
@@ -6039,6 +6565,17 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 };
 
 const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
+  // 【重要・不具合修正】「累計売上」が単発受注の金額だけを合計しており、
+  // ルート配送・定期便・ハコログからの実績（売上の大半）が入っていなかった。
+  // さらにキャンセルした受注の金額まで売上に数えていた。
+  // 実際の売上＝承認済みの配送実績の合計（読み込み済みの期間分）で計算する。
+  const salesByCustomer = (() => {
+    const m = new Map();
+    (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+      .filter(r => r && !r.deleted && isApprovedRecord(r) && r.customerId)
+      .forEach(r => m.set(r.customerId, (m.get(r.customerId) || 0) + (Number(r.salesAmount) || 0)));
+    return m;
+  })();
   const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
   const orders = (Array.isArray(data?.orders) ? data.orders : []).filter(o => !o?.deleted);
   // 顧客数が増えると一覧から目的の会社を探すのが難しくなるため、
@@ -6226,7 +6763,9 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     const unpaidInvoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter((inv) => {
       const p = inv?.payload != null && typeof inv.payload === "object" ? inv.payload : inv;
       if (p?.deleted || inv?.deleted) return false;
-      return p?.customerId === customerId && p?.status !== "paid" && p?.status !== "入金済";
+      // 貸倒済み・赤伝・赤伝で相殺済みのものは「未払い」ではないため、実際に残額があるものだけ数える
+      return p?.customerId === customerId && p?.status !== "入金済" &&
+        calcInvoiceOutstanding(p, buildCreditNoteTotals(data?.invoices)) > 0;
     });
     // 定期便のテンプレートがこの顧客を参照している場合も、あわせて伝える。
     const activeRecurring = (Array.isArray(data?.recurringAssignments) ? data.recurringAssignments : []).filter(
@@ -6279,7 +6818,8 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           </thead>
           <tbody>
             {filteredCustomers.map((c, index) => {
-              const ords = orders.filter((o)=>o?.customerId===c?.id);
+              // 案件数は、キャンセルした受注を除く
+              const ords = orders.filter((o)=>o?.customerId===c?.id && o?.status !== "cancelled");
               return (
                 <tr key={c?.id || `customer-${index}`} onClick={()=>openCustomerDetail(c)} style={{ background:"#fff", borderBottom:"1px solid #f0f0f0", cursor:"pointer" }}
                   onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"}
@@ -6296,7 +6836,7 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                   )}
                   <td style={{ padding:"8px 10px" }}>{ords.length}件</td>
                   {userRole !== "dispatcher" && (
-                    <td style={{ padding:"8px 10px" }}>¥{ords.reduce((s,o)=>s+(Number(o?.amount)||0),0).toLocaleString()}</td>
+                    <td style={{ padding:"8px 10px" }}>¥{(salesByCustomer.get(c?.id) || 0).toLocaleString()}</td>
                   )}
                 </tr>
               );
@@ -6499,6 +7039,10 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 };
 
 const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
+  // 【検証11回目で修正】配車担当にはドライバーへの支払額を見せない方針（実績の支払額はサーバー側でも隠している）なのに、
+  // この画面では「個数×支払単価」で計算し直して表示していたため、支払額が見えてしまっていた。
+  // 配車担当には支払の欄を「—」で表示する（入力・保存の計算はこれまでどおり）。
+  const hidePay = userRole === "dispatcher";
   // 【重要】配列の中に null が混ざっていると、d.id の参照で画面全体が
   // エラーになり「このページの表示中にエラーが発生しました」となる。
   // 通信の途中で壊れたデータが入ることもあるため、必ず取り除く。
@@ -6546,7 +7090,18 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const getRecord = (driverId, date, jobTypeId) =>
     qualityRecords.find(r => r?.driverId === driverId && r.date === date && r.jobTypeId === jobTypeId) || null;
 
-  const saveCell = (driverId, date, jobTypeId, field, value, customerId, salesAmount, driverAmount, opts) => {
+  const saveCell = (driverId, date, jobTypeId, field, rawValue, customerId, salesAmount, driverAmount, opts) => {
+    // 金額の欄（売上金額・支払金額）は、全角数字・カンマ・「円」などを取り除いて数値で保存する。
+    // 以前は入力した文字列のまま保存されていた（「１８,０００」などが混ざると集計が狂う）。
+    let value = rawValue;
+    if (field === "salesAmount" || field === "driverAmount") {
+      const cleaned = String(rawValue ?? "").normalize("NFKC").replace(/[,，円¥￥\s]/g, "");
+      if (cleaned === "") value = null;
+      else if (!Number.isFinite(Number(cleaned))) {
+        window.alert("金額は数字で入力してください。");
+        return;
+      } else value = Math.round(Number(cleaned));
+    }
     // 【重要】他の入力画面には「締め済み」「請求済み」の保護があるのに、
     // この実績入力だけ素通りだった。締めた後や請求後に数字を書き換えると、
     // 既に支払った報酬・送付済みの請求書と帳簿が食い違ってしまう。
@@ -6614,10 +7169,14 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         driverId,
         date,
         jobTypeId,
-        [field]: value,
         customerId: customerId || null,
-        salesAmount: salesAmount || null,
-        driverAmount: driverAmount || null,
+        salesAmount: salesAmount ?? null,
+        driverAmount: driverAmount ?? null,
+        // 【重要・不具合修正】入力した項目は最後に書く。以前はこの行が
+        // salesAmount / driverAmount より前にあったため、「ルート」表で
+        // その日の最初に売上金額・支払金額を入力すると、直後の
+        // 「salesAmount: null」で上書きされ、入力した金額が消えていた。
+        [field]: value,
         // 【重要・設計監査で発見・不具合修正】契約形態は後から変わりうる
         // ため、その時点の契約形態を記録しておく（詳しい理由は
         // applyOrderDeliveredTransition 内の同種のコメントを参照）。
@@ -6667,16 +7226,18 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
   const renderChibiTable = () => {
     const route = (selectedDriver?.routes||[]).find(r => r?.jobTypeId === selectedJobTypeId);
-    const unitPrice = Number(route?.unitPrice||0);
-    const driverUnitPrice = Number(route?.driverUnitPrice||0);
+    // 個別単価が未設定なら、仕事種別の標準単価を使う（ハコログと同じ決め方）
+    const unitPrice = Number(pickRoutePrice(route?.unitPrice, selectedJobType?.unitPrice)) || 0;
+    const driverUnitPrice = Number(pickRoutePrice(route?.driverPrice ?? route?.driverUnitPrice, selectedJobType?.driverUnitPrice)) || 0;
     const fields = ["持出個数","配完個数","誤配","クレーム","時間帯不履行","備考"];
     const recs = qualityRecords.filter(r => r?.driverId === selectedDriverId && r.jobTypeId === selectedJobTypeId && r?.date?.startsWith(selectedMonth));
     const runChibiSave = (dateStr, f, val, skipClear) => {
       saveCell(
         selectedDriverId, dateStr, selectedJobTypeId, f, val,
         route?.customerId || null,
-        f === "配完個数" ? (Number(val)||0) * Number(route?.unitPrice||0) : null,
-        f === "配完個数" ? (Number(val)||0) * Number(route?.driverPrice||route?.driverUnitPrice||0) : null,
+        // 単価に小数がある場合（例：40.5円）でも、金額は円単位に四捨五入して保存する
+        f === "配完個数" ? roundYen((Number(val)||0) * unitPrice) : null,
+        f === "配完個数" ? roundYen((Number(val)||0) * driverUnitPrice) : null,
         skipClear ? { skipClear: true } : undefined
       );
     };
@@ -6783,7 +7344,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                     );
                   })}
                   <td style={{ padding:"6px 4px", textAlign:"center", color:"#007a74", fontWeight:700 }}>{daySales>0?`¥${daySales.toLocaleString()}`:""}</td>
-                  <td style={{ padding:"6px 4px", textAlign:"center", color:"#e65100", fontWeight:700 }}>{driverPay>0?`¥${driverPay.toLocaleString()}`:""}</td>
+                  <td style={{ padding:"6px 4px", textAlign:"center", color:"#e65100", fontWeight:700 }}>{hidePay ? "—" : driverPay>0?`¥${driverPay.toLocaleString()}`:""}</td>
                 </tr>
               );
             })}
@@ -6798,7 +7359,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 ¥{recs.reduce((s,r)=>s+(r?.salesAmount != null ? Number(r.salesAmount) : (Number(r["配完個数"]||0))*unitPrice),0).toLocaleString()}
               </td>
               <td style={{ padding:"8px 10px", textAlign:"center", color:"#e65100", fontWeight:700 }}>
-                ¥{recs.reduce((s,r)=>s+(r?.driverAmount != null ? Number(r.driverAmount) : (Number(r["配完個数"]||0))*driverUnitPrice),0).toLocaleString()}
+                {hidePay ? "—" : `¥${recs.reduce((s,r)=>s+(r?.driverAmount != null ? Number(r.driverAmount) : (Number(r["配完個数"]||0))*driverUnitPrice),0).toLocaleString()}`}
               </td>
             </tr>
           </tbody>
@@ -6809,7 +7370,8 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
   const renderDekaTable = () => {
     const route = (selectedDriver?.routes||[]).find(r => r?.jobTypeId === selectedJobTypeId);
-    const dekaRates = route?.dekaRates || dekaStyles.map(s=>({size:s,unitPrice:"",driverUnitPrice:""}));
+    // サイズごとに「個別単価があればそれ、無ければ仕事種別の標準単価」（ハコログと同じ）
+    const dekaRates = mergeDekaRates(route?.dekaRates, selectedJobType?.dekaRates, dekaStyles);
     const recs = qualityRecords.filter(r => r?.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r?.date?.startsWith(selectedMonth));
     const allFields = ["持出個数", ...dekaStyles.map(s=>`deka_${s}`), "誤配","クレーム","備考"];
     const dekaSaveExtras = (recRow, fKey, val) => {
@@ -6823,7 +7385,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         const nextQty = fKey === `deka_${size}` ? Number(val||0) : Number(recRow?.[`deka_${size}`]||0);
         return s + nextQty * (Number(rate?.driverPrice||rate?.driverUnitPrice||0));
       }, 0);
-      return [route?.customerId || null, totalSales, totalDriver];
+      return [route?.customerId || null, roundYen(totalSales), roundYen(totalDriver)];
     };
     const runDekaSave = (dateStr, fKey, val, recRow, skipClear) => {
       const [cid, ts, td] = dekaSaveExtras(recRow, fKey, val);
@@ -6940,7 +7502,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                     );
                   })}
                   <td style={{ padding:"6px 4px", textAlign:"center", color:"#007a74", fontWeight:700 }}>{daySales>0?`¥${daySales.toLocaleString()}`:""}</td>
-                  <td style={{ padding:"6px 4px", textAlign:"center", color:"#e65100", fontWeight:700 }}>{dayDriver>0?`¥${dayDriver.toLocaleString()}`:""}</td>
+                  <td style={{ padding:"6px 4px", textAlign:"center", color:"#e65100", fontWeight:700 }}>{hidePay ? "—" : dayDriver>0?`¥${dayDriver.toLocaleString()}`:""}</td>
                 </tr>
               );
             })}
@@ -6962,10 +7524,10 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 },0)),0).toLocaleString()}
               </td>
               <td style={{ padding:"8px 4px", textAlign:"center", color:"#e65100", fontWeight:700 }}>
-                ¥{recs.reduce((s,r)=>s+(r?.driverAmount != null ? Number(r.driverAmount) : dekaStyles.reduce((ss,size)=>{
+                {hidePay ? "—" : `¥${recs.reduce((s,r)=>s+(r?.driverAmount != null ? Number(r.driverAmount) : dekaStyles.reduce((ss,size)=>{
                   const rate=dekaRates.find(dr=>dr.size===size);
                   return ss+(Number(r[`deka_${size}`]||0))*(Number(rate?.driverUnitPrice)||0);
-                },0)),0).toLocaleString()}
+                },0)),0).toLocaleString()}`}
               </td>
             </tr>
           </tbody>
@@ -6979,8 +7541,11 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     const recs = qualityRecords.filter(r => r?.driverId===selectedDriverId && r.jobTypeId===selectedJobTypeId && r?.date?.startsWith(selectedMonth));
     const totalSales = recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0);
     const totalDriver = recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0);
+    // 【重要・不具合修正】以前は顧客を記録していなかったため、ここで入力した売上が
+    // どの顧客の請求（月次集計・請求管理）にも載らなかった。担当ルートの顧客を記録する。
+    const routeForTable = (selectedDriver?.routes||[]).find(r => r?.jobTypeId === selectedJobTypeId);
     const runRouteSave = (dateStr, fKey, val, skipClear) => {
-      saveCell(selectedDriverId, dateStr, selectedJobTypeId, fKey, val, undefined, undefined, undefined, skipClear ? { skipClear: true } : undefined);
+      saveCell(selectedDriverId, dateStr, selectedJobTypeId, fKey, val, routeForTable?.customerId || null, undefined, undefined, skipClear ? { skipClear: true } : undefined);
     };
     const routeCellNav = (e, day, f, rec) => {
       const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
@@ -7088,7 +7653,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             <tr style={{ background:"#e8f5f4", borderTop:"2px solid #00a09a", position:"sticky", bottom:0, zIndex:2 }}>
               <td style={{ padding:"8px 10px", fontWeight:700, color:"#007a74", borderRight:"1px solid #e8e8e8" }}>合計</td>
               <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>¥{totalSales.toLocaleString()}</td>
-              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#e65100", fontWeight:700 }}>¥{totalDriver.toLocaleString()}</td>
+              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#e65100", fontWeight:700 }}>{hidePay ? "—" : `¥${totalDriver.toLocaleString()}`}</td>
               <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>{recs.reduce((s,r)=>s+(Number(r["誤配"])||0),0)||""}</td>
               <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>{recs.reduce((s,r)=>s+(Number(r["クレーム"])||0),0)||""}</td>
               <td></td>
@@ -7105,8 +7670,11 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     const totalSales = recs.reduce((s,r)=>s+(Number(r.salesAmount)||0),0);
     const totalDriver = recs.reduce((s,r)=>s+(Number(r.driverAmount)||0),0);
     const totalCount = recs.reduce((s,r)=>s+(Number(r.count)||0),0);
+    // 【重要・不具合修正】ルート表と同じく顧客を記録していなかったため、ここで入力した
+    // チャーターの売上がどの顧客の請求（月次集計・請求管理）にも載らなかった。
+    const routeForCharter = (selectedDriver?.routes||[]).find(r => r?.jobTypeId === selectedJobTypeId);
     const runCharterSave = (dateStr, fKey, val, skipClear) => {
-      saveCell(selectedDriverId, dateStr, selectedJobTypeId, fKey, val, undefined, undefined, undefined, skipClear ? { skipClear: true } : undefined);
+      saveCell(selectedDriverId, dateStr, selectedJobTypeId, fKey, val, routeForCharter?.customerId || null, undefined, undefined, skipClear ? { skipClear: true } : undefined);
     };
     const charterCellNav = (e, day, f, rec) => {
       const dateStr = `${selectedMonth}-${String(day).padStart(2,"0")}`;
@@ -7214,7 +7782,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               <td style={{ padding:"8px 10px", fontWeight:700, color:"#007a74", borderRight:"1px solid #e8e8e8" }}>合計</td>
               <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>{totalCount||""}</td>
               <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#007a74", fontWeight:700 }}>¥{totalSales.toLocaleString()}</td>
-              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#e65100", fontWeight:700 }}>¥{totalDriver.toLocaleString()}</td>
+              <td style={{ padding:"8px 10px", textAlign:"center", borderRight:"1px solid #e8e8e8", color:"#e65100", fontWeight:700 }}>{hidePay ? "—" : `¥${totalDriver.toLocaleString()}`}</td>
               <td></td>
             </tr>
           </tbody>
@@ -7268,7 +7836,9 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                       onMouseEnter={e=>e.currentTarget.style.background="#e8f5f4"}
                       onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
                       <div style={{ fontSize:"14px", fontWeight:700, color:"#007a74", marginBottom:"8px" }}>{driver.name}</div>
-                      <div style={{ fontSize:"11px", color:"#888" }}>今月売上：<span style={{ color:"#007a74", fontWeight:700 }}>¥{salesTotal.toLocaleString()}</span></div>
+                      {/* この画面（個建実績入力）で入力した分だけの売上。ハコログ・売上管理から入った売上は含まないため、
+                          「今月売上」と書くと全体の売上と誤解されやすかった */}
+                      <div style={{ fontSize:"11px", color:"#888" }}>この画面で入力した売上：<span style={{ color:"#007a74", fontWeight:700 }}>¥{salesTotal.toLocaleString()}</span></div>
                       <div style={{ fontSize:"11px", color:"#888", marginTop:"2px" }}>登録ルート：{(driver.routes||[]).length}件</div>
                     </div>
                   );
@@ -7313,6 +7883,13 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               {selectedJobType?.name === "デカ宅" && renderDekaTable()}
               {selectedJobType?.name === "ルート" && renderRouteTable()}
               {selectedJobType?.name === "チャーター" && renderCharterTable()}
+              {/* 【検証8回目で修正】入力表が「チビ宅・デカ宅・ルート・チャーター」という決まった名前の
+                  仕事種別にしか出ず、それ以外の名前（例：「宅配（個建）」）を選ぶと画面が空白のまま、
+                  何も入力できなかった。名前が違っても、計算方法に合った入力表を出す。
+                  個数制はチビ宅と同じ「個数×単価」の表、それ以外は金額を直接入れるルートの表を使う。 */}
+              {!["チビ宅", "デカ宅", "ルート", "チャーター"].includes(selectedJobType?.name) && (
+                (selectedJobType?.calcPattern || "count") === "count" ? renderChibiTable() : renderRouteTable()
+              )}
             </div>
           )}
         </>
@@ -7322,12 +7899,15 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
           <Panel title={`${selectedMonth.replace("-","年")}月 ドライバー別売上集計`} icon={qualityIcon}>
             <RetroTable
-              headers={["ドライバー","今月売上","今月支払額","粗利"]}
+              // 配車担当には支払額・粗利を出さない（支払額は隠されて0円になり、粗利が売上と同じ額に見えてしまうため）
+              headers={hidePay ? ["ドライバー","今月売上"] : ["ドライバー","今月売上","今月支払額","粗利"]}
               rows={monthlySummary.filter(s=>s.count>0).map(s=>[
                 <span style={{ fontWeight:700, color:"#007a74" }}>{s.driver.name}</span>,
                 <span style={{ color:"#007a74", fontWeight:700 }}>¥{s.salesTotal.toLocaleString()}</span>,
+                ...(hidePay ? [] : [
                 <span style={{ color:"#e65100", fontWeight:700 }}>¥{s.driverTotal.toLocaleString()}</span>,
                 <span style={{ color:"#2e7d32", fontWeight:700 }}>¥{(s.salesTotal-s.driverTotal).toLocaleString()}</span>,
+                ]),
               ])}
             />
           </Panel>
@@ -7336,7 +7916,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               ["総売上", "¥"+monthlySummary.reduce((s,r)=>s+r.salesTotal,0).toLocaleString(), "#00a09a"],
               ["総支払額", "¥"+monthlySummary.reduce((s,r)=>s+r.driverTotal,0).toLocaleString(), "#e65100"],
               ["総粗利", "¥"+(monthlySummary.reduce((s,r)=>s+r.salesTotal,0)-monthlySummary.reduce((s,r)=>s+r.driverTotal,0)).toLocaleString(), "#2e7d32"],
-            ].map(([l,v,c])=>(
+            ].filter(([l]) => !(hidePay && (l === "総支払額" || l === "総粗利"))).map(([l,v,c])=>(
               <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
                 <div style={{ fontSize:"11px", color:"#888", fontWeight:700, marginBottom:"4px" }}>{l}</div>
                 <div style={{ fontSize:"18px", fontWeight:700, color:c }}>{v}</div>
@@ -7398,6 +7978,7 @@ const createEmptyRecordForm = () => ({
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
 
 const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
   const recurring = (Array.isArray(data?.recurringAssignments) ? data.recurringAssignments : []).filter(r => !r?.deleted);
   const confirmations = Array.isArray(data?.recurringConfirmations) ? data.recurringConfirmations : [];
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
@@ -7527,7 +8108,8 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               jobTypeId: r?.jobTypeId || "",
               count: 1,
               salesAmount: Number(r?.salesAmount) || 0,
-              driverAmount: Number(r?.driverPayAmount) || 0,
+              // ロイヤリティ設定のあるドライバーは報酬＝売上（二重取り防止）
+              driverAmount: recurringDriverPay(r, (Array.isArray(d?.drivers) ? d.drivers : []).find((dr) => dr?.id === r?.driverId)),
               // 【重要・設計監査で発見・不具合修正】契約形態のスナップショット。
               // 詳しい理由は applyOrderDeliveredTransition 内の同種のコメントを参照。
               driverContractTypeAtRecord: (Array.isArray(d?.drivers) ? d.drivers : [])
@@ -7538,7 +8120,24 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         };
       });
     } else {
-      // 稼働なし：実績は作らず、「確認済み（稼働なし）」という記録だけ残す。
+      // 【検証8回目で修正】「稼働あり」の後に「稼働なし」を押すと、確認記録だけが「稼働なし」に
+      // 変わり、作られた実績（売上・報酬）はそのまま残っていた（カレンダー一括登録の方は削除していた）。
+      // 一括登録と同じく、請求済みなら止め、そうでなければ確認のうえ実績も取り消す。
+      const existing = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+        .filter(dr => !dr?.deleted && dr?.recurringId === r?.id && dr?.date === date);
+      if (existing.some(dr => dr?.invoicedInvoiceId)) {
+        window.alert(`${date} の実績は既に請求書に含まれているため「稼働なし」にできません。\n請求額を訂正する場合は、請求管理から赤伝を発行してください。`);
+        return;
+      }
+      if (existing.length > 0) {
+        const sales = existing.reduce((s2, dr) => s2 + (Number(dr?.salesAmount) || 0), 0);
+        const pay = existing.reduce((s2, dr) => s2 + (Number(dr?.driverAmount) || 0), 0);
+        if (!window.confirm(
+          `${date} は既に「稼働あり」で実績が記録されています（売上 ${yen(sales)} / 報酬 ${yen(pay)}）。\n\n` +
+          `「稼働なし」にすると、この実績は削除されます。よろしいですか？`
+        )) return;
+      }
+      const removeIds = new Set(existing.map(dr => dr.id));
       setData(d => {
         const currentConfirmations = Array.isArray(d?.recurringConfirmations) ? d.recurringConfirmations : [];
         return {
@@ -7547,6 +8146,9 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             ...currentConfirmations.filter(c => !(c?.recurringId === r?.id && c?.date === date)),
             { id: generateUniqueBusinessId(currentConfirmations, "RCF"), recurringId: r?.id, date, status: "no_work" },
           ],
+          dailyRecords: removeIds.size > 0
+            ? (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map(dr => removeIds.has(dr?.id) ? { ...dr, deleted: true, deletedAt: new Date().toISOString() } : dr)
+            : d.dailyRecords,
         };
       });
     }
@@ -7565,11 +8167,42 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
    */
   const bulkConfirmDates = (r, dates, status) => {
     const closedDates = dates.filter(date => isMonthClosed(data?.companyInfo, date.slice(0, 7)));
-    const targetDates = dates.filter(date => !closedDates.includes(date));
+    let targetDates = dates.filter(date => !closedDates.includes(date));
 
     if (targetDates.length === 0) {
       window.alert("選択された日は、すべて締め済みの月のため、登録できませんでした。");
       return { registered: 0, skipped: closedDates.length };
+    }
+
+    // 【重要・不具合修正】既に「稼働あり」で実績が記録されている日を「稼働なし」で
+    // 一括登録すると、確認の記録だけが「稼働なし」に変わり、売上・報酬の実績は
+    // 残ったままになっていた（稼働していない日の売上・報酬が計上され続ける）。
+    // 1日ずつの操作（取消 → 稼働なし）と同じく、その日の実績も削除する。
+    // ただし請求書に含まれている実績は、勝手に消すと請求額と食い違うため対象外にする。
+    let removeRecordIds = new Set();
+    let invoicedDates = [];
+    if (status === "no_work") {
+      const existing = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+        .filter(dr => !dr?.deleted && dr?.recurringId === r?.id && targetDates.includes(dr?.date));
+      invoicedDates = [...new Set(existing.filter(dr => dr?.invoicedInvoiceId).map(dr => dr.date))];
+      const removable = existing.filter(dr => !invoicedDates.includes(dr.date));
+      if (invoicedDates.length > 0) {
+        window.alert(
+          `次の日は、実績が既に請求書に含まれているため「稼働なし」にできません（登録から除外します）：\n${invoicedDates.join("、")}\n\n` +
+          `請求額を訂正する場合は、請求管理から赤伝を発行してください。`
+        );
+        targetDates = targetDates.filter(date => !invoicedDates.includes(date));
+        if (targetDates.length === 0) return { registered: 0, skipped: closedDates.length + invoicedDates.length };
+      }
+      if (removable.length > 0) {
+        const sales = removable.reduce((s2, dr) => s2 + (Number(dr?.salesAmount) || 0), 0);
+        const pay = removable.reduce((s2, dr) => s2 + (Number(dr?.driverAmount) || 0), 0);
+        if (!window.confirm(
+          `選択した日のうち ${new Set(removable.map(dr => dr.date)).size}日は、既に「稼働あり」で実績が記録されています` +
+          `（売上 ${yen(sales)} / 報酬 ${yen(pay)}）。\n\n「稼働なし」にすると、これらの実績は削除されます。よろしいですか？`
+        )) return { registered: 0, skipped: 0, cancelled: true };
+        removeRecordIds = new Set(removable.map(dr => dr.id));
+      }
     }
 
     setData(d => {
@@ -7581,7 +8214,7 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       let nextConfirmations = currentConfirmations.filter(
         c => !(c?.recurringId === r?.id && targetDates.includes(c?.date))
       );
-      let nextDailyRecords = [...currentDailyRecords];
+      let nextDailyRecords = currentDailyRecords.map(dr => removeRecordIds.has(dr?.id) ? { ...dr, deleted: true } : dr);
 
       targetDates.forEach(date => {
         nextConfirmations = [
@@ -7597,7 +8230,9 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 id: generateUniqueBusinessId(nextDailyRecords, "DR"),
                 recurringId: r?.id, date, driverId: r?.driverId, customerId: r?.customerId,
                 jobTypeId: r?.jobTypeId || "", count: 1,
-                salesAmount: Number(r?.salesAmount) || 0, driverAmount: Number(r?.driverPayAmount) || 0,
+                salesAmount: Number(r?.salesAmount) || 0,
+                // ロイヤリティ設定のあるドライバーは報酬＝売上（二重取り防止）
+                driverAmount: recurringDriverPay(r, (Array.isArray(d?.drivers) ? d.drivers : []).find((dr) => dr?.id === r?.driverId)),
                 driverContractTypeAtRecord: contractType,
                 note: "定期便より自動記録（カレンダー一括登録）",
               },
@@ -7609,7 +8244,7 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       return { ...d, recurringConfirmations: nextConfirmations, dailyRecords: nextDailyRecords };
     });
 
-    return { registered: targetDates.length, skipped: closedDates.length };
+    return { registered: targetDates.length, skipped: closedDates.length + invoicedDates.length };
   };
 
   const undoStatus = (r, date) => {
@@ -7678,9 +8313,42 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       // 担当ドライバー・顧客が削除されている定期便は、確認しようがないため対象外にする。
       if (!drivers.some(d => d?.id === r?.driverId) || !customers.some(c => c?.id === r?.customerId)) return;
       if (getStatus(r?.id, dateStr) != null) return;
+      // 【検証8回目で追加】確認記録が無くても、その日の定期便の実績が既にあれば稼働済みとして扱う
+      // （確認機能ができる前の実績や、実績画面から直接入れた分が「未確認」と出続けていた）
+      if ((Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).some(dr => !dr?.deleted && dr?.recurringId === r?.id && dr?.date === dateStr)) return;
       missedDays.push({ r, date: dateStr, weekday: wd });
     });
   }
+
+  // 【利用者の指示で追加】この修正より前に記録された定期便の実績のうち、
+  // ロイヤリティ設定のあるドライバーなのにテンプレートの報酬額（売上より少ない額）で
+  // 記録されているもの＝ロイヤリティと二重に引かれているもの。
+  // 締め済みの月は、支払い済みのため対象外（勝手に変えない）。
+  const doubleTakenRecords = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).filter((dr) => {
+    if (!dr || dr.deleted || !dr.recurringId) return false;
+    if (isMonthClosed(data?.companyInfo, String(dr.date || "").slice(0, 7))) return false;
+    const drv = drivers.find((x) => x?.id === dr.driverId);
+    if (!driverHasContractRoyalty(drv)) return false;
+    return (Number(dr.driverAmount) || 0) < (Number(dr.salesAmount) || 0);
+  });
+  const fixDoubleTaken = () => {
+    const diff = doubleTakenRecords.reduce((s2, dr) => s2 + (Number(dr.salesAmount) || 0) - (Number(dr.driverAmount) || 0), 0);
+    if (!window.confirm(
+      `定期便の実績 ${doubleTakenRecords.length}件 の報酬を、売上と同額に直します。\n\n` +
+      `ドライバー設定のロイヤリティと二重に引かれていた分（合計 ¥${diff.toLocaleString()}）が、ドライバーの報酬に戻ります。\n` +
+      `締め済みの月は対象外です。\n\nよろしいですか？`
+    )) return;
+    const ids = new Set(doubleTakenRecords.map((dr) => dr.id));
+    setData((d) => ({
+      ...d,
+      dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((dr) =>
+        ids.has(dr?.id) && !isMonthClosed(d?.companyInfo, String(dr?.date || "").slice(0, 7))
+          ? { ...dr, driverAmount: Number(dr.salesAmount) || 0 }
+          : dr
+      ),
+    }));
+    window.alert(`${ids.size}件 の報酬を売上と同額に直しました。`);
+  };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"14px" }}>
@@ -7688,6 +8356,23 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         平日はずっと同じ内容で動いている案件（車建て契約など）を、毎回受注登録しなくて済むようにする機能です。
         あらかじめテンプレートを登録しておけば、あとは毎日「稼働あり／稼働なし」を選ぶだけで、その日の売上・報酬が自動的に記録されます。
       </div>
+
+      {doubleTakenRecords.length > 0 && userRole !== "dispatcher" && (
+        <Panel title={`⚠️ ロイヤリティと二重に引かれている定期便の実績があります（${doubleTakenRecords.length}件）`} style={{ borderColor:"#7b1fa2" }}>
+          <p style={{ fontSize:"11px", color:"#555", lineHeight:1.7, marginBottom:"8px" }}>
+            ドライバー設定でロイヤリティが設定されているドライバーの定期便が、テンプレートの報酬額（売上より少ない額）で記録されています。
+            このままだと、売上との差額とロイヤリティの両方が引かれます。報酬を売上と同額に直すと、会社の取り分はロイヤリティだけになります（締め済みの月は対象外）。
+          </p>
+          <div style={{ fontSize:"11px", color:"#666", marginBottom:"8px" }}>
+            {[...new Set(doubleTakenRecords.map((dr) => dr.driverId))].map((id) => {
+              const list = doubleTakenRecords.filter((dr) => dr.driverId === id);
+              const diff = list.reduce((s2, dr) => s2 + (Number(dr.salesAmount) || 0) - (Number(dr.driverAmount) || 0), 0);
+              return <div key={id}>・{driverName(id)}：{list.length}件（差額 ¥{diff.toLocaleString()}）</div>;
+            })}
+          </div>
+          <RetroBtn small onClick={fixDoubleTaken} style={{ background:"#7b1fa2", borderColor:"#7b1fa2", color:"#fff" }}>報酬を売上と同額に直す</RetroBtn>
+        </Panel>
+      )}
 
       {missedDays.length > 0 && (
         <Panel title={`⚠️ 未確認の日があります（${missedDays.length}件）`} style={{ borderColor:"#e63946" }}>
@@ -7722,7 +8407,8 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                   <div>
                     <div style={{ fontSize:"12px", fontWeight:700, color:"#333" }}>{customerName(r?.customerId)} — {driverName(r?.driverId)}</div>
                     <div style={{ fontSize:"11px", color:"#888" }}>
-                      売上 ¥{(Number(r?.salesAmount)||0).toLocaleString()}　報酬 ¥{(Number(r?.driverPayAmount)||0).toLocaleString()}
+                      売上 ¥{(Number(r?.salesAmount)||0).toLocaleString()}　報酬 ¥{recurringDriverPay(r, drivers.find(d=>d?.id===r?.driverId)).toLocaleString()}
+                      {driverHasContractRoyalty(drivers.find(d=>d?.id===r?.driverId)) && <span style={{ color:"#7b1fa2" }}>（ロイヤリティ {royaltyLabelOf(drivers.find(d=>d?.id===r?.driverId))} を月の報酬から控除）</span>}
                     </div>
                   </div>
                   {status === "worked" ? (
@@ -7735,7 +8421,7 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                         setAmountEditTarget({ r, date: today, recordId: rec?.id || null });
                         setAmountEditForm({
                           salesAmount: String(Number(rec?.salesAmount ?? r?.salesAmount) || 0),
-                          driverAmount: String(Number(rec?.driverAmount ?? r?.driverPayAmount) || 0),
+                          driverAmount: String(Number(rec?.driverAmount ?? recurringDriverPay(r, drivers.find(d=>d?.id===r?.driverId))) || 0),
                         });
                       }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>金額修正</RetroBtn>
                       <RetroBtn small onClick={()=>undoStatus(r, today)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>✓ 稼働あり（取消）</RetroBtn>
@@ -7775,7 +8461,8 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                   </div>
                   <div style={{ fontSize:"11px", color:"#888" }}>
                     {(r?.daysOfWeek || []).map(d => WEEKDAY_LABELS[d]).join("・")}曜　
-                    売上¥{(Number(r?.salesAmount)||0).toLocaleString()}　報酬¥{(Number(r?.driverPayAmount)||0).toLocaleString()}
+                    売上¥{(Number(r?.salesAmount)||0).toLocaleString()}　報酬¥{recurringDriverPay(r, drivers.find(d=>d?.id===r?.driverId)).toLocaleString()}
+                    {driverHasContractRoyalty(drivers.find(d=>d?.id===r?.driverId)) && <span style={{ color:"#7b1fa2" }}>（ロイヤリティ {royaltyLabelOf(drivers.find(d=>d?.id===r?.driverId))} を優先）</span>}
                   </div>
                 </div>
                 <div style={{ display:"flex", gap:"4px", flexShrink:0 }}>
@@ -7837,7 +8524,10 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 if (d === null) return <div key={`empty-${idx}`} />;
                 const dateStr = toDateStr(d);
                 const isSelected = bulkSelectedDates.includes(dateStr);
-                const status = getStatus(r?.id, dateStr);
+                // 【検証10回目で修正】確認記録が無くても、その日の定期便の実績があれば「済」と表示する
+                // （未確認の警告と同じ考え方。以前は実績があるのに空欄に見えていた）
+                const status = getStatus(r?.id, dateStr)
+                  ?? ((Array.isArray(data?.dailyRecords) ? data.dailyRecords : []).some(dr => !dr?.deleted && dr?.recurringId === r?.id && dr?.date === dateStr) ? "worked" : null);
                 const closed = isMonthClosed(data?.companyInfo, dateStr.slice(0, 7));
                 return (
                   <button
@@ -7867,14 +8557,16 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 if (bulkSelectedDates.length === 0) { window.alert("日付を選んでください。"); return; }
                 if (!window.confirm(`選択した ${bulkSelectedDates.length}日を「稼働なし」として登録しますか？`)) return;
                 const result = bulkConfirmDates(r, bulkSelectedDates, "no_work");
-                window.alert(`${result.registered}日を登録しました。${result.skipped > 0 ? `（締め済みのため ${result.skipped}日はスキップしました）` : ""}`);
+                if (result.cancelled) return;
+                window.alert(`${result.registered}日を登録しました。${result.skipped > 0 ? `（${result.skipped}日は登録できないためスキップしました）` : ""}`);
                 setBulkModalTarget(null); setBulkSelectedDates([]);
               }} style={{ background:"#fff", color:"#666", borderColor:"#ccc" }}>選択日を「稼働なし」で登録</RetroBtn>
               <RetroBtn onClick={()=>{
                 if (bulkSelectedDates.length === 0) { window.alert("日付を選んでください。"); return; }
-                if (!window.confirm(`選択した ${bulkSelectedDates.length}日を「稼働あり」として登録しますか？\n\n売上¥${(Number(r?.salesAmount)||0).toLocaleString()}／報酬¥${(Number(r?.driverPayAmount)||0).toLocaleString()} が、それぞれの日に記録されます。`)) return;
+                if (!window.confirm(`選択した ${bulkSelectedDates.length}日を「稼働あり」として登録しますか？\n\n売上¥${(Number(r?.salesAmount)||0).toLocaleString()}／報酬¥${recurringDriverPay(r, drivers.find(d=>d?.id===r?.driverId)).toLocaleString()} が、それぞれの日に記録されます。${driverHasContractRoyalty(drivers.find(d=>d?.id===r?.driverId)) ? `\n（ドライバー設定のロイヤリティ ${royaltyLabelOf(drivers.find(d=>d?.id===r?.driverId))} を優先するため、報酬は売上と同額です）` : ""}`)) return;
                 const result = bulkConfirmDates(r, bulkSelectedDates, "worked");
-                window.alert(`${result.registered}日を登録しました。${result.skipped > 0 ? `（締め済みのため ${result.skipped}日はスキップしました）` : ""}`);
+                if (result.cancelled) return;
+                window.alert(`${result.registered}日を登録しました。${result.skipped > 0 ? `（${result.skipped}日は登録できないためスキップしました）` : ""}`);
                 setBulkModalTarget(null); setBulkSelectedDates([]);
               }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>選択日を「稼働あり」で登録</RetroBtn>
             </div>
@@ -7895,13 +8587,24 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             <RetroInput type="number" min="0" value={amountEditForm.salesAmount}
               onChange={(e)=>setAmountEditForm(v=>({ ...v, salesAmount:e.target.value }))}/>
           </Fl>
+          {driverHasContractRoyalty(drivers.find(d=>d?.id===amountEditTarget.r?.driverId)) ? (
+            <Fl label="ドライバー報酬（円）">
+              <RetroInput type="number" value={amountEditForm.salesAmount} disabled style={{ background:"#f5f5f5", color:"#888" }}/>
+              <div style={{ fontSize:"11px", color:"#7b1fa2", marginTop:"4px", lineHeight:1.6 }}>
+                ドライバー設定のロイヤリティ（{royaltyLabelOf(drivers.find(d=>d?.id===amountEditTarget.r?.driverId))}）を優先するため、報酬は売上と同額になります（会社の取り分はロイヤリティとして月の報酬から控除）。
+              </div>
+            </Fl>
+          ) : (
           <Fl label="ドライバー報酬（円）">
             <RetroInput type="number" min="0" value={amountEditForm.driverAmount}
               onChange={(e)=>setAmountEditForm(v=>({ ...v, driverAmount:e.target.value }))}/>
           </Fl>
+          )}
           {(() => {
             const s = Number(amountEditForm.salesAmount) || 0;
-            const dp = Number(amountEditForm.driverAmount) || 0;
+            const royaltyDriver = driverHasContractRoyalty(drivers.find(d=>d?.id===amountEditTarget.r?.driverId));
+            const dp = royaltyDriver ? s : (Number(amountEditForm.driverAmount) || 0);
+            if (royaltyDriver) return null;
             return (
               <div style={{ background:"#f5f5f5", borderRadius:"6px", padding:"10px", fontSize:"12px", marginTop:"4px" }}>
                 <div style={{ display:"flex", justifyContent:"space-between" }}>
@@ -7923,8 +8626,11 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
               // マイナス値の直接入力を防げない。実績データはここから
               // 売上管理・報酬計算・請求書へ波及するため、必ず0以上に補正する。
               const sales = Math.max(0, Number(amountEditForm.salesAmount) || 0);
-              const pay = Math.max(0, Number(amountEditForm.driverAmount) || 0);
               const { r, date } = amountEditTarget;
+              // ロイヤリティ設定のあるドライバーは、報酬＝売上（二重取り防止）
+              const pay = driverHasContractRoyalty(drivers.find(d=>d?.id===r?.driverId))
+                ? sales
+                : Math.max(0, Number(amountEditForm.driverAmount) || 0);
               // 【重要】締め済みの月は、既に報酬を支払い、請求書も発行済み。
               // ここで金額を変えると、支払った額・請求した額と食い違ってしまう。
               // 他の金額変更と同じく、締め済みの月は保護する。
@@ -7969,6 +8675,12 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             <Fl label="1日あたりの売上額"><RetroInput type="number" min="0" value={form.salesAmount} onChange={e=>setForm(f=>({...f,salesAmount:e.target.value}))}/></Fl>
             <Fl label="1日あたりのドライバー報酬額"><RetroInput type="number" min="0" value={form.driverPayAmount} onChange={e=>setForm(f=>({...f,driverPayAmount:e.target.value}))}/></Fl>
           </div>
+          {driverHasContractRoyalty(drivers.find(d=>d?.id===form.driverId)) && (
+            <div style={{ fontSize:"11px", color:"#7b1fa2", background:"#f3e5f5", border:"1px solid #e1bee7", borderRadius:"4px", padding:"6px 8px", marginTop:"-2px", marginBottom:"6px", lineHeight:1.6 }}>
+              このドライバーはドライバー設定でロイヤリティ（{royaltyLabelOf(drivers.find(d=>d?.id===form.driverId))}）が設定されているため、そちらを優先します。
+              会社の取り分を二重に引かないよう、実績の報酬は<b>売上と同額</b>で記録され、上の報酬額は使われません。
+            </div>
+          )}
           <Fl label="稼働する曜日">
             <div style={{ display:"flex", gap:"4px" }}>
               {WEEKDAY_LABELS.map((label, dow) => (
@@ -8004,6 +8716,64 @@ const RecurringPage = ({ data, setData, tenantId, userRole, isMobile }) => {
  * ハコマネで事務員が直接入力した実績は「会社自身の入力」なので承認済みで正しい。
  * ここを undefined のまま未承認扱いにすると、既存の売上が全部消える。
  */
+/**
+ * ===== 定期便の報酬額とロイヤリティの二重取り防止（利用者の指示で追加）=====
+ *
+ * 定期便テンプレートの「1日あたりのドライバー報酬額」は、売上との差額が
+ * 会社の取り分になる設計。一方、ドライバー設定でロイヤリティ（率・固定額）を
+ * 設定していると、月の報酬からさらにロイヤリティが引かれ、会社の取り分を
+ * 二重に取ってしまっていた。
+ * 【利用者の決定】ドライバー設定のロイヤリティを優先する。ロイヤリティ設定が
+ * あるドライバーの定期便は、報酬＝売上と同額で記録し、会社の取り分は
+ * ロイヤリティだけにする（テンプレートの報酬額は使わない）。
+ * ロイヤリティ設定が無い（なし・0）ドライバーは、従来どおりテンプレートの報酬額を使う。
+ */
+/**
+ * ===== 仕事種別の支払単価とロイヤリティの二重取り防止（利用者の指示で追加）=====
+ *
+ * 仕事種別（またはドライバーの担当ルート）に支払単価が設定されていると、
+ * 売上単価との差額がその時点で会社の取り分になる。そこへさらにドライバー設定の
+ * ロイヤリティを引くと、会社の取り分を二重に取ってしまっていた。
+ * 【利用者の決定】支払単価が設定されている場合はそちらを優先し、
+ * その実績からはロイヤリティを引かない。
+ *
+ * 入力経路（売上管理・個建実績入力・ハコログ・受注・定期便）によって、
+ * 支払単価が実績のどの項目に残るかが揃っていないため、全経路で共通に判定できる
+ * 「その実績で、会社の取り分（売上 − 報酬）が既に確保されているか」で判定する。
+ *   ・売上 ＞ 報酬（立替・手当を除く）… 支払単価・個別の報酬額で取り分を確保済み → ロイヤリティ対象外
+ *   ・売上 ＝ 報酬 … 取り分をまだ取っていない（定期便でロイヤリティ優先にした分など）→ ロイヤリティ対象
+ * 固定額のロイヤリティも同じ考え方で、その月にロイヤリティ対象の実績が1件も無ければ引かない。
+ *
+ * 【重要】この決まりは、この修正の後に締めた月（締めた時の設定に royaltyRule: 2 がある月）と、
+ * まだ締めていない月にだけ使う。以前に締めた月は、支払い済みの金額が変わらないよう
+ * 従来の計算（受注ごとに報酬を決めた分だけを除く）のままにする。
+ */
+const ROYALTY_RULE_VERSION = 2;
+// 消費税の決まりの版。2＝立替金（高速代・駐車場代）には消費税を上乗せしない（利用者の決定）。
+// 月を締めるときにスナップショットへ記録し、締めた月の計算が後から変わらないようにする。
+const TAX_RULE_VERSION = 2;
+const recordMarginAlreadyTaken = (r) => {
+  if (!r) return false;
+  if (r.fixedDriverPay) return true;
+  const n = (v) => Number(v) || 0;
+  // 立替・手当は売上とは別に支払うものなので、比べる報酬からは除く
+  const reimb = n(r.highwayFee) + n(r.parkingFee) + n(r.fuelAllowance) + n(r.otherAllowance);
+  let payForWork = n(r.driverAmount) - reimb;
+  if (payForWork < 0) payForWork = n(r.driverAmount);
+  return n(r.salesAmount) - payForWork > 0;
+};
+
+const driverHasContractRoyalty = (driver) => {
+  if (!driver) return false;
+  if (driver.royaltyType === "none") return false;
+  if (driver.royaltyType === "fixed") return (Number(driver.royaltyFixed) || 0) > 0;
+  return (Number(driver.royaltyRate) || 0) > 0;
+};
+const recurringDriverPay = (assignment, driver) =>
+  driverHasContractRoyalty(driver) ? (Number(assignment?.salesAmount) || 0) : (Number(assignment?.driverPayAmount) || 0);
+const royaltyLabelOf = (driver) =>
+  driver?.royaltyType === "fixed" ? `固定 ¥${(Number(driver?.royaltyFixed) || 0).toLocaleString()}／月` : `${Number(driver?.royaltyRate) || 0}%`;
+
 const APPROVAL = {
   DRAFT: "draft",
   SUBMITTED: "submitted",
@@ -8115,13 +8885,17 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
   let otherAllowance = 0;  // その他支給
   let sales = 0;           // このドライバーが生んだ売上（利益分析に使う）
   let royaltyBaseSales = 0; // ロイヤリティの計算対象になる売上（個別に報酬を決めた分は除く）
+  // 締めていない月、またはこの修正の後に締めた月は新しい決まり（支払単価を優先）で計算する
+  const useUnitPriceRule = !snapshot || Number(snapshot?.royaltyRule) >= ROYALTY_RULE_VERSION;
 
   list.forEach((r) => {
     sales += n(r?.salesAmount);
     // 【重要】受注ごとに報酬額を直接決めた分は、その時点で会社の取り分が
     // 確保されている。ここでさらにロイヤリティを引くと二重取りになり、
     // ドライバーへの支払いが不足する。ロイヤリティの計算からは除く。
-    if (!r?.fixedDriverPay) royaltyBaseSales += n(r?.salesAmount);
+    // 【利用者の指示で追加】支払単価で取り分を確保済みの実績も同じく除く。
+    const exempt = useUnitPriceRule ? recordMarginAlreadyTaken(r) : !!r?.fixedDriverPay;
+    if (!exempt) royaltyBaseSales += n(r?.salesAmount);
     charter += n(r?.charterDriver);
     highway += n(r?.highwayFee);
     parking += n(r?.parkingFee);
@@ -8152,7 +8926,7 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
   // 稼働日数（同じ日に複数件あっても1日と数える）
   const workDays = new Set(list.map((r) => r?.date).filter(Boolean)).size;
   // 配送個数の合計（ランキング・KPIで使う）
-  const totalCount = list.reduce((sum, r) => sum + n(r?.count), 0);
+  const totalCount = list.reduce((sum, r) => sum + recordParcelCount(r), 0);
 
   const grossPay = baseReward + charter + highway + parking + fuel + otherAllowance;
 
@@ -8160,12 +8934,15 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
   // ロイヤリティは売上に対して発生させる（率の場合）。
   let royalty = 0;
   if (cfg?.royaltyType === "fixed") {
-    royalty = n(cfg?.royaltyFixed);
+    // 【利用者の指示で追加】その月の実績がすべて支払単価などで取り分を確保済みなら、
+    // 固定ロイヤリティも引かない（二重取り防止）。
+    royalty = (useUnitPriceRule && royaltyBaseSales <= 0) ? 0 : n(cfg?.royaltyFixed);
   } else if (cfg?.royaltyType === "none") {
     royalty = 0;
   } else {
     // 既定は率。未設定（空）の場合は 0 として扱う。
-    royalty = Math.round(royaltyBaseSales * (n(cfg?.royaltyRate) / 100));
+    // 率が小数（例：12.5%）のとき、小数誤差で1円ずれないよう roundYen で四捨五入する
+    royalty = roundYen(royaltyBaseSales * (n(cfg?.royaltyRate) / 100));
   }
 
   // 定額控除は「その月に1日でも稼働していれば」引く。
@@ -8192,13 +8969,22 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
   // ドライバーには、報酬に消費税を加えた金額を振り込む必要がある。
   // これをしないと、ドライバーが発行する請求書（税込）と、実際の振込額が
   // 食い違い、毎月消費税分の未払いが発生してしまう（実務で必ず問題になる）。
-  const payTaxIncluded = !!(driver?.invoiceRegistered && driver?.payTaxIncluded);
+  // 締めた月は、締めた時点の設定（snapshot）を使う。古い締めデータ（この項目が無い）は今の設定を使う。
+  const taxCfg = (snapshot && snapshot.payTaxIncluded !== undefined) ? snapshot : driver;
+  const payTaxIncluded = !!(taxCfg?.invoiceRegistered && taxCfg?.payTaxIncluded);
   // 【重要】消費税は必ず calcTax（共通関数）を使う。
   // ここだけ「* 0.1」と直接書くと、将来 TAX_RATE を変えたときに
   // この箇所だけ古い税率のまま取り残され、
   // 「ドライバー請求書は新税率、実際の振込額は旧税率」という
   // 食い違いが起きる。
-  const consumptionTax = payTaxIncluded ? calcTax(grossPay) : 0;
+  // 【利用者の決定で変更】高速代・駐車場代（立替金）は実費精算なので消費税を上乗せしない。
+  // 燃料補助・その他支給・チャーターは報酬（手当）なので、これまでどおり消費税の対象。
+  // ただし、この決まりより前に締めた月（スナップショットに taxRule が無い）は、締めた時点の
+  // 計算（立替金にも上乗せ）のまま変えない（振込済みの金額が後から変わらないように）。
+  const useReimbTaxRule = !snapshot || Number(snapshot?.taxRule) >= TAX_RULE_VERSION;
+  const taxExemptReimbursement = useReimbTaxRule ? (highway + parking) : 0;
+  const taxableBase = grossPay - taxExemptReimbursement;
+  const consumptionTax = payTaxIncluded ? calcTax(taxableBase) : 0;
 
   // 全銀CSVが確実にエラーになるため、ここで円単位に丸める。
   const netPay = Math.round(grossPay + consumptionTax - totalDeduction);
@@ -8240,7 +9026,11 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
     royaltyForDisplay: Math.round(royalty) + (Math.round(sales) - Math.round(grossPay)),
     royaltyTypeUsed: cfg?.royaltyType || "rate",
     royaltyRateUsed: cfg?.royaltyRate,
+    // ロイヤリティの対象になった売上（支払単価で取り分を確保済みの分は除く）
+    royaltyBaseSales: Math.round(royaltyBaseSales),
     royaltyFixedUsed: cfg?.royaltyFixed,
+    // その他控除の名目（締めた月は締めた時点の名目）
+    otherDeductionNoteUsed: cfg?.otherDeductionNote || "",
     lease: Math.round(lease),
     insurance: Math.round(insurance),
     uniform: Math.round(uniform),
@@ -8249,6 +9039,8 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
     totalDeduction: Math.round(totalDeduction),
     // 最終
     netPay,
+    // 消費税の対象外にした立替金（高速代・駐車場代）の合計。ドライバー請求書の非課税の行に使う。
+    taxExemptReimbursement: Math.round(taxExemptReimbursement),
     isNegative: netPay < 0,
 
     // ★承認待ち（金額には含まれていない）
@@ -8261,6 +9053,9 @@ const calcDriverPayout = (driver, records, month, snapshot = null) => {
       pending.reduce((s, r) => s + n(r?.salesAmount), 0)
     ),
     hasPending: pending.length > 0,
+    // 【検証7回目で追加】承認待ちのうち、ドライバーがまだ申請していない下書きの件数。
+    // 実績承認画面には「申請済み」しか出ないため、警告で内訳を分けて案内する。
+    pendingDraftCount: pending.filter((r) => r?.approvalStatus === APPROVAL.DRAFT).length,
 
     // 明細PDFで一覧表示するための元データ（承認済みのみ）
     records: list,
@@ -8372,7 +9167,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => (
     { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]
   ));
-  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
   const co = companyInfo || {};
   const [yy, mm] = String(payout.month || "").split("-");
   const periodLabel = yy && mm ? `${yy}年${Number(mm)}月分` : payout.month;
@@ -8394,14 +9189,16 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
     ? "ロイヤリティ（固定）"
     : payout.royaltyTypeUsed === "none"
       ? "ロイヤリティ"
-      : `ロイヤリティ（売上の${payout.royaltyRateUsed || 0}％）`;
+      : (payout.royaltyBaseSales != null && payout.royaltyBaseSales !== payout.sales)
+        ? `ロイヤリティ（対象売上 ${yen(payout.royaltyBaseSales)} の${payout.royaltyRateUsed || 0}％）`
+        : `ロイヤリティ（売上の${payout.royaltyRateUsed || 0}％）`;
   const dedRows = [
     [royaltyLabel, payout.royalty],
     ["車両リース料", payout.lease],
     ["保険料", payout.insurance],
     ["制服代", payout.uniform],
     ["備品代", payout.supplies],
-    [driver?.otherDeductionNote || "その他控除", payout.otherDeduction],
+    [payout.otherDeductionNoteUsed || driver?.otherDeductionNote || "その他控除", payout.otherDeduction],
   ].filter(([, v]) => Number(v) !== 0);
 
   const toRows = (arr) => arr.length
@@ -8417,7 +9214,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
       const base = (Number(r?.driverAmount)||0) - addOns;
       return `<tr>
         <td class="cell-date">${esc(r?.date)}</td>
-        <td class="num">${r?.count ? esc(r.count) : "—"}</td>
+        <td class="num">${esc(recordQtyLabel(r) || "—")}</td>
         <td class="num">${yen(base)}</td>
         <td class="num">${addOns ? yen(addOns) : "—"}</td>
         <td class="num strong">${yen(r?.driverAmount)}</td>
@@ -8470,7 +9267,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
 
       <div class="summary">
         <div>
-          <div class="label">お振込金額（支給合計 − 控除合計）</div>
+          <div class="label">${isEmployeeDriver(driver) ? "支払額（正社員・パートのため給与で精算／振込対象外）" : `お振込金額（支給合計${payout.consumptionTax > 0 ? " ＋ 消費税" : ""} − 控除合計）`}</div>
           ${payout.isNegative ? '<div class="warn">※控除が支給を上回っています。ご確認ください。</div>' : ""}
         </div>
         <div class="amount">${yen(payout.netPay)}</div>
@@ -8486,7 +9283,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
           <h3>支給</h3>
           <table>${toRows(payRows)}</table>
           <div class="subtotal"><span>支給合計</span><span>${yen(payout.grossPay)}</span></div>
-          ${payout.consumptionTax > 0 ? `<div class="subtotal"><span>消費税（${Math.round(TAX_RATE * 100)}%）</span><span>${yen(payout.consumptionTax)}</span></div>` : ""}
+          ${payout.consumptionTax > 0 ? `<div class="subtotal"><span>消費税（${Math.round(TAX_RATE * 100)}%${payout.taxExemptReimbursement > 0 ? "・立替金を除く" : ""}）</span><span>${yen(payout.consumptionTax)}</span></div>` : ""}
         </div>
         <div class="col">
           <h3>控除</h3>
@@ -8499,7 +9296,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
         <h3 style="border:none;margin-bottom:0">稼働明細</h3>
         <table>
           <thead><tr>
-            <th>日付</th><th class="num">個数</th><th class="num">基本報酬</th><th class="num">実費・手当</th><th class="num">計</th>
+            <th>日付</th><th class="num">数量</th><th class="num">基本報酬</th><th class="num">チャーター・実費・手当</th><th class="num">計</th>
           </tr></thead>
           <tbody>${recordRows ? recordRows + blankRecordRows : '<tr><td colspan="5" class="empty">この月の稼働記録はありません</td></tr>'}</tbody>
         </table>
@@ -8507,7 +9304,7 @@ const buildPayoutStatementBody = (payout, companyInfo, driver) => {
 
       <div class="bank">
         <div class="label">振込先</div>
-        <div>${bankLine}</div>
+        <div>${isEmployeeDriver(driver) ? '<span class="bankempty">振込対象外（給与で精算）</span>' : bankLine}</div>
       </div>
 
       <div class="footer">${esc(co.name || "配送管理株式会社")}</div>
@@ -8639,15 +9436,27 @@ const addYearsToDateStr = (dateStr, years) => {
   d.setFullYear(d.getFullYear() + years);
   return formatDate(d);
 };
+// 【重要・不具合修正】日付は日本時間で判定しているのに、時刻は見ている端末の時間帯で
+// 表示していたため、日本以外の時間帯の端末では点呼時刻が「15:55」「02:50」のように
+// ずれて表示されていた（法定の点呼記録・CSVの時刻の誤り）。必ず日本時間で表示する。
 const fmtTimeShortShared = (iso) => {
   if (!iso) return "--:--";
-  try { return new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }); }
+  try { return new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tokyo" }); }
   catch { return "--:--"; }
 };
+// 【重要・不具合修正】以前は健康チェックのどれか1つでも「不良」だと「酒気帯び：あり」と
+// 判定していたため、疲労・体調不良などを申告しただけで、点呼記録や監査用CSVに
+// 「酒気帯びあり」と記録されていた（法定記録の誤り）。ハコログと同じく
+// 「飲酒・残酒はない」の項目が「不良」のときだけ酒気帯びありとする。
 const alcoholCheckHasAbnormalShared = (pc) => {
-  if (!pc?.healthCheck) return false;
-  return pc.healthCheck.items?.some(i => i.value === "bad") || false;
+  const items = Array.isArray(pc?.healthCheck?.items) ? pc.healthCheck.items : [];
+  if (items.length === 0) return false;
+  const alcoholItem = items.find(i => String(i?.label || "").includes("飲酒")) || items[0];
+  return alcoholItem?.value === "bad";
 };
+// 健康チェック全体（飲酒以外の体調・疲労なども含む）に「不良」があるか
+const healthCheckHasAbnormalShared = (pc) =>
+  Array.isArray(pc?.healthCheck?.items) && pc.healthCheck.items.some(i => i?.value === "bad");
 const vehicleCheckHasAbnormalShared = (pc) => {
   const vc = pc?.vehicleCheck;
   if (!vc) return false;
@@ -8655,7 +9464,7 @@ const vehicleCheckHasAbnormalShared = (pc) => {
   if (vc.prevAbnormal === "repair") return true;
   return false;
 };
-const precheckHasAbnormalShared = (pc) => alcoholCheckHasAbnormalShared(pc) || vehicleCheckHasAbnormalShared(pc);
+const precheckHasAbnormalShared = (pc) => healthCheckHasAbnormalShared(pc) || vehicleCheckHasAbnormalShared(pc);
 
 const DailyRecordDetail = ({ row }) => {
   const fmtTimeShort = fmtTimeShortShared;
@@ -8820,7 +9629,7 @@ const AuditPackModal = ({ data, onClose }) => {
       const dates = Array.from(new Set([
         ...shiftRecords.filter(r => r?.driverId === d.id && r.date >= startDate && r.date <= endDate).map(r => r.date),
         ...shiftReports.filter(r => r?.driverId === d.id && r.date >= startDate && r.date <= endDate).map(r => r.date),
-        ...precheckRecords.filter(r => r?.driverId === d.id && (r?.checkedAt || "").slice(0, 10) >= startDate && (r?.checkedAt || "").slice(0, 10) <= endDate).map(r => (r.checkedAt || "").slice(0, 10)),
+        ...precheckRecords.filter(r => r?.driverId === d.id && toJstDateStr(r?.checkedAt) >= startDate && toJstDateStr(r?.checkedAt) <= endDate).map(r => toJstDateStr(r.checkedAt)),
       ].filter(Boolean))).sort();
       dates.forEach(dateStr => {
         allRows.push({
@@ -8828,7 +9637,7 @@ const AuditPackModal = ({ data, onClose }) => {
           date: dateStr,
           shiftRec: shiftRecords.find(r => r?.driverId === d.id && r?.date === dateStr),
           shiftRep: shiftReports.find(r => r?.driverId === d.id && r?.date === dateStr),
-          precheck: precheckRecords.find(r => r?.driverId === d.id && (r?.checkedAt || "").slice(0, 10) === dateStr),
+          precheck: precheckRecords.find(r => r?.driverId === d.id && toJstDateStr(r?.checkedAt) === dateStr),
         });
       });
     });
@@ -8894,7 +9703,7 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
 
   const fmtTimeShort = (iso) => {
     if (!iso) return "--:--";
-    try { return new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }); }
+    try { return new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tokyo" }); }
     catch { return "--:--"; }
   };
 
@@ -8902,18 +9711,11 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
   // 【機能追加・ユーザー要望】アルコールチェックと車両点検は、法令上も
   // 別々に記録すべき、性質の異なる確認事項のため、一覧でも別の列として
   // 表示できるよう、判定ロジックを分ける。
-  const alcoholCheckHasAbnormal = (pc) => {
-    if (!pc?.healthCheck) return false;
-    return pc.healthCheck.items?.some(i => i.value === "bad") || false;
-  };
-  const vehicleCheckHasAbnormal = (pc) => {
-    const vc = pc?.vehicleCheck;
-    if (!vc) return false;
-    if ([...(vc.required || []), ...(vc.optional || [])].some(i => i.value === "repair")) return true;
-    if (vc.prevAbnormal === "repair") return true;
-    return false;
-  };
-  const precheckHasAbnormal = (pc) => alcoholCheckHasAbnormal(pc) || vehicleCheckHasAbnormal(pc);
+  // 画面ごとに判定が食い違わないよう、共通の判定を使う
+  // （「酒気帯び」は飲酒の項目だけで判定する：詳しくは alcoholCheckHasAbnormalShared）
+  const alcoholCheckHasAbnormal = alcoholCheckHasAbnormalShared;
+  const vehicleCheckHasAbnormal = vehicleCheckHasAbnormalShared;
+  const precheckHasAbnormal = precheckHasAbnormalShared;
 
   const rows = [];
   for (let day = 1; day <= daysInMonth; day++) {
@@ -8921,7 +9723,7 @@ const ShiftRecordsPage = ({ data, tenantId, userRole, isMobile }) => {
     const shiftRec = shiftRecords.find(r => r?.driverId === selectedDriverId && r?.date === dateStr);
     const shiftRep = shiftReports.find(r => r?.driverId === selectedDriverId && r?.date === dateStr);
     // precheck_records は日付単体の項目を持たないため、checkedAt（提出日時）の日付部分で照合する。
-    const precheck = precheckRecords.find(r => r?.driverId === selectedDriverId && (r?.checkedAt || "").slice(0, 10) === dateStr);
+    const precheck = precheckRecords.find(r => r?.driverId === selectedDriverId && toJstDateStr(r?.checkedAt) === dateStr);
     if (!shiftRec && !shiftRep && !precheck) continue; // 何も記録が無い日は表示しない（シンプルに保つ）
     // 【機能追加・法令調査に基づく再設計】点呼（業務前・業務後）・日常点検は、
     // 貨物軽自動車運送事業でも、2025年4月から法令上の実施・記録義務がある
@@ -9361,7 +10163,7 @@ const TroublePage = ({ data, setData, tenantId, userRole, isMobile, initialDrive
               value={form.driverId}
               onChange={(e) => setForm(v => ({ ...v, driverId: e.target.value }))}
               placeholder="ドライバー名で検索"
-              options={drivers.map(d => ({ id: d.id, name: d.name || d.id, kana: d.nameKana || "" }))}
+              options={drivers.map(d => ({ id: d.id, name: d.name || d.id, kana: driverKanaOf(d) }))}
             />
           </Fl>
           <Fl label="関連する車両（任意）">
@@ -9451,8 +10253,8 @@ const ChangeHistoryPage = ({ data, setData, tenantId, userRole }) => {
       const needle = searchText.trim().toLowerCase();
       return String(h?.entityLabel || "").toLowerCase().includes(needle) || String(h?.entityId || "").toLowerCase().includes(needle);
     })
-    .filter((h) => !dateFrom || String(h?.changedAt || "").slice(0, 10) >= dateFrom)
-    .filter((h) => !dateTo || String(h?.changedAt || "").slice(0, 10) <= dateTo)
+    .filter((h) => !dateFrom || toJstDateStr(h?.changedAt) >= dateFrom)
+    .filter((h) => !dateTo || toJstDateStr(h?.changedAt) <= dateTo)
     .sort((a, b) => String(b?.changedAt || "").localeCompare(String(a?.changedAt || "")));
 
   const fmt = (v) => {
@@ -9535,7 +10337,7 @@ const ChangeHistoryPage = ({ data, setData, tenantId, userRole }) => {
                   </span>
                   <b>{h.entityLabel || h.entityId}</b>
                   <span style={{ color: "#999", marginLeft: "8px" }}>
-                    {String(h.changedAt || "").slice(0, 16).replace("T", " ")}　{roleLabel[h.changedByRole] || h.changedByRole || "不明"}が変更{h.changedBy && h.changedBy !== "unknown" ? "（" + h.changedBy + "）" : ""}
+                    {fmtJstDateTime(h.changedAt)}　{roleLabel[h.changedByRole] || h.changedByRole || "不明"}が変更{h.changedBy && h.changedBy !== "unknown" ? "（" + h.changedBy + "）" : ""}
                   </span>
                 </span>
                 <span style={{ color: "#999" }}>{openId === h.id ? "閉じる ▲" : "詳細 ▼"}</span>
@@ -9598,7 +10400,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
   const [historyDriverId, setHistoryDriverId] = useState("");
   const [historyMonths, setHistoryMonths] = useState(12);
 
-  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
 
   // 月のレコードを1回だけ絞り込み、ドライバーごとに報酬を計算する。
   // useMemo を使うのは、ドライバー数が増えると毎回の再描画で重くなるため
@@ -9628,6 +10430,11 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
 
   // 稼働があったドライバーだけを振込対象にする（稼働ゼロの人に0円振込は不要）
   const activePayouts = payouts.filter((p) => p.workDays > 0);
+  // 【利用者の指示で追加】正社員・パートは給与で別に支払うため、振込の対象から外す
+  // （一覧・明細には表示するが、振込合計・振込一覧CSV・全銀データには含めない）。
+  const isEmployeePayout = (p) => isEmployeeDriver(drivers.find((x) => x?.id === p?.driverId));
+  const employeePayouts = activePayouts.filter(isEmployeePayout);
+  const transferPayouts = activePayouts.filter((p) => !isEmployeePayout(p));
 
   /**
    * ===== この月の売上が、荷主から回収できているか =====
@@ -9642,20 +10449,35 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
   const collectionStatus = useMemo(() => {
     const allInvoices = Array.isArray(data?.invoices) ? data.invoices : [];
     // この月の配送分に対する、荷主への請求書だけを見る
+    // 【重要・不具合修正】以前は
+    // ・一部入金で受け取った分が「入金済み」に入らず、「未回収」には請求額の全額が入る
+    // ・貸倒処理済みの請求書が「未回収」に入る
+    // ・赤伝（マイナスの請求書）が発行日の月に入り、訂正した元の月からは引かれない
+    // という計算で、回収状況が実際と大きく食い違っていた。
+    // 赤伝は「元の請求書と同じ月」の訂正として扱い、未回収は共通の計算（calcInvoiceOutstanding）に統一する。
     const customerInvoices = allInvoices.filter(
-      (inv) => inv?.type !== "driver_invoice" && !inv?.deleted && (inv?.billingMonth === month || (inv?.issueDate || "").slice(0, 7) === month || (inv?.note || "").includes(month))
+      (inv) => inv?.type !== "driver_invoice" && !inv?.deleted && !inv?.isCreditNote &&
+        // 【検証9回目で修正】以前は備考に「2026-09」という文字があるだけでこの月の請求書として数えていたため、
+        // 「照合解除（2026-09-26…）」のような入金の記録や、「2026-07-16〜2026-08-15 分」のような締め期間の表記で、
+        // 別の月の請求書まで混ざっていた（9月の「荷主へ請求した額」に8月分が入る等）。
+        // どの画面で作った請求書も、発行日は対象期間の中（締め日など）なので、発行日の月で判定する。
+        (inv?.billingMonth ? inv.billingMonth === month : (inv?.issueDate || "").slice(0, 7) === month)
     );
-    const billed = customerInvoices.reduce((s, i) => s + (Number(i?.total) || 0), 0);
-    const collected = customerInvoices
-      .filter((i) => i?.status === "paid")
-      .reduce((s, i) => s + (Number(i?.paidAmount ?? i?.paid_amount ?? i?.total) || 0), 0);
-    const uncollected = customerInvoices
-      .filter((i) => i?.status !== "paid")
-      .reduce((s, i) => s + (Number(i?.total) || 0), 0);
+    const baseIds = new Set(customerInvoices.map((i) => i?.id));
+    const creditNotesForMonth = allInvoices.filter((inv) => inv?.isCreditNote && !inv?.deleted && baseIds.has(inv?.originalInvoiceId));
+    const creditTotals = buildCreditNoteTotals(allInvoices.filter((i) => !i?.deleted));
+    const billed = customerInvoices.reduce((s, i) => s + (Number(i?.total) || 0), 0)
+      + creditNotesForMonth.reduce((s, i) => s + (Number(i?.total) || 0), 0);
+    const collected = customerInvoices.reduce((s, i) => {
+      if (i?.status === "paid") return s + (Number(i?.paidAmount ?? i?.paid_amount ?? i?.total) || 0);
+      if (i?.status === "partial" || i?.status === "bad_debt") return s + (Number(i?.paidAmount ?? i?.paid_amount ?? 0) || 0);
+      return s;
+    }, 0);
+    const uncollected = customerInvoices.reduce((s, i) => s + calcInvoiceOutstanding(i, creditTotals), 0);
     // この月にドライバーへ支払う予定の総額
-    const toPay = activePayouts.reduce((s, p) => s + Math.max(0, Number(p?.netPay) || 0), 0);
+    const toPay = transferPayouts.reduce((s, p) => s + Math.max(0, Number(p?.netPay) || 0), 0);
     return { billed, collected, uncollected, toPay, invoiceCount: customerInvoices.length };
-  }, [data?.invoices, month, activePayouts]);
+  }, [data?.invoices, month, transferPayouts]);
 
   /**
    * ===== 月ごとの履歴一覧 =====
@@ -9698,8 +10520,16 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         workDays: monthPayouts.reduce((s, p) => s + (p.workDays || 0), 0),
         totalCount: monthPayouts.reduce((s, p) => s + (p.totalCount || 0), 0),
         grossTotal: monthPayouts.reduce((s, p) => s + (p.grossPay || 0), 0),
+        // 【重要・不具合修正】消費税（インボイス登録済み・税込払いのドライバー分）が
+        // 履歴に出ておらず「支給合計 − 控除合計 ＝ 振込合計」が合わなかった。
+        taxTotal: monthPayouts.reduce((s, p) => s + (Number(p.consumptionTax) || 0), 0),
         deductionTotal: monthPayouts.reduce((s, p) => s + (p.totalDeduction || 0), 0),
         netTotal: monthPayouts.reduce((s, p) => s + (p.netPay || 0), 0),
+        // 【重要・不具合修正】上の画面の「振込合計」は、振込額がマイナスの人には
+        // 振り込まないため0円として数えているが、履歴ではマイナスもそのまま
+        // 足していたため、同じ月でも金額が食い違っていた。上の画面と同じ基準にする。
+        // 正社員・パートは給与で支払うため振込合計に含めない（上の画面と同じ）
+        transferTotal: monthPayouts.reduce((s, p) => s + (isEmployeeDriver(targetDrivers.find((d) => d?.id === p.driverId)) ? 0 : Math.max(0, Number(p.netPay) || 0)), 0),
       };
     });
   }, [dailyRecords, drivers, allDriversForHistory, companyInfo, month, historyMonths, historyDriverId]);
@@ -9769,7 +10599,13 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       const subtotal = p.grossPay;
       if (!(subtotal > 0)) return;
 
-      const registered = !!driver?.invoiceRegistered;
+      // 【検証9回目で修正】締めた月は、締めた時点のインボイス登録の有無で請求書を作る
+      // （報酬額と同じくスナップショットを使う）。以前は今の登録状況を使っていたため、締めた後に
+      // 登録したドライバーの過去の月の請求書が「税込（内税）」の扱いに変わってしまっていた。
+      const snapForInvoice = companyInfo?.monthSnapshots?.[targetMonth]?.[p.driverId];
+      const registered = snapForInvoice && snapForInvoice.invoiceRegistered !== undefined
+        ? !!snapForInvoice.invoiceRegistered
+        : !!driver?.invoiceRegistered;
       // 【重要】以前は「インボイス登録済みなら、必ず報酬に消費税を上乗せする」
       // という計算だったため、実際には税込（内税）で支払う契約のドライバーでも
       // 請求書だけ外税で発行され、請求額と実際の振込額が毎月食い違っていた。
@@ -9782,28 +10618,39 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       //
       // どちらの場合も「請求書の合計 ＝ 支給合計（控除前）」となり、
       // 実際の振込額と必ず整合するようになる。
-      const payTaxIncluded = !!(registered && driver?.payTaxIncluded);
+      // 【重要・不具合修正】消費税を上乗せするかどうかは、報酬計算（calcDriverPayout）の
+      // 結果に合わせる。以前は「今の」ドライバー設定を見ていたため、締めた後に設定を
+      // 変えると、締めた時点の設定で計算された振込額と請求書の金額が食い違っていた。
+      const payTaxIncluded = !!(registered && (Number(p.consumptionTax) || 0) > 0);
       let tax, total, taxExcluded;
-      if (!registered) {
+      // 【利用者の決定で変更】立替金（高速代・駐車場代）は消費税の対象外。請求書では非課税の行に分ける。
+      const reimb = Math.max(0, Math.min(subtotal, Number(p.taxExemptReimbursement) || 0));
+      const taxablePart = subtotal - reimb;
+      let taxablePartExcl = taxablePart;
+      if (payTaxIncluded) {
+        // 外税：報酬に消費税を上乗せして支払う（報酬画面の「消費税」と同じ額）
+        taxExcluded = subtotal;
+        tax = Number(p.consumptionTax) || 0;
+        total = subtotal + tax;
+      } else if (!registered) {
         // 未登録：消費税の記載なし
         taxExcluded = subtotal;
         tax = 0;
         total = subtotal;
-      } else if (payTaxIncluded) {
-        // 外税：報酬に消費税を上乗せして支払う
-        taxExcluded = subtotal;
-        tax = calcTax(subtotal);
-        total = subtotal + tax;
       } else {
-        // 内税：報酬額に消費税が含まれている
-        taxExcluded = Math.round(subtotal / (1 + TAX_RATE));
-        tax = subtotal - taxExcluded;
+        // 内税：報酬額に消費税が含まれている（立替金は税を含まない）
+        taxablePartExcl = Math.round(taxablePart / (1 + TAX_RATE));
+        tax = taxablePart - taxablePartExcl;
+        taxExcluded = taxablePartExcl + reimb;
         total = subtotal;
       }
 
       const [y, m] = targetMonth.split("-").map(Number);
       const issueDate = getTodayLocalStr();
-      const dueDate = formatDate(new Date(y, m, 15)); // 翌月15日払いを既定に
+      // 翌月15日払いを既定にする。ただし、それを過ぎてから発行すると
+      // 「お支払期限が発行日より前」の請求書になっていた（検証7回目で発見）ため、その場合は発行日を期限にする。
+      const defaultDue = formatDate(new Date(y, m, 15));
+      const dueDate = defaultDue < issueDate ? issueDate : defaultDue;
 
       const invoiceData = {
         id,
@@ -9817,17 +10664,29 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         total,
         status: "unpaid",
         registered,
-        invoiceRegNo: registered ? (driver?.invoiceRegNo || "") : "",
+        invoiceRegNo: registered ? (snapForInvoice?.invoiceRegNo || driver?.invoiceRegNo || "") : "",
         payoutMonth: targetMonth,
+        // 請求額（控除前）とは別に、実際に振り込む額（控除後）も持たせる。
+        // ダッシュボードの資金繰りは「実際に出ていくお金」で見積もる必要があるため。
+        deductionTotal: Number(p.totalDeduction) || 0,
+        transferAmount: Math.max(0, Number(p.netPay) || 0),
         lineItems: [{
           // 月締めでは複数ドライバー分の請求書をまとめて作るため、
           // 同じミリ秒内に複数の明細が生まれる。必ず一意にする。
           id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: `${targetMonth} 配送業務委託料（稼働${p.workDays}日 / ${p.totalCount.toLocaleString()}個）`,
+          name: `${targetMonth} 配送業務委託料（稼働${p.workDays}日${p.totalCount > 0 ? ` / ${p.totalCount.toLocaleString()}個` : ""}）`,
           qty: 1,
-          unitPrice: taxExcluded,
-          subtotal: taxExcluded,
-        }],
+          unitPrice: taxablePartExcl,
+          subtotal: taxablePartExcl,
+          taxable: true,
+        }, ...(reimb > 0 ? [{
+          id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-r`,
+          name: `${targetMonth} 立替金（高速代・駐車場代の実費）`,
+          qty: 1,
+          unitPrice: reimb,
+          subtotal: reimb,
+          taxable: false,
+        }] : [])],
       };
 
       if (existing) {
@@ -9864,10 +10723,17 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
   const totals = activePayouts.reduce((acc, p) => ({
     sales: acc.sales + p.sales,
     gross: acc.gross + p.grossPay,
+    // 【重要・不具合修正】インボイス登録済み・税込で支払うドライバーの消費税が
+    // 合計に出ておらず、「支給合計 − 控除合計 ＝ 振込合計」の計算式が合わなかった。
+    tax: acc.tax + (Number(p.consumptionTax) || 0),
     deduction: acc.deduction + p.totalDeduction,
     net: acc.net + p.netPay,
+    // 実際に振り込む額の合計（振込額がマイナスのドライバーには振り込まないため0円として数える。
+    // 正社員・パートは給与で支払うため振込には含めない）
+    transfer: acc.transfer + (isEmployeePayout(p) ? 0 : Math.max(0, Number(p.netPay) || 0)),
+    employee: acc.employee + (isEmployeePayout(p) ? (Number(p.netPay) || 0) : 0),
     royalty: acc.royalty + p.royaltyForDisplay,
-  }), { sales: 0, gross: 0, deduction: 0, net: 0, royalty: 0 });
+  }), { sales: 0, gross: 0, tax: 0, deduction: 0, net: 0, transfer: 0, royalty: 0, employee: 0 });
 
   // 承認待ちがあるまま振り込むと「働いたのに払われていない」となり、最も揉める。
   // 振込作業の前に必ず気づけるよう、最上部に警告を出す。
@@ -9882,13 +10748,32 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
    */
   const isMonthOutsideLoadedRange = month < defaultLoadCutoff().slice(0, 7);
   const totalPendingAmount = payouts.reduce((s, p) => s + p.pendingDriverAmount, 0);
+  const totalPendingDraftCount = payouts.reduce((s, p) => s + (p.pendingDraftCount || 0), 0);
 
   // 口座未登録・マイナス振込は、振込作業前に必ず気づく必要がある重大な問題。
-  const missingBank = activePayouts.filter((p) => {
+  const missingBank = transferPayouts.filter((p) => {
     const d = drivers.find((x) => x?.id === p.driverId);
     return !d?.bankName || !d?.accountNumber || !d?.accountHolderKana;
   });
-  const negativePayouts = activePayouts.filter((p) => p.isNegative);
+  const negativePayouts = transferPayouts.filter((p) => p.isNegative);
+  // 【重要・追加】削除済みのドライバーに、この月の承認済み実績が残っている場合、
+  // 報酬一覧には出てこない（削除済みのため）が、経営分析・売上には計上されている。
+  // 気づかないまま月を締めると、支払い漏れや帳簿の食い違いになるため知らせる。
+  const deletedDriversWithWork = (() => {
+    const deletedIds = new Set(allDriversForHistory.filter((d) => d?.deleted).map((d) => d.id));
+    if (deletedIds.size === 0) return [];
+    const byId = new Map();
+    filterRecordsByMonth(dailyRecords, month)
+      .filter((r) => deletedIds.has(r?.driverId) && isApprovedRecord(r))
+      .forEach((r) => {
+        const cur = byId.get(r.driverId) || { count: 0, sales: 0, pay: 0 };
+        cur.count += 1; cur.sales += Number(r?.salesAmount) || 0; cur.pay += Number(r?.driverAmount) || 0;
+        byId.set(r.driverId, cur);
+      });
+    return [...byId.entries()].map(([id, v]) => ({
+      id, name: allDriversForHistory.find((d) => d?.id === id)?.name || id, ...v,
+    }));
+  })();
 
   // 【重要】振込先口座が最近変更されたドライバーを検出する。
   // 口座の書き換えによる報酬詐取は、運送業で最も現実的な内部不正であり、
@@ -9942,9 +10827,16 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       `${driver.name} 様\n\n` +
       `お世話になっております。${month}分の報酬明細がまとまりましたのでお知らせいたします。\n\n` +
       `支給合計：${yen(payout.grossPay)}\n` +
+      // 【検証10回目で追加】消費税を上乗せして支払うドライバーは、消費税の行が無いと
+      // 「支給合計 − 控除合計」が振込予定額と合わず、問い合わせの原因になっていた。
+      ((Number(payout.consumptionTax) || 0) > 0
+        ? `消費税：${yen(payout.consumptionTax)}${(Number(payout.taxExemptReimbursement) || 0) > 0 ? "（10%・立替金を除く）" : "（10%）"}\n`
+        : "") +
       `控除合計：${yen(payout.totalDeduction)}\n` +
-      `振込予定額：${payout.isNegative ? yen(0) : yen(payout.netPay)}\n` +
-      (payout.isNegative ? `\n※今月は控除額が支給額を上回っているため、振込予定額は0円です。差額は今後の支給分から順次調整されます。\n` : "") +
+      (isEmployeePayout(payout)
+        ? `支払額：${yen(payout.netPay)}（正社員・パートのため給与で精算します。この明細からの振込はありません）\n`
+        : `振込予定額：${payout.isNegative ? yen(0) : yen(payout.netPay)}\n`) +
+      (payout.isNegative ? `\n※今月は控除額が支給額を上回っているため、振込予定額は0円です。差額の精算方法（翌月以降の報酬からの差し引き・お支払いなど）は、別途ご連絡します。\n` : "") +
       `\n詳しい内訳は、別タブで開いた明細PDFをご確認ください。\n\n` +
       `${companyInfo?.name || ""}`;
     const mailtoUrl = `mailto:${encodeURIComponent(driver.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
@@ -10016,15 +10908,26 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
    */
   const markDriverInvoicesPaid = (targetPayouts) => {
     const driverIds = targetPayouts.map((p) => p?.driverId);
+    // 【検証8回目で追加】控除が支給を上回り振込額が0円のドライバーの請求書は、
+    // 振込データに載らないため、いつまでも「未払」のまま残っていた
+    // （請求管理に未払として出続け、会計仕訳にも控除・未収入金が計上されない）。
+    // 振込はしないが控除で相殺して精算済みになるので、振込の記録と一緒に精算済みにする。
+    const offsetDriverIds = activePayouts
+      .filter((p) => !isEmployeePayout(p) && (Number(p?.netPay) || 0) <= 0)
+      .map((p) => p?.driverId);
     const targetInvoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(
       (inv) => inv?.type === "driver_invoice" && inv?.payoutMonth === month
-        && driverIds.includes(inv?.driverId) && inv?.status !== "paid" && !inv?.deleted
+        && (driverIds.includes(inv?.driverId) || (offsetDriverIds.includes(inv?.driverId) && (Number(inv?.transferAmount) || 0) === 0))
+        && inv?.status !== "paid" && !inv?.deleted
     );
     if (targetInvoices.length === 0) return;
+    const offsetCount = targetInvoices.filter((inv) => !driverIds.includes(inv?.driverId)).length;
     const proceed = window.confirm(
       `振込データを出力しました。\n\n` +
       `実際に振込を完了したら「OK」を押してください。\n` +
-      `対象の ${targetInvoices.length}件 のドライバー請求書を「支払済み」に記録します。\n\n` +
+      `対象の ${targetInvoices.length}件 のドライバー請求書を「支払済み」に記録します。\n` +
+      (offsetCount > 0 ? `（うち ${offsetCount}件 は控除が支給を上回ったため振込なし・控除で相殺して精算済みにします）\n` : "") +
+      `\n` +
       `（まだ振り込んでいない場合は「キャンセル」を押してください。後から請求管理の画面で個別に記録できます）`
     );
     if (!proceed) return;
@@ -10041,7 +10944,9 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
     setData((d) => ({
       ...d,
       invoices: (Array.isArray(d?.invoices) ? d.invoices : []).map((inv) =>
-        ids.has(inv?.id) ? { ...inv, status: "paid", paidDate: today, paidBy } : inv
+        ids.has(inv?.id)
+          ? { ...inv, status: "paid", paidDate: today, paidBy, ...(!driverIds.includes(inv?.driverId) ? { note: `${inv?.note || ""}${inv?.note ? " / " : ""}控除で相殺（振込なし）` } : {}) }
+          : inv
       ),
       drivers: (Array.isArray(d?.drivers) ? d.drivers : []).map((dr) =>
         paidDriverIds.has(dr?.id) && dr?.bankChangedAt
@@ -10053,19 +10958,50 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
   };
 
   /** 振込一覧CSV（仕様書⑤）。実務でそのまま確認・手入力に使える形式。 */
+  // 正社員・パートを振込データから外したことを、出力のたびに必ず知らせる
+  const confirmEmployeeExcluded = (label) => {
+    if (employeePayouts.length === 0) return true;
+    return window.confirm(
+      `以下の正社員・パートは給与で支払うため、${label}に含めていません（振込対象外）。\n\n` +
+      employeePayouts.map((p) => `・${p.driverName}（${yen(p.netPay)}）`).join("\n") +
+      `\n\nこのまま出力しますか？`
+    );
+  };
+
   const downloadTransferCsv = () => {
     if (activePayouts.length === 0) {
       window.alert("この月に稼働実績のあるドライバーがいません。");
       return;
     }
+    if (transferPayouts.length === 0) {
+      window.alert("この月の振込対象のドライバーがいません（正社員・パートは給与で支払うため振込対象外です）。");
+      return;
+    }
+    if (!confirmEmployeeExcluded("振込一覧")) return;
     // 【重要】以前はマイナスの振込額（控除が支給を上回った場合）を
     // そのままCSVに出力していた。このCSVは実務で「見ながら手入力で振込」
     // する用途で使われるため、マイナス金額が紛れていると、気づかずに
     // 誤った振込をしてしまう危険がある（全銀CSV側では既に除外していたが、
     // こちらだけ対策が漏れていた）。
     // 振込対象にならないドライバーは、明示的に知らせた上で除外する。
-    const payable = activePayouts.filter((p) => (Number(p.netPay) || 0) > 0);
-    const excluded = activePayouts.filter((p) => (Number(p.netPay) || 0) <= 0);
+    // 【重要・不具合修正】口座番号・名義が未登録のドライバーも振込一覧に載り、
+    // 「振込完了」を押すと、実際には振り込めないのに請求書が支払済みになっていた。
+    // 全銀データと同じく、口座が未登録の人は振込対象から外して知らせる。
+    const hasBank = (p) => {
+      const d = drivers.find((x) => x?.id === p.driverId) || {};
+      return !!(d.accountNumber && d.accountHolderKana);
+    };
+    const noBank = transferPayouts.filter((p) => (Number(p.netPay) || 0) > 0 && !hasBank(p));
+    if (noBank.length > 0) {
+      const proceed = window.confirm(
+        `以下のドライバーは口座情報（口座番号・名義）が未登録のため、振込一覧から除外します。\n\n` +
+        noBank.map((p) => `・${p.driverName}（${yen(p.netPay)}）`).join("\n") +
+        `\n\nドライバー管理で口座を登録してから、あらためて出力してください。このまま出力しますか？`
+      );
+      if (!proceed) return;
+    }
+    const payable = transferPayouts.filter((p) => (Number(p.netPay) || 0) > 0 && hasBank(p));
+    const excluded = transferPayouts.filter((p) => (Number(p.netPay) || 0) <= 0);
     if (excluded.length > 0) {
       const names = excluded.map((p) => `・${p.driverName}（${yen(p.netPay)}）`).join("\n");
       const proceed = window.confirm(
@@ -10079,11 +11015,17 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       return;
     }
     const headers = ["氏名", "銀行名", "銀行コード", "支店名", "支店コード", "預金種目", "口座番号", "口座名義", "振込金額"];
+    // 【重要・不具合修正】この一覧はExcelで開いて見ながら振込を行うためのもの。
+    // そのまま数字を出すと、Excelが先頭の0を消してしまい、口座番号「0098765」が
+    // 「98765」、銀行コード「0009」が「9」と表示される。これを見て手入力すると
+    // 別の口座へ振り込んでしまう危険があるため、Excelでも文字として扱われる形で出す。
+    // （銀行へそのまま取り込む全銀データCSVは、変換せずに数字のまま出す）
+    const asText = (v) => (v === "" || v == null ? "" : `="${String(v)}"`);
     const rows = payable.map((p) => {
       const d = drivers.find((x) => x?.id === p.driverId) || {};
       return [
-        p.driverName, d.bankName || "", d.bankCode || "", d.branchName || "", d.branchCode || "",
-        d.accountType || "", d.accountNumber || "", d.accountHolderKana || "", p.netPay,
+        p.driverName, d.bankName || "", asText(d.bankCode), d.branchName || "", asText(d.branchCode),
+        d.accountType || "", asText(d.accountNumber), d.accountHolderKana || "", p.netPay,
       ];
     });
     downloadCsv(rows, headers, "振込一覧");
@@ -10100,7 +11042,12 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
   const downloadZenginCsv = () => {
     // 名義カナに漢字・ひらがな等が入っていると銀行で弾かれる。
     // 入力時の警告を無視して保存された場合の最後の砦として、出力直前にも必ず検証する。
-    const kanaNg = activePayouts
+    if (transferPayouts.length === 0) {
+      window.alert("この月の振込対象のドライバーがいません（正社員・パートは給与で支払うため振込対象外です）。");
+      return;
+    }
+    if (!confirmEmployeeExcluded("全銀データ")) return;
+    const kanaNg = transferPayouts
       .map((p) => {
         const d = drivers.find((x) => x?.id === p.driverId) || {};
         const warn = validateBankKana(d.accountHolderKana);
@@ -10116,7 +11063,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       return;
     }
 
-    const invalid = activePayouts.filter((p) => {
+    const invalid = transferPayouts.filter((p) => {
       const d = drivers.find((x) => x?.id === p.driverId) || {};
       return !d.bankCode || !d.branchCode || !d.accountNumber || !d.accountHolderKana || p.netPay <= 0;
     });
@@ -10127,7 +11074,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       );
       if (!ok) return;
     }
-    const target = activePayouts.filter((p) => !invalid.includes(p));
+    const target = transferPayouts.filter((p) => !invalid.includes(p));
     if (target.length === 0) {
       window.alert("出力できる振込データがありません。ドライバーの口座情報を登録してください。");
       return;
@@ -10281,8 +11228,8 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
               <thead>
                 <tr style={{ background:"#fafbfc" }}>
                   {(historyDriverId
-                    ? ["月","状態","稼働日数","件数","支給合計","控除合計","振込合計","操作"]
-                    : ["月","状態","対象人数","支給合計","控除合計","振込合計","操作"]
+                    ? ["月","状態","稼働日数","個数","支給合計","消費税","控除合計","振込合計","操作"]
+                    : ["月","状態","対象人数","支給合計","消費税","控除合計","振込合計","操作"]
                   ).map(h => (
                     <th key={h} style={{ color:"#666", fontSize:"11px", padding:"8px 10px", textAlign: ["月","状態","操作"].includes(h) ? "left" : "right", fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder }}>{h}</th>
                   ))}
@@ -10300,14 +11247,22 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
                     {historyDriverId ? (
                       <>
                         <td style={{ padding:"8px 10px", textAlign:"right" }}>{row.workDays}日</td>
-                        <td style={{ padding:"8px 10px", textAlign:"right" }}>{row.totalCount}件</td>
+                        <td style={{ padding:"8px 10px", textAlign:"right" }}>{row.totalCount.toLocaleString()}個</td>
                       </>
                     ) : (
                       <td style={{ padding:"8px 10px", textAlign:"right" }}>{row.driverCount}名</td>
                     )}
                     <td style={{ padding:"8px 10px", textAlign:"right" }}>{yen(row.grossTotal)}</td>
+                    <td style={{ padding:"8px 10px", textAlign:"right", color:"#00695c" }}>{row.taxTotal > 0 ? `＋${yen(row.taxTotal)}` : "—"}</td>
                     <td style={{ padding:"8px 10px", textAlign:"right", color:"#e63946" }}>{yen(row.deductionTotal)}</td>
-                    <td style={{ padding:"8px 10px", textAlign:"right", fontWeight:700, color:"#007a74" }}>{yen(row.netTotal)}</td>
+                    <td style={{ padding:"8px 10px", textAlign:"right", fontWeight:700, color:"#007a74" }}>
+                      {yen(row.transferTotal)}
+                      {row.transferTotal !== row.netTotal && (
+                        <div style={{ fontSize:"10px", fontWeight:400, color:"#c62828", whiteSpace:"nowrap" }}>
+                          差引 {yen(row.netTotal)}（マイナスの人・正社員・パートは振込対象外）
+                        </div>
+                      )}
+                    </td>
                     <td style={{ padding:"8px 10px" }}>
                       <RetroBtn small onClick={()=>{
                         setMonth(row.month); setShowHistory(false);
@@ -10339,6 +11294,12 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
           </div>
           <div style={{ lineHeight:1.6 }}>
             この金額は下の振込額に<b>含まれていません</b>。このまま振り込むと、支払漏れになります。
+            {totalPendingDraftCount > 0 && (
+              <div style={{ marginTop:"4px" }}>
+                内訳：申請済み {totalPendingCount - totalPendingDraftCount}件（実績承認で承認できます）／
+                ドライバーの下書き {totalPendingDraftCount}件（まだ申請されていないため、ハコログから申請してもらう必要があります）
+              </div>
+            )}
             {pendingPayouts.length > 0 && (
               <div style={{ marginTop:"4px" }}>
                 対象：{pendingPayouts.map((p) => `${p.driverName}（${p.pendingCount}件）`).join("、")}
@@ -10382,11 +11343,26 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         </div>
       )}
 
+      {employeePayouts.length > 0 && (
+        <div style={{ background:"#e3f2fd", border:"1px solid #90caf9", borderRadius:"6px", padding:"10px 12px", fontSize:"12px", color:"#1565c0" }}>
+          <b>正社員・パートは振込対象外です（{employeePayouts.length}名）：</b>
+          {employeePayouts.map((p) => `${p.driverName}（${yen(p.netPay)}）`).join("、")}
+          <div style={{ marginTop:"4px" }}>給与で別に支払うため、振込合計・振込一覧CSV・全銀データには含めていません（明細は確認用に発行できます）。</div>
+        </div>
+      )}
+
       {missingBank.length > 0 && (
         <div style={{ background:"#fff4e5", border:"1px solid #ffb74d", borderRadius:"6px", padding:"10px 12px", fontSize:"12px", color:"#e65100" }}>
           <b>口座情報が未登録のドライバーがいます（{missingBank.length}名）：</b>
           {missingBank.map((p) => p.driverName).join("、")}
           <div style={{ marginTop:"4px" }}>ドライバー管理 → 該当ドライバー → 編集 →「⑧報酬・振込」タブから登録してください。</div>
+        </div>
+      )}
+      {deletedDriversWithWork.length > 0 && (
+        <div style={{ background:"#fff4e5", border:"1px solid #ffb74d", borderRadius:"6px", padding:"10px 12px", fontSize:"12px", color:"#e65100" }}>
+          <b>削除済みのドライバーに、この月の承認済み実績があります（下の一覧には表示されません）：</b>
+          {deletedDriversWithWork.map((d) => `${d.name}（${d.count}件・支払額 ${yen(d.pay)}）`).join("、")}
+          <div style={{ marginTop:"4px" }}>支払いが済んでいるか確認してください。誤って削除した場合は「設定 → 削除済みデータの復元」から戻せます。</div>
         </div>
       )}
       {negativePayouts.length > 0 && (
@@ -10401,8 +11377,9 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         <Stat label="対象ドライバー" value={`${activePayouts.length}名`} />
         <Stat label="売上合計" value={yen(totals.sales)} color="#007a74" />
         <Stat label="支給合計" value={yen(totals.gross)} color="#e65100" />
+        {totals.tax > 0 && <Stat label="消費税" value={`＋ ${yen(totals.tax)}`} color="#00695c" />}
         <Stat label="控除合計" value={`− ${yen(totals.deduction)}`} color="#7b1fa2" />
-        <Stat label="振込合計" value={yen(totals.net)} color="#c62828" />
+        <Stat label="振込合計" value={yen(totals.transfer)} color="#c62828" />
         {/* 【重要】「控除合計」と「ロイヤリティ収入」が同じ額で並んでいたため、
             二重に引かれているように見えてしまっていた。
             実際は「ドライバーから引いた額」＝「会社が受け取る額」で同じお金を
@@ -10417,7 +11394,17 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
       </div>
       {/* 何がどう計算されているのかを、その場で確認できるようにする */}
       <div style={{ fontSize:"11px", color:"#666", background:"#f5f5f5", borderRadius:"6px", padding:"8px 12px", marginTop:"-6px", lineHeight:1.8 }}>
-        <b>振込額の計算</b>：支給合計 {yen(totals.gross)} − 控除合計 {yen(totals.deduction)} ＝ <b style={{ color:"#c62828" }}>{yen(totals.net)}</b>
+        <b>振込額の計算</b>：支給合計 {yen(totals.gross)}
+        {totals.tax > 0 && <> ＋ 消費税 {yen(totals.tax)}</>}
+        {" "}− 控除合計 {yen(totals.deduction)} ＝ {totals.transfer !== totals.net ? <>差引 {yen(totals.net)}</> : <b style={{ color:"#c62828" }}>{yen(totals.net)}</b>}
+        {totals.transfer !== totals.net && (
+          <>
+            <br/>
+            {(totals.transfer + totals.employee) !== totals.net && <>振込額がマイナスのドライバー（{yen(totals.transfer + totals.employee - totals.net)}分）には振り込まず、</>}
+            {employeePayouts.length > 0 && <>正社員・パート（{employeePayouts.length}名・{yen(totals.employee)}）は給与で支払うため振込対象外です。</>}
+            実際に振り込む合計は <b style={{ color:"#c62828" }}>{yen(totals.transfer)}</b> です。
+          </>
+        )}
         <br/>
         <span style={{ color:"#888" }}>
           「ロイヤリティ」は、ドライバーごとに契約設定した追加控除に加えて、
@@ -10433,24 +11420,33 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         <table style={{ minWidth:"100%", width:"max-content", borderCollapse:"collapse", fontFamily:"'Noto Sans JP', sans-serif", fontSize:"12px" }}>
           <thead>
             <tr style={{ background:"#fafbfc" }}>
-              {["氏名","稼働","個数","売上","支給合計","ロイヤリティ","案件差益","その他控除","振込金額","操作"].map((h) => (
+              {["氏名","稼働","個数","売上","支給合計","消費税","ロイヤリティ","案件差益","その他控除","振込金額","操作"].map((h) => (
                 <th key={h} style={{ color:"#666", fontSize:"11px", padding:"8px 10px", textAlign: ["氏名","操作"].includes(h) ? "left" : "right", fontWeight:700, whiteSpace:"nowrap", borderBottom:cardBorder }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {activePayouts.length === 0 && (
-              <tr><td colSpan={9} style={{ padding:"24px", textAlign:"center", color:"#999" }}>
+              <tr><td colSpan={11} style={{ padding:"24px", textAlign:"center", color:"#999" }}>
                 この月に稼働実績のあるドライバーがいません。売上管理から実績を入力してください。
               </td></tr>
             )}
             {activePayouts.map((p) => (
               <tr key={p.driverId} style={{ borderBottom:"1px solid #f0f0f0" }}>
-                <td style={{ padding:"8px 10px", fontWeight:700, whiteSpace:"nowrap" }}>{p.driverName}</td>
+                <td style={{ padding:"8px 10px", fontWeight:700, whiteSpace:"nowrap" }}>
+                  {p.driverName}
+                  {isEmployeePayout(p) && (
+                    <span style={{ marginLeft:"6px", fontSize:"10px", fontWeight:600, color:"#1565c0", background:"#e3f2fd", border:"1px solid #90caf9", borderRadius:"3px", padding:"0 4px" }}>
+                      {drivers.find((x) => x?.id === p.driverId)?.contractType}
+                    </span>
+                  )}
+                </td>
                 <td style={{ padding:"8px 10px", textAlign:"right" }}>{p.workDays}日</td>
                 <td style={{ padding:"8px 10px", textAlign:"right" }}>{p.totalCount.toLocaleString()}</td>
                 <td style={{ padding:"8px 10px", textAlign:"right", color:"#007a74" }}>{yen(p.sales)}</td>
                 <td style={{ padding:"8px 10px", textAlign:"right", color:"#e65100" }}>{yen(p.grossPay)}</td>
+                {/* インボイス登録済み・税込で支払うドライバーの消費税（これが無いと行の計算が合わない） */}
+                <td style={{ padding:"8px 10px", textAlign:"right", color:"#00695c" }}>{Number(p.consumptionTax) ? `+${yen(p.consumptionTax)}` : "—"}</td>
                 <td style={{ padding:"8px 10px", textAlign:"right", color:"#7b1fa2" }}>{p.royalty ? `-${yen(p.royalty)}` : "—"}</td>
                 {/* 【利用者フィードバックで追加】受注登録時に売上金額と支払額を
                     あえて分けて入力した場合の差額（会社の実質的な取り分）を
@@ -10462,8 +11458,13 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
                 <td style={{ padding:"8px 10px", textAlign:"right", color:"#7b1fa2" }}>
                   {p.totalDeduction - p.royalty ? `-${yen(p.totalDeduction - p.royalty)}` : "—"}
                 </td>
-                <td style={{ padding:"8px 10px", textAlign:"right", fontWeight:700, fontSize:"14px", color: p.isNegative ? "#c62828" : "#222" }}>
-                  {yen(p.netPay)}
+                <td style={{ padding:"8px 10px", textAlign:"right", fontWeight:700, fontSize:"14px", color: isEmployeePayout(p) ? "#999" : p.isNegative ? "#c62828" : "#222" }}>
+                  {isEmployeePayout(p) ? (
+                    <>
+                      <span style={{ textDecoration:"line-through" }}>{yen(p.netPay)}</span>
+                      <div style={{ fontSize:"10px", fontWeight:600, color:"#1565c0", whiteSpace:"nowrap" }}>振込対象外（給与で精算）</div>
+                    </>
+                  ) : yen(p.netPay)}
                 </td>
                 <td style={{ padding:"8px 10px", whiteSpace:"nowrap" }}>
                   <RetroBtn small onClick={() => setDetailDriverId(p.driverId)} style={{ marginRight:"4px" }}>内訳</RetroBtn>
@@ -10498,7 +11499,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
               </div>
               {detailPayout.consumptionTax > 0 && (
                 <div style={{ display:"flex", justifyContent:"space-between", marginTop:"4px", fontWeight:700, color:"#00695c" }}>
-                  <span>消費税（{Math.round(TAX_RATE * 100)}%）</span><span>{yen(detailPayout.consumptionTax)}</span>
+                  <span>消費税（{Math.round(TAX_RATE * 100)}%{detailPayout.taxExemptReimbursement > 0 ? "・立替金を除く" : ""}）</span><span>{yen(detailPayout.consumptionTax)}</span>
                 </div>
               )}
             </div>
@@ -10508,14 +11509,16 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
                 [
                   detailPayout.royaltyTypeUsed === "fixed" ? "ロイヤリティ（固定）"
                     : detailPayout.royaltyTypeUsed === "none" ? "ロイヤリティ"
-                    : `ロイヤリティ（売上の${detailPayout.royaltyRateUsed || 0}％）`,
+                    : (detailPayout.royaltyBaseSales != null && detailPayout.royaltyBaseSales !== detailPayout.sales)
+                      ? `ロイヤリティ（対象売上 ${yen(detailPayout.royaltyBaseSales)} の${detailPayout.royaltyRateUsed || 0}％）`
+                      : `ロイヤリティ（売上の${detailPayout.royaltyRateUsed || 0}％）`,
                   detailPayout.royalty,
                 ],
                 ["車両リース料", detailPayout.lease],
                 ["保険料", detailPayout.insurance],
                 ["制服代", detailPayout.uniform],
                 ["備品代", detailPayout.supplies],
-                [detailDriver?.otherDeductionNote || "その他控除", detailPayout.otherDeduction],
+                [detailPayout.otherDeductionNoteUsed || detailDriver?.otherDeductionNote || "その他控除", detailPayout.otherDeduction],
               ].filter(([, v]) => Number(v) !== 0).map(([k, v]) => (
                 <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"3px 0", color:"#555" }}>
                   <span>{k}</span><span>{yen(v)}</span>
@@ -10585,7 +11588,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
               振込作業が完了してから締めてください。（解除には管理者権限が必要です）
             </p>
             <p style={{ fontSize:"12px", color:"#007a74", background:"#f0fbfa", borderRadius:"6px", padding:"8px 10px", marginTop:"10px" }}>
-              締めると同時に、稼働があった各ドライバー分の請求書が自動で発行されます。
+              ドライバーからの請求書は、締めても自動では発行されません。必要な場合は、締めた後に「ドライバー請求書を発行」ボタンから発行してください。
             </p>
             <div style={{ display:"flex", justifyContent:"flex-end", gap:"6px", marginTop:"14px" }}>
               <RetroBtn onClick={() => setConfirmClose(false)}>キャンセル</RetroBtn>
@@ -10645,6 +11648,17 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
                       leaseMonthly: d.leaseMonthly, insuranceMonthly: d.insuranceMonthly,
                       uniformMonthly: d.uniformMonthly, suppliesMonthly: d.suppliesMonthly,
                       otherDeductionMonthly: d.otherDeductionMonthly,
+                      // 【重要・追加】消費税を上乗せして支払うかどうかも固定する。
+                      // これが無いと、締めた後にインボイス登録や税込設定を変えただけで、
+                      // 締めた月の振込額（消費税の分）が変わってしまっていた。
+                      invoiceRegistered: !!d.invoiceRegistered, payTaxIncluded: !!d.payTaxIncluded,
+                      // 【検証（ハコログ2回目）で追加】締めた後に登録番号や控除の名目を変えても、
+                      // その月の請求書・明細は締めた時点の内容で出す。
+                      invoiceRegNo: d.invoiceRegNo || "", otherDeductionNote: d.otherDeductionNote || "",
+                      // どのロイヤリティの決まりで締めたか（締めた後に計算が変わらないようにする）
+                      royaltyRule: ROYALTY_RULE_VERSION,
+                      // どの消費税の決まりで締めたか（立替金に消費税を上乗せしない決まり＝2）
+                      taxRule: TAX_RULE_VERSION,
                     };
                   });
                   setData(d => ({
@@ -10687,9 +11701,10 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         <Modal title="締め処理が完了しました" onClose={() => setCloseResultMsg("")} width={420}>
           <p style={{ fontSize:"13px", color:"#444", lineHeight:1.8 }}>{closeResultMsg}</p>
           <div style={{ display:"flex", justifyContent:"flex-end", marginTop:"14px" }}>
-            <RetroBtn onClick={() => { setCloseResultMsg(""); setPage && setPage("invoices"); }}
+            {/* 締めても請求書は自動発行されなくなったため、「請求書を確認する」ではなく閉じるだけにする */}
+            <RetroBtn onClick={() => setCloseResultMsg("")}
               style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
-              請求書を確認する
+              閉じる
             </RetroBtn>
           </div>
         </Modal>
@@ -10921,35 +11936,11 @@ const calcProfitAnalysis = (drivers, dailyRecords, payables, month, companyInfo 
   const n = (v) => Number(v) || 0;
   const allMonthRecordsRaw = filterRecordsByMonth(dailyRecords, month);
 
-  // 【利用者との会話で決定・不具合修正済み】正社員・パートのドライバーは、
-  // 案件ごとにその都度「報酬（driverAmount）」を支払う運用をしていない
-  // （給料は月単位で別途支払う）。そのため、正社員が担当した実績を
-  // そのまま売上・粗利の計算に含めると、報酬コストが0円のまま売上
-  // だけが計上され、「粗利100%」のように実態とかけ離れた利益が
-  // 表示されてしまう。
-  // 正社員の人件費を月単位の固定費（経費）として計上する仕組みが
-  // 整うまでの暫定対応として、正社員・パートが担当した実績は、
-  // この経営分析の売上・粗利・利益の計算から一旦除外する。
-  // 【重要】これは「売上管理」「請求管理」など他の画面の売上とは
-  // 一致しなくなる差異のため、画面に必ず注記を出す。
-  // 【重要・不具合修正】当初はドライバーの"現在の"契約形態だけで
-  // 判定していたが、契約形態は後から変わりうる（業務委託→正社員、
-  // 退職による削除 等）ため、後日変更・削除されると、過去の
-  // （当時は正しく計上されていた）実績まで遡って扱いが変わってしまい、
-  // 確定していたはずの過去の月の利益が後から変動する不具合があった。
-  // 各実績に記録した「発生した時点の契約形態」のスナップショット
-  // （driverContractTypeAtRecord）があればそれを優先し、無い場合
-  // （この修正より前に作られた実績）だけ、現在の契約形態にフォールバック
-  // する（後方互換性のため）。
-  const currentContractTypeById = new Map(
-    (Array.isArray(drivers) ? drivers : []).map(d => [d?.id, d?.contractType])
-  );
-  const isEmployeeRecord = (r) => {
-    const snapshot = r?.driverContractTypeAtRecord;
-    const contractType = snapshot != null ? snapshot : currentContractTypeById.get(r?.driverId);
-    return contractType === "正社員" || contractType === "パート";
-  };
-  const allMonthRecords = allMonthRecordsRaw.filter(r => !isEmployeeRecord(r));
+  // 【利用者の要望で変更】以前は、正社員・パートが担当した実績を経営分析の売上・利益から除外していた
+  // （売上管理・請求管理の売上と一致しなかった）。今は含める。人件費は、実績に記録した
+  // 給与額（ドライバーへの支払額＝雇用契約の支払額）で計上する。月給制などで実績に給与額を
+  // 入れていない場合は、支払管理に人件費を経費として登録すれば営業利益に反映される（画面に注記あり）。
+  const allMonthRecords = allMonthRecordsRaw;
 
   // ★承認済みだけを売上・利益に計上する。
   // 報酬計算（calcDriverPayout）と同じ基準にしないと、
@@ -11005,7 +11996,7 @@ const calcProfitAnalysis = (drivers, dailyRecords, payables, month, companyInfo 
     const e = byCustomer.get(key);
     e.sales += n(r?.salesAmount);
     e.driverCost += n(r?.driverAmount);
-    e.count += n(r?.count);
+    e.count += recordParcelCount(r);
   });
   const customerProfit = [...byCustomer.values()].map((e) => {
     const profit = e.sales - e.driverCost;
@@ -11098,7 +12089,7 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [tab, setTab] = useState("kpi");
   const [rankMetric, setRankMetric] = useState("sales");
 
-  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
   const pct = (v) => `${(Number(v) || 0).toFixed(1)}%`;
   const customerName = (id) => customers.find(c => c?.id === id)?.name || "(未設定)";
 
@@ -11141,7 +12132,9 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       // 【重要】この画面（経営分析）では monthRecords が定義されていないため、
       // 参照すると画面全体がエラーで表示できなくなっていた。
       // この画面で使える dailyRecords から、その月の承認済み実績を絞り込む。
+      // 案件単価（＝売上 ÷ 案件数）がずれないよう、案件数も売上と同じ基準で数える。
       const monthly = (Array.isArray(dailyRecords) ? dailyRecords : [])
+        // 【利用者の要望で変更】売上に正社員・パートの分を含めたので、案件数も同じく含める
         .filter((r) => r && !r.deleted && String(r.date || "").startsWith(month) && isApprovedRecord(r));
       // 継続的な仕事：顧客×仕事種別ごとに1件
       // 【重要・統合対応】以前はここで qualityRecords を別途マージしていたが、
@@ -11188,13 +12181,16 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     // 実際の個数は "配完個数" や "deka_◯◯" というフィールドに入っている。
     // 行数のまま数えると、ルート配送中心の会社ほど分母が実態より大幅に
     // 小さくなり、事故率・クレーム率が実態よりずっと高く表示されてしまう。
+    // 【重要・不具合修正】以前はここだけ独自の数え方をしていて、売上管理で入力した
+    // 「個数（count）」や、ハコログのデカ宅（サイズ別の dekaCounts）を見ていなかった。
+    // そのため、例えば1日100個の実績も「1件」と数えられ、配送数が実際より少なく、
+    // 事故・クレーム発生率が実際より高く出ていた。全画面共通の recordParcelCount を使う。
     const getRecordDeliveryCount = (r) => {
       if (!r) return 0;
-      if (r?.["配完個数"] != null) return Number(r["配完個数"]) || 0;
-      const dekaKeys = Object.keys(r).filter((k) => k.startsWith("deka_"));
-      if (dekaKeys.length > 0) {
-        return dekaKeys.reduce((s, k) => s + (Number(r[k]) || 0), 0);
-      }
+      const c = recordParcelCount(r);
+      if (c > 0) return c;
+      // 配完個数が「0」と入力されている日は0件（配送が無かった日）
+      if (r?.["配完個数"] != null && r?.["配完個数"] !== "") return 0;
       // 単発受注由来（個数の概念が無い、またはチャーター等）は1件として数える。
       return 1;
     };
@@ -11306,8 +12302,8 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                 「売上管理」「請求管理」など他の画面の売上とは一致しない
                 ことがあるため、必ず注記を出して混乱を防ぐ。 */}
             {drivers.some(d => d?.contractType === "正社員" || d?.contractType === "パート") && (
-              <div style={{ fontSize:"11px", color:"#e65100", background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:"6px", padding:"6px 10px", marginBottom:"10px" }}>
-                ⚠ 正社員・パートのドライバーが担当した実績は、この経営分析の売上・利益には含まれていません（月単位の給料は経費として別途計上する運用に、今後対応予定です）。そのため、売上管理・請求管理の売上合計とは一致しません。
+              <div style={{ fontSize:"11px", color:"#555", background:"#f5f7f8", border:"1px solid #e0e0e0", borderRadius:"6px", padding:"6px 10px", marginBottom:"10px" }}>
+                ※ 正社員・パートのドライバーが担当した実績も、売上・利益に含めています。人件費は、実績に記録した給与額（ドライバーへの支払額）で計上しています（社会保険料などの会社負担分は含みません。必要な場合は支払管理に経費として登録してください）。
               </div>
             )}
             <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 24px", fontSize:"13px" }}>
@@ -11494,7 +12490,7 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           <RankBarChart data={ranking.rows} color={ranking.meta.color} valueFormat={ranking.meta.fmt}/>
           {ranking.rows.length > 0 && (
             <div style={{ marginTop:"12px", fontSize:"11px", color:"#999" }}>
-              ※「利益貢献」＝ そのドライバーが生んだ売上 − 支払った報酬 ＋ 徴収したロイヤリティ
+              ※「利益貢献」＝ そのドライバーが生んだ売上 − 支払った報酬 ＋ 報酬から差し引いたロイヤリティ・リース料などの控除
             </div>
           )}
         </Panel2>
@@ -11721,7 +12717,7 @@ const buildSystemAlerts = (data, alertDays = 30) => {
 
     // 振込先未登録（報酬を払えない＝最も実害が大きいので danger）
     const hasRecords = records.some(r => r?.driverId === d?.id);
-    if (hasRecords && (!d?.bankName || !d?.accountNumber || !d?.accountHolderKana)) {
+    if (hasRecords && !isEmployeeDriver(d) && (!d?.bankName || !d?.accountNumber || !d?.accountHolderKana)) {
       alerts.push({ id:`bank-${d.id}`, level:"danger", category:"報酬確定漏れ", page:"drivers",
         message:`【振込先未登録】${name} に稼働実績がありますが、振込先口座が未登録です。報酬を振り込めません。` });
     }
@@ -11741,7 +12737,10 @@ const buildSystemAlerts = (data, alertDays = 30) => {
       // 実在する委託ドライバーなら、通常これらは登録されているはず。
       if (!d?.phone) missing.push("電話番号");
       if (!d?.licenseNumber) missing.push("免許証番号");
-      if (!d?.contractStartDate && !d?.firstServiceDate) missing.push("契約開始日");
+      // 【重要・不具合修正】ドライバー登録画面が保存する項目名は contractStart なのに、
+      // ここでは存在しない contractStartDate を見ていたため、契約開始日を入れていても
+      // 常に「契約開始日が未登録」として「要確認」の通知が出ていた。
+      if (!d?.contractStart && !d?.contractStartDate && !d?.firstServiceDate) missing.push("契約開始日");
 
       // 「口座は登録されているのに、本人を特定できる情報が無い」のは、
       // 報酬を受け取ることだけが目的の登録である可能性を示す。
@@ -11756,12 +12755,13 @@ const buildSystemAlerts = (data, alertDays = 30) => {
 
       // 口座名義とドライバー氏名が大きく食い違う場合。
       // （屋号名義・旧姓など正当な理由もあるため、断定はしない）
-      const kana = String(d?.accountHolderKana || "").replace(/[\s　]/g, "");
-      const nameKana = String(d?.nameKana || "").replace(/[\s　]/g, "");
+      // 口座名義（半角カナが多い）とフリガナ（ひらがなのことが多い）を同じ形にそろえて比べる
+      const kana = normalizeKanaForCompare(d?.accountHolderKana);
+      const nameKana = normalizeKanaForCompare(driverKanaOf(d));
       if (kana && nameKana && !kana.includes(nameKana.slice(0, 2)) && !nameKana.includes(kana.slice(0, 2))) {
         alerts.push({
           id:`bank-name-mismatch-${d.id}`, level:"warn", category:"要確認", page:"drivers",
-          message:`【要確認】${name}（${nameKana}）の口座名義「${d.accountHolderKana}」が氏名と一致していません。屋号名義などの正当な理由か、ご確認ください。`,
+          message:`【要確認】${name}（${driverKanaOf(d)}）の口座名義「${d.accountHolderKana}」が氏名と一致していません。屋号名義などの正当な理由か、ご確認ください。`,
         });
       }
 
@@ -11971,12 +12971,13 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   // 合算されていたため内訳が分からない）、ダッシュボードの「要対応」一覧には
   // 出ていなかった。延滞額は「請求額の全額」ではなく、入出金画面と同じく
   // 「入金済み額を差し引いた本当の未回収残額」で計算する。
-  const overdueInvoicesForAlert = invoicesForAlert.filter(i =>
-    i?.status === "overdue" || ((i?.status === "unpaid" || i?.status === "partial") && (i?.dueDate || "") < todayStr)
-  );
+  const creditTotalsForAlert = buildCreditNoteTotals(invoicesForAlert);
+  const overdueInvoicesForAlert = invoicesForAlert.filter(i => isInvoiceOverdue(i, todayStr, creditTotalsForAlert));
   if (overdueInvoicesForAlert.length > 0) {
     const overdueRemaining = overdueInvoicesForAlert.reduce(
-      (s, i) => s + Math.max(0, n(i?.remainingAmount != null ? i.remainingAmount : i?.total)),
+      // 残額の記録が無い請求書（口座照合を通っていない一部入金など）でも正しくなるよう、
+      // 「請求額 − 入金済み額」で計算する（ダッシュボード・請求管理の「未回収」と同じ式）。
+      (s, i) => s + calcInvoiceOutstanding(i, creditTotalsForAlert),
       0
     );
     alerts.push({
@@ -12013,7 +13014,23 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   const recentJobTypeIds = new Set(
     records.filter(r => r?.date && r.date >= addDays(todayStr, -30) && r?.jobTypeId).map(r => r?.jobTypeId)
   );
-  const unpricedJobTypes = jobTypes.filter(jt => recentJobTypeIds.has(jt?.id) && n(jt?.driverUnitPrice) === 0);
+  // 【重要・不具合修正】以前は仕事種別の標準単価だけを見ていたため、
+  // ・デカ宅（サイズ別単価で設定するので標準単価は0のまま）
+  // ・ドライバーごとの個別単価で設定している仕事
+  // まで「単価未設定」と誤って警告していた。実際に報酬0円になってしまう組み合わせ
+  // （そのドライバーの個別単価も、標準単価も無い）だけを警告する。
+  const driversById = new Map((Array.isArray(data?.drivers) ? data.drivers : []).map(d => [d?.id, d]));
+  const unpricedJobTypes = jobTypes.filter(jt => {
+    if (!recentJobTypeIds.has(jt?.id)) return false;
+    const recentRecs = records.filter(r => r?.jobTypeId === jt.id && r?.date && r.date >= addDays(todayStr, -30));
+    return recentRecs.some(r => {
+      const route = findDriverRoute(driversById.get(r?.driverId), jt.id, r?.customerId);
+      if (jt?.name === "デカ宅") {
+        return !mergeDekaRates(route?.dekaRates, jt?.dekaRates, []).some(x => n(x.driverUnitPrice) > 0);
+      }
+      return n(pickRoutePrice(route?.driverPrice ?? route?.driverUnitPrice, jt?.driverUnitPrice)) === 0;
+    });
+  });
   if (unpricedJobTypes.length > 0) {
     alerts.push({
       id: "unpriced-jobtypes", level: "danger", category: "報酬確定漏れ", page: "sales_mgmt",
@@ -12049,7 +13066,7 @@ const buildSystemAlerts = (data, alertDays = 30) => {
   if (submitted.length > 0) {
     // 3日以上放置されているものは危険度を上げる
     const stale = submitted.filter(r => {
-      const d = daysUntil(String(r?.submittedAt || r?.date || "").slice(0, 10));
+      const d = daysUntil(toJstDateStr(r?.submittedAt || r?.date || ""));
       return d !== null && d <= -3;
     });
     alerts.push({
@@ -12130,12 +13147,12 @@ const detectRecordRisks = (record, context = {}) => {
     ? (byDriverJob.get(`${record.driverId}|${record.jobTypeId}`) || [])
     : allRecords.filter((r) => r && r.driverId === record.driverId && r.jobTypeId === record.jobTypeId);
   const sameJob = sameJobSource.filter(
-    (r) => r && r.id !== record.id && n(r.count) > 0 && isApprovedRecord(r)
+    (r) => r && r.id !== record.id && recordParcelCount(r) > 0 && isApprovedRecord(r)
   );
-  if (sameJob.length >= 3 && n(record.count) > 0) {
-    const avg = sameJob.reduce((s, r) => s + n(r.count), 0) / sameJob.length;
-    if (avg > 0 && n(record.count) > avg * 3) {
-      risks.push({ level: "danger", message: `配送個数が普段の3倍以上です（今回 ${n(record.count)}個 / 平均 ${Math.round(avg)}個）。打ち間違いの可能性。` });
+  if (sameJob.length >= 3 && recordParcelCount(record) > 0) {
+    const avg = sameJob.reduce((s, r) => s + recordParcelCount(r), 0) / sameJob.length;
+    if (avg > 0 && recordParcelCount(record) > avg * 3) {
+      risks.push({ level: "danger", message: `配送個数が普段の3倍以上です（今回 ${recordParcelCount(record)}個 / 平均 ${Math.round(avg)}個）。打ち間違いの可能性。` });
     }
   }
 
@@ -12204,7 +13221,7 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
   // 承認・却下済みの履歴（取消可能）を切り替えるためのタブ。
   const [viewMode, setViewMode] = useState("pending"); // pending / decided
 
-  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
   const driverName = (id) => drivers.find(d => d?.id === id)?.name || "(不明)";
   const customerName = (id) => customers.find(c => c?.id === id)?.name || "(未設定)";
   const jobName = (id) => jobTypes.find(j => j?.id === id)?.name || "配送";
@@ -12462,7 +13479,7 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
                       <td style={{ padding: "8px 10px", textAlign: "right", color: "#007a74" }}>{yen(r.salesAmount)}</td>
                       <td style={{ padding: "8px 10px", textAlign: "right", color: "#e65100", fontWeight: 700 }}>{yen(r.driverAmount)}</td>
                       <td style={{ padding: "8px 10px", whiteSpace: "nowrap", fontSize: "11px", color: "#888" }}>
-                        {decidedAt ? String(decidedAt).slice(0, 16).replace("T", " ") : "—"}
+                        {decidedAt ? fmtJstDateTime(decidedAt) : "—"}
                       </td>
                       <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
                         {closed ? (
@@ -12537,10 +13554,10 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
                       style={{ cursor: "pointer" }}
                     />
                   </th>
-                  {["状態", "日付", "ドライバー", "案件", "個数", "売上", "支払", "操作"].map((h, i) => (
+                  {["状態", "日付", "ドライバー", "案件", "数量", "売上", "支払", "操作"].map((h, i) => (
                     <th key={h} style={{
                       color: "#666", fontSize: "11px", padding: "8px 10px", fontWeight: 700, whiteSpace: "nowrap",
-                      borderBottom: cardBorder, textAlign: ["個数", "売上", "支払"].includes(h) ? "right" : "left",
+                      borderBottom: cardBorder, textAlign: ["数量", "売上", "支払"].includes(h) ? "right" : "left",
                     }}>{h}</th>
                   ))}
                 </tr>
@@ -12564,7 +13581,7 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
                       {customerName(r.customerId)}
                       <div style={{ fontSize: "10px", color: "#999" }}>{jobName(r.jobTypeId)}</div>
                     </td>
-                    <td style={{ padding: "8px 10px", textAlign: "right" }}>{(Number(r.count) || 0).toLocaleString()}</td>
+                    <td style={{ padding: "8px 10px", textAlign: "right", whiteSpace: "nowrap" }}>{recordQtyLabel(r) || "—"}</td>
                     <td style={{ padding: "8px 10px", textAlign: "right", color: "#007a74" }}>{yen(r.salesAmount)}</td>
                     <td style={{ padding: "8px 10px", textAlign: "right", color: "#e65100", fontWeight: 700 }}>{yen(r.driverAmount)}</td>
                     <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
@@ -12631,15 +13648,18 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
             <div>
               <div style={{ fontWeight: 700, color: "#e65100", borderBottom: "2px solid #e65100", paddingBottom: "4px", marginBottom: "6px" }}>金額</div>
               {[
-                ["会社の売上", detail.salesAmount, "#007a74"],
-                ["チャーター（売上）", detail.charterSales, "#007a74"],
-                ["ドライバーへの支払", detail.driverAmount, "#e65100"],
-                ["チャーター（支払）", detail.charterDriver, "#e65100"],
-                ["高速代", detail.highwayFee, "#c62828"],
-                ["駐車場代", detail.parkingFee, "#c62828"],
-                ["燃料補助", detail.fuelAllowance, "#c62828"],
-                ["その他支給", detail.otherAllowance, "#c62828"],
-              ].filter(([, v]) => Number(v) !== 0).map(([k, v, c]) => (
+                // 【検証8回目で修正】売上・支払はチャーターや実費を含んだ合計なのに、内訳が同じ並びで
+                // 出ていたため、足し算すべきものに見えていた。内訳は「うち」と分かるようにする。
+                ["会社の売上（合計）", detail.salesAmount, "#007a74"],
+                ["　うちチャーター売上", detail.charterSales, "#007a74"],
+                ["ドライバーへの支払（合計）", detail.driverAmount, "#e65100"],
+                ["　うちチャーター支払", detail.charterDriver, "#e65100"],
+                ["　うち高速代", detail.highwayFee, "#c62828"],
+                ["　うち駐車場代", detail.parkingFee, "#c62828"],
+                ["　うち燃料補助", detail.fuelAllowance, "#c62828"],
+                ["　うちその他支給", detail.otherAllowance, "#c62828"],
+              // 未入力（undefined）の内訳が「¥0」の行として並んでいたため、0円・未入力の行は出さない
+              ].filter(([k, v]) => k.startsWith("会社の売上") || k.startsWith("ドライバーへの支払") || (Number(v) || 0) !== 0).map(([k, v, c]) => (
                 <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #f5f5f5" }}>
                   <span style={{ color: "#888" }}>{k}</span>
                   <span style={{ fontWeight: 700, color: c }}>{yen(v)}</span>
@@ -12688,7 +13708,7 @@ const ApprovalPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) 
             placeholder="例：高速代の領収書を提出してください。&#10;例：配送個数が普段と違います。ご確認ください。"
             rows={4}
             style={{
-              width: "100%", border: "1px solid #d0d0d0", borderRadius: "6px", padding: "10px",
+              width: "100%", boxSizing: "border-box", border: "1px solid #d0d0d0", borderRadius: "6px", padding: "10px",
               fontSize: "13px", fontFamily: "'Noto Sans JP', sans-serif", resize: "vertical",
             }}
           />
@@ -12904,7 +13924,7 @@ const NoticeBroadcastPage = ({ data, setData, tenantId, userRole, isMobile }) =>
               <textarea
                 value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
                 rows={5} placeholder="ドライバーに伝えたい内容を入力してください"
-                style={{ width: "100%", border: "1px solid #d0d0d0", borderRadius: "6px", padding: "10px", fontSize: "13px", fontFamily: "'Noto Sans JP', sans-serif", resize: "vertical" }}
+                style={{ width: "100%", boxSizing: "border-box", border: "1px solid #d0d0d0", borderRadius: "6px", padding: "10px", fontSize: "13px", fontFamily: "'Noto Sans JP', sans-serif", resize: "vertical" }}
               />
             </div>
 
@@ -13075,7 +14095,7 @@ const ChatPage = ({ data, tenantId, userRole, isMobile, authEmail }) => {
             </div>
             {s.last && (
               <div style={{ fontSize: "11px", color: "#999", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {s.last.senderId === "company" ? "会社：" : ""}{s.last.text}
+                {s.last.senderId === "company" ? "会社：" : ""}{chatMsgText(s.last) || (s.last.type === "image" ? "［画像］" : s.last.type === "file" ? "［ファイル］" : "")}
               </div>
             )}
           </div>
@@ -13108,9 +14128,19 @@ const ChatPage = ({ data, tenantId, userRole, isMobile, authEmail }) => {
                       maxWidth: "70%", padding: "8px 12px", borderRadius: "12px", fontSize: "13px", whiteSpace: "pre-wrap",
                       background: mine ? "#00a09a" : "#f0f0f0", color: mine ? "#fff" : "#222",
                     }}>
-                      {m.text}
+                      {m.type === "image" && safeChatUrl(m.url) && (
+                        <a href={safeChatUrl(m.url)} target="_blank" rel="noopener noreferrer">
+                          <img src={safeChatUrl(m.url)} alt="添付画像" style={{ maxWidth: "100%", maxHeight: "240px", borderRadius: "8px", display: "block", marginBottom: chatMsgText(m) ? "4px" : 0 }}/>
+                        </a>
+                      )}
+                      {m.type === "file" && safeChatUrl(m.url) && (
+                        <a href={safeChatUrl(m.url)} target="_blank" rel="noopener noreferrer" style={{ color: mine ? "#fff" : "#00a09a", fontWeight: 700, textDecoration: "underline", display: "block" }}>
+                          📎 {m.fileName || "ファイル"}
+                        </a>
+                      )}
+                      {chatMsgText(m)}
                       <div style={{ fontSize: "9px", opacity: 0.7, marginTop: "3px", textAlign: "right" }}>
-                        {String(m.createdAt || "").slice(0, 16).replace("T", " ")}
+                        {fmtJstDateTime(m.createdAt)}
                       </div>
                     </div>
                   </div>
@@ -13123,7 +14153,11 @@ const ChatPage = ({ data, tenantId, userRole, isMobile, authEmail }) => {
             <div style={{ padding: "10px 12px", borderTop: cardBorder, display: "flex", gap: "6px" }}>
               <input
                 value={draft} onChange={e => setDraft(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                onKeyDown={e => {
+                  // 日本語入力の変換確定のEnterでは送信しない（確定と同時に書きかけの文が送られてしまうため）
+                  if (e.nativeEvent?.isComposing || e.keyCode === 229) return;
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+                }}
                 placeholder="メッセージを入力"
                 style={{ flex: 1, border: "1px solid #d0d0d0", borderRadius: "20px", padding: "8px 14px", fontSize: "13px" }}
               />
@@ -13169,7 +14203,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
   // 【重要】単価変更時の確認メッセージで yen() を使っているのに、
   // この画面には定義が無かった。単価を変えて保存を押すと
   // 「yen is not defined」で処理が止まり、ボタンが無反応に見えていた。
-  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
   // デカ宅のサイズ区分。ドライバー編集の担当ルート表と共通の並び。
   const dekaStyles = ["100以下","140","160","180","200","220","240","260"];
   const [editingJobType, setEditingJobType] = useState(null);
@@ -13225,8 +14259,8 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
     // 距離制・時間制では距離や時間に小数を入力できるため、計算結果も小数になることがある。
     // 日本のビジネス慣習では金額は円単位（整数）で扱うため、ここで四捨五入する。
     return {
-      salesAmount: Math.round(sales + charterSales),
-      driverAmount: Math.round(driver + charterDriver + allowanceTotal),
+      salesAmount: roundYen(sales + charterSales),
+      driverAmount: roundYen(driver + charterDriver + allowanceTotal),
     };
   };
 
@@ -13282,7 +14316,16 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
   };
 
   const saveRecord = () => {
-    if (!recordForm.date || !recordForm.driverId || !recordForm.customerId || !recordForm.jobTypeId) return;
+    // 【不具合修正】以前は必須項目が空だと、何も言わずに保存をやめていたため、
+    // 「保存するを押しても何も起きない」状態になっていた。足りない項目を知らせる。
+    const missing = [
+      !recordForm.date && "日付", !recordForm.driverId && "ドライバー",
+      !recordForm.customerId && "顧客", !recordForm.jobTypeId && "仕事種別",
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      window.alert(`次の項目を入力してください：${missing.join("・")}`);
+      return;
+    }
     // 【重要】既存レコードの編集は openEditRecord の時点でブロックしているが、
     // 「新規実績追加」ボタンはそこを経由しないため、締め済みの月に
     // 気づかずに新しい実績を追加できてしまう抜け穴があった（実際に確認）。
@@ -13599,6 +14642,10 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
   };
 
   const monthRecords = dailyRecords.filter(r => r?.date?.startsWith(selectedMonth));
+  // 【重要・不具合修正】「差し戻し（却下）」した実績は、内容に誤りがあると判断したもの。
+  // 以前はこれも月次集計・簡易P/L・顧客別の「請求予定」に売上として数えられていた。
+  // 一覧には残して見えるようにしつつ、金額の集計からは外す。
+  const monthRecordsCounted = monthRecords.filter(r => r?.approvalStatus !== APPROVAL.REJECTED);
 
   const qualitySummary = qualityRecords
     // 【重要】以前は「salesAmount があるもの」だけを対象にしていたため、
@@ -13629,8 +14676,15 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
 
   const qualityDailyRows = Object.values(qualitySummary);
 
-  const totalSales = [...monthRecords, ...qualityDailyRows].reduce((s, r) => s + Number(r.salesAmount || 0), 0);
-  const totalDriver = [...monthRecords, ...qualityDailyRows].reduce((s, r) => s + Number(r.driverAmount || 0), 0);
+  // 【重要・不具合修正（二重計上）】実績データは統合済みで、個建実績入力から入った実績
+  // （source === "quality_entry"）も monthRecords に既に含まれている。以前はここに
+  // 旧仕様の名残である qualityDailyRows（同じ実績を日ごとにまとめ直したもの）も足していたため、
+  // 個建実績入力からの売上・支払が、合計・ドライバー別・顧客別・月次請求書で2回数えられていた
+  // （月次請求書では、その分だけ荷主に多く請求してしまう）。
+  // 金額の集計は monthRecords（1件ずつの実績）だけで行い、qualityDailyRows は日次一覧の
+  // 表示（「実績入力から連携」行）にだけ使う。
+  const totalSales = monthRecordsCounted.reduce((s, r) => s + Number(r.salesAmount || 0), 0);
+  const totalDriver = monthRecordsCounted.reduce((s, r) => s + Number(r.driverAmount || 0), 0);
 
   // 簡易P/L（月次損益サマリー）。
   // 「今月の売上 − ドライバー支払 − その他経費（支払予定のうち選択月が期日のもの） = 今月の儲け（見込み）」
@@ -13639,47 +14693,65 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
   const plExpensesThisMonth = payables.filter(p => (p?.dueDate || "").slice(0, 7) === selectedMonth);
   const plExpensesTotal = plExpensesThisMonth.reduce((s, p) => s + (Number(p?.amount) || 0), 0);
   const plGrossProfit = totalSales - totalDriver; // 粗利（売上 − ドライバー支払）
-  const plNetProfit = plGrossProfit - plExpensesTotal; // 粗利からその他経費を引いた、月の儲け（見込み）
+  // 【重要・不具合修正】ドライバーへの支払額から差し引くロイヤリティ・リース料・保険料などは
+  // 会社の収入（経営分析の「ロイヤリティ収入」「リース料等収入」と同じもの）なのに、
+  // この簡易P/Lには入っておらず、「今月の儲け」が経営分析より少なく出ていた。報酬計算と同じ方法で足す。
+  const plDeductionIncome = drivers.reduce((sum, d) => {
+    const recs = monthRecordsCounted.filter((r) => r?.driverId === d?.id);
+    if (recs.length === 0) return sum;
+    const snap = data?.companyInfo?.monthSnapshots?.[selectedMonth]?.[d?.id] || null;
+    const p = calcDriverPayout(d, recs, selectedMonth, snap);
+    return sum + p.royalty + p.lease + p.insurance + p.uniform + p.supplies + p.otherDeduction;
+  }, 0);
+  const plNetProfit = plGrossProfit + plDeductionIncome - plExpensesTotal; // 月の儲け（見込み）
+  // 承認待ちの実績（この画面の集計には含めているもの）。いくら含まれているかを明示する。
+  const plPendingRecords = monthRecordsCounted.filter(isPendingRecord);
+  const plPendingSales = plPendingRecords.reduce((s2, r) => s2 + (Number(r?.salesAmount) || 0), 0);
   // 参考情報として、その月が支払期日の請求書のうち実際に入金済みの金額も出す
   // （実績ベースの売上とは別に、実際にお金が入ってきたかどうかの確認用）。
   // 【重要】一部入金（partial）も「実際に入ってきたお金」なので必ず含める。
   // 金額も請求額（total）ではなく、実際に入金された額（paidAmount）を使う。
   // これをしないと、振込手数料が引かれた分だけ実際より多く見え、
   // 銀行残高と突き合わせたときに合わなくなる。
+  // 【重要・不具合修正】以前は「入金済・一部入金」の請求書の入金額の合計を、最後の入金日の月に
+  // まとめて計上していたため、①一部入金が月をまたいで複数回あった場合に前の月の入金まで今月に入る
+  // ②一部入金の後に貸倒処理した請求書の入金が抜ける、という食い違いがあった。
+  // 入金の履歴（paymentHistory）があれば1回ずつの入金日で、無ければ入金日（paidDate）で数える。
   const plActualReceivedThisMonth = invoicesForPL
-    .filter(i => (i?.status === "paid" || i?.status === "partial") && (i?.paidDate || "").slice(0, 7) === selectedMonth)
-    .reduce((s, i) => s + (Number(i?.paidAmount ?? i?.paid_amount ?? i?.total) || 0), 0);
+    .filter(i => i?.type !== "driver_invoice")
+    .reduce((s, i) => {
+      const hist = Array.isArray(i?.paymentHistory) ? i.paymentHistory : [];
+      if (hist.length > 0) {
+        return s + hist.filter(h => String(h?.date || "").slice(0, 7) === selectedMonth).reduce((a, h) => a + (Number(h?.amount) || 0), 0);
+      }
+      if ((i?.paidDate || "").slice(0, 7) !== selectedMonth) return s;
+      const paidAmt = Number(i?.paidAmount ?? i?.paid_amount);
+      if (Number.isFinite(paidAmt) && paidAmt !== 0) return s + paidAmt;
+      return s + (i?.status === "paid" ? (Number(i?.total) || 0) : 0);
+    }, 0);
 
   const driverSummary = drivers.map(driver => {
-    const recs = monthRecords.filter(r => r?.driverId === driver?.id);
-    const qrecs = qualityDailyRows.filter(r => r?.driverId === driver?.id);
-    const allDates = [...recs.map(r => r?.date), ...qrecs.map(r => r?.date)];
+    // 個建実績入力の分も monthRecordsCounted に含まれている（二重に足さない）
+    const recs = monthRecordsCounted.filter(r => r?.driverId === driver?.id);
     return {
       driver,
-      count: recs.length + qrecs.length,
-      workDays: new Set(allDates.filter(Boolean)).size,
-      salesTotal: recs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0) + qrecs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0),
-      driverTotal: recs.reduce((s, r) => s + (Number(r?.driverAmount)||0), 0) + qrecs.reduce((s, r) => s + (Number(r?.driverAmount)||0), 0),
+      count: recs.length,
+      workDays: new Set(recs.map(r => r?.date).filter(Boolean)).size,
+      salesTotal: recs.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0),
+      driverTotal: recs.reduce((s, r) => s + (Number(r?.driverAmount)||0), 0),
     };
   }).filter(s => s.count > 0);
 
   const customerSummary = customers.map(customer => {
-    const recs = monthRecords.filter(r => r?.customerId === customer?.id);
-    const qrecs = qualityDailyRows.filter(r => r?.customerId === customer?.id);
-    const combined = [...recs, ...qrecs];
+    // 個建実績入力の分も monthRecordsCounted に含まれている（二重に足さない）
+    const combined = monthRecordsCounted.filter(r => r?.customerId === customer?.id);
     const subtotal = combined.reduce((s, r) => s + (Number(r?.salesAmount)||0), 0);
-    // 消費税は「税抜の合計にまとめて10%をかける」方式ではなく、実際に発行される
-    // 請求書（受注完了時の自動生成、および月次集計からの生成）と同じ
-    // 「1件（1実績）ごとに税込み計算してから合算する」方式に統一する。
-    // これが食い違っていると、この画面で見た「請求予定額」と、実際に発行される
-    // 請求書の金額が1円単位でズレてしまう。
-    const total = combined.reduce((s, r) => {
-      const jt = jobTypes.find(j=>j?.id===r?.jobTypeId);
-      const amount = Number(r?.salesAmount) || 0;
-      const tax = jt?.taxable !== false ? calcTax(amount) : 0;
-      return s + amount + tax;
-    }, 0);
-    const tax = total - subtotal;
+    // 消費税は、実際に発行される請求書と同じ計算方法
+    // （非課税の仕事を除いた課税分の合計に、1回だけ10%をかける＝インボイス制度の端数処理）
+    // にそろえる。これが食い違っていると、この画面で見た「請求予定額」と、
+    // 実際に発行される請求書の金額が1円単位でズレてしまう。
+    const tax = calcInvoiceTaxFromItems(buildInvoiceItemsFromRecords(combined, jobTypes, selectedMonth));
+    const total = subtotal + tax;
     return { customer, count: combined.length, subtotal, tax, total };
   }).filter(s => s.count > 0);
 
@@ -13731,18 +14803,19 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
             <table style={{ minWidth:"100%", width:"max-content", borderCollapse:"collapse", fontSize:"12px", fontFamily:"'Noto Sans JP', sans-serif" }}>
               <thead>
                 <tr style={{ background:"#fafbfc" }}>
-                  {["日付","ドライバー","顧客","仕事種別","個数","距離","時間","売上金額","支払額","備考","操作"].map(h => (
+                  {["日付","状態","ドライバー","顧客","仕事種別","個数","距離","時間","売上金額","支払額","備考","操作"].map(h => (
                     <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontWeight:700, color:"#666", fontSize:"11px", borderBottom:cardBorder, whiteSpace:"nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {monthRecords.length === 0 && qualityDailyRows.length === 0 && <tr><td colSpan={11} style={{ padding:"16px", textAlign:"center", color:"#999" }}>この月の記録はありません</td></tr>}
+                {monthRecords.length === 0 && qualityDailyRows.length === 0 && <tr><td colSpan={12} style={{ padding:"16px", textAlign:"center", color:"#999" }}>この月の記録はありません</td></tr>}
                 {/* 【重要】日付だけで並べると、同じ日に複数件あるとき
                     「今しがた配送完了で追加されたもの」が一番上に来ない。
                     受注完了で作られる実績のIDには作成時刻（ミリ秒）が
                     埋め込まれているため、同じ日付ならその時刻の新しい順にする。 */}
-                {[...monthRecords].sort((a,b)=>{
+                {/* 個建実績入力の分は、下の「実績入力から連携」行（日ごとのまとめ）で表示するため、ここでは除く */}
+                {[...monthRecords].filter(r => r?.source !== "quality_entry").sort((a,b)=>{
                   const byDate = b.date?.localeCompare(a.date||"");
                   if (byDate !== 0) return byDate;
                   const tsOf = (r) => {
@@ -13755,8 +14828,15 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                   const customer = customers.find(c=>c?.id===rec?.customerId);
                   const jt = jobTypes.find(j=>j?.id===rec?.jobTypeId);
                   return (
-                    <tr key={rec.id} style={{ borderBottom:"1px solid #f0f0f0" }} onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"} onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+                    <tr key={rec.id} style={{ borderBottom:"1px solid #f0f0f0", opacity: rec?.approvalStatus === APPROVAL.REJECTED ? 0.55 : 1 }} onMouseEnter={e=>e.currentTarget.style.background="#f9fcfc"} onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
                       <td style={{ padding:"8px 10px" }}>{rec.date}</td>
+                      {/* 【追加】以前は承認待ち・差し戻しの実績も、承認済みと見分けがつかずに並んでいた */}
+                      <td style={{ padding:"8px 10px", whiteSpace:"nowrap" }}>
+                        {rec?.approvalStatus === APPROVAL.REJECTED ? <span style={{ fontSize:"10px", fontWeight:700, color:"#c62828" }}>差し戻し（集計外）</span>
+                          : rec?.approvalStatus === APPROVAL.SUBMITTED ? <span style={{ fontSize:"10px", fontWeight:700, color:"#e65100" }}>承認待ち</span>
+                          : rec?.approvalStatus === APPROVAL.DRAFT ? <span style={{ fontSize:"10px", fontWeight:700, color:"#888" }}>一時保存</span>
+                          : <span style={{ fontSize:"10px", color:"#2e7d32" }}>承認済</span>}
+                      </td>
                       <td style={{ padding:"8px 10px" }}>
                         {driver?.name
                           ? driver.name
@@ -13766,7 +14846,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                       </td>
                       <td style={{ padding:"8px 10px" }}>{customer?.name||"—"}</td>
                       <td style={{ padding:"8px 10px" }}>{jt?.name||"—"}</td>
-                      <td style={{ padding:"8px 10px" }}>{rec.count||"—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{recordParcelCount(rec)||"—"}</td>
                       <td style={{ padding:"8px 10px" }}>{rec.distance||"—"}</td>
                       <td style={{ padding:"8px 10px" }}>{rec.hours||"—"}</td>
                       <td style={{ padding:"8px 10px", color:"#007a74", fontWeight:700 }}>¥{(Number(rec.salesAmount)||0).toLocaleString()}</td>
@@ -13788,6 +14868,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                   return (
                     <tr key={row.id} style={{ borderBottom:"1px solid #f0f0f0", background:"#f0fffe" }} onMouseEnter={e=>{ e.currentTarget.style.background="#e0faf7"; }} onMouseLeave={e=>{ e.currentTarget.style.background="#f0fffe"; }}>
                       <td style={{ padding:"8px 10px" }}>{row.date}</td>
+                      <td style={{ padding:"8px 10px" }}>—</td>
                       <td style={{ padding:"8px 10px" }}>
                         {driver?.name
                           ? driver.name
@@ -13829,8 +14910,8 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
             {[
               ["月間売上合計", "¥"+totalSales.toLocaleString(), "#00a09a"],
               ["月間支払合計", "¥"+totalDriver.toLocaleString(), "#e65100"],
-              ["件数", (monthRecords.length + qualityDailyRows.length)+"件", "#2196f3"],
-              ["稼働ドライバー", new Set([...monthRecords.map(r=>r?.driverId), ...qualityDailyRows.map(r=>r?.driverId)].filter(Boolean)).size+"名", "#7b1fa2"],
+              ["件数", monthRecordsCounted.length+"件", "#2196f3"],
+              ["稼働ドライバー", new Set(monthRecordsCounted.map(r=>r?.driverId).filter(Boolean)).size+"名", "#7b1fa2"],
             ].map(([l,v,c])=>(
               <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
                 <div style={{ fontSize:"11px", color:"#888", fontWeight:700, marginBottom:"4px" }}>{l}</div>
@@ -13850,6 +14931,11 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
           <Panel title={`簡易P/L（${selectedMonth} の損益サマリー）`} icon={salesIcon}>
             <div style={{ fontSize:"11px", color:"#888", marginBottom:"10px" }}>
               実績ベース（配送が発生した時点）の集計です。請求書の入金状況とは別の見込み値です。
+              {plPendingRecords.length > 0 && (
+                <div style={{ color:"#e65100", marginTop:"4px" }}>
+                  ※ 承認待ちの実績 {plPendingRecords.length}件（売上 ¥{plPendingSales.toLocaleString()}）を含みます。報酬・振込、経営分析、請求書には承認後に計上されます。
+                </div>
+              )}
             </div>
             <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit,minmax(160px,1fr))", gap:"10px" }}>
               <div style={{ background:"#fff", border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px 12px" }}>
@@ -13876,9 +14962,13 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                   経費を登録・修正する
                 </button>
               </div>
+              <div style={{ background:"#fff", border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px 12px" }}>
+                <div style={{ fontSize:"11px", color:"#888", marginBottom:"4px" }}>報酬からの控除（ロイヤリティ・リース料等）</div>
+                <div style={{ fontSize:"18px", fontWeight:700, color:"#7b1fa2" }}>+¥{plDeductionIncome.toLocaleString()}</div>
+              </div>
               <div style={{ background: plNetProfit>=0 ? "#e8f5e9" : "#ffebee", border:`1px solid ${plNetProfit>=0?"#4caf50":"#e63946"}`, borderRadius:"6px", padding:"10px 12px" }}>
                 <div style={{ fontSize:"11px", color:"#888", marginBottom:"4px" }}>今月の儲け（見込み）</div>
-                <div style={{ fontSize:"20px", fontWeight:700, color: plNetProfit>=0 ? "#2e7d32" : "#e63946" }}>{plNetProfit>=0?"+":""}¥{plNetProfit.toLocaleString()}</div>
+                <div style={{ fontSize:"20px", fontWeight:700, color: plNetProfit>=0 ? "#2e7d32" : "#e63946" }}>{plNetProfit>0?"+":plNetProfit<0?"−":""}¥{Math.abs(plNetProfit).toLocaleString()}</div>
               </div>
               <div style={{ background:"#fff", border:"1px solid #e8e8e8", borderRadius:"6px", padding:"10px 12px" }}>
                 <div style={{ fontSize:"11px", color:"#888", marginBottom:"4px" }}>参考：今月実際に入金された額</div>
@@ -13900,6 +14990,9 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
             />
           </Panel>
           <Panel title="顧客別月次集計（請求予定）" icon={salesIcon}>
+            <div style={{ fontSize:"11px", color:"#888", marginBottom:"6px", lineHeight:1.6 }}>
+              この表は{selectedMonth}の1日〜末日の集計です（承認待ちの実績も含みます）。締め日が月末以外の顧客の請求書は、下の「月次請求書生成」のとおり締め期間ごとに作られます。
+            </div>
             <RetroTable
               headers={["顧客","件数","小計","消費税","合計請求額"]}
               rows={customerSummary.length === 0 ? [[<span style={{color:"#999"}}>データなし</span>,"","","",""]] : customerSummary.map(s => [
@@ -13940,6 +15033,13 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                       })
                       .filter(Boolean)
                   );
+                  // 【重要・二重請求防止】一括発行（受注ベース）の請求書は、請求書側に
+                  // orderId を持たず受注側に印（invoicedInvoiceId）が付く形式のため、
+                  // 請求書の orderId だけを見ていると「請求済み」と判定できず、
+                  // ここから同じ売上をもう一度請求できてしまっていた。受注側の印も見る。
+                  (Array.isArray(data?.orders) ? data.orders : []).forEach((o) => {
+                    if (o && !o.deleted && o.invoicedInvoiceId) alreadyBilledOrderIds.add(o.id);
+                  });
                   // 【重要・不具合修正】以前は monthRecords（承認状態を問わず、
                   // その月の実績すべて）をそのまま請求対象にしていた。
                   // 「実績承認」という確認の仕組みがあるのに、それを経ずに
@@ -13951,26 +15051,33 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                   // （画面上の一覧・集計表示は、経理が全体を把握できるよう
                   // 未承認も含めたままにしておく。対象を変えるのは
                   // 請求書生成のときだけ）。
-                  const recsForThisCustomer = [...monthRecords, ...qualityDailyRows]
+                  // 【重要・不具合修正】以前は qualityDailyRows も足していたため、個建実績入力からの
+                  // 実績が請求書に2回計上されていた（monthRecords に既に含まれている）。
+                  // 【重要・不具合修正】以前は暦の月（1日〜末日）の実績で請求書を作っていたため、
+                  // 20日締め・15日締めなどの取引先では2つの締め期間が1枚に混ざり、
+                  // 発行日（月末）から計算した支払期日が1か月遅れていた。
+                  // 取引先の締め期間のうち、この月に締め日が来る期間（20日締めなら前月21日〜当月20日）で作る。
+                  const custClosingDay = s.customer?.closingDay ?? 31;
+                  const billingPeriod = closingPeriodOf(`${selectedMonth}-01`, custClosingDay);
+                  const recsForThisCustomer = dailyRecords
                     .filter(r => r?.customerId === s.customer?.id)
+                    .filter(r => { const per = closingPeriodOf(r?.date, custClosingDay); return per && per.end === billingPeriod?.end; })
                     .filter(isApprovedRecord);
                   // orderId を持たない実績（手動入力など）は請求書との対応関係が分からないため、
                   // 安全側として常に「未請求」として扱う（除外しない）。
-                  const unbilledRecs = recsForThisCustomer.filter(r => !r?.orderId || !alreadyBilledOrderIds.has(r.orderId));
+                  // 【重要・不具合修正】請求管理の「実績入力ぶんの未請求」から既に
+                  // 請求書にした実績（invoicedInvoiceId 付き）も除外する。
+                  // 以前は受注経由の請求だけを除外していたため、既に請求済みの実績が
+                  // ここでは「未請求」として金額に含まれて表示されていた。
+                  const unbilledRecs = recsForThisCustomer.filter(r =>
+                    !r?.invoicedInvoiceId && (!r?.orderId || !alreadyBilledOrderIds.has(r.orderId))
+                  );
                   const unbilledSubtotal = unbilledRecs.reduce((sum, r) => sum + (Number(r?.salesAmount) || 0), 0);
-                  // 消費税は「税抜の合計にまとめて10%をかける」方式ではなく、
-                  // 受注完了時に自動生成される個別請求書と同じ「1件（1実績）ごとに
-                  // 税込み計算してから合算する」方式に統一する。
-                  // 以前はこの2つの計算方式が異なっていたため、同じ月・同じ顧客の
-                  // データにもかかわらず、請求書がどちらの経路で発行されたかによって
-                  // 合計金額が1円単位でズレてしまう会計上の不整合があった。
-                  const unbilledTotal = unbilledRecs.reduce((sum, r) => {
-                    const jt = jobTypes.find(j => j?.id === r?.jobTypeId);
-                    const amount = Number(r?.salesAmount) || 0;
-                    const tax = jt?.taxable !== false ? calcTax(amount) : 0;
-                    return sum + amount + tax;
-                  }, 0);
-                  const unbilledTax = unbilledTotal - unbilledSubtotal;
+                  // 実際に作る請求書と全く同じ明細・税計算で表示する
+                  // （表示と発行額が1円でもズレないようにするため）。
+                  const unbilledItems = buildInvoiceItemsFromRecords(unbilledRecs, jobTypes, selectedMonth);
+                  const unbilledTax = calcInvoiceTaxFromItems(unbilledItems);
+                  const unbilledTotal = unbilledSubtotal + unbilledTax;
                   const alreadyExistsBySalesMgmtTag = allInvoicesForDup.some(inv => {
                     const p = inv?.payload ? (typeof inv.payload === "string" ? JSON.parse(inv.payload) : inv.payload) : inv;
                     return p?.salesMgmtMonth === selectedMonth
@@ -13984,6 +15091,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                       <div>
                         <div style={{ fontSize:"12px", fontWeight:700, color:"#333" }}>{s.customer?.name}</div>
                         <div style={{ fontSize:"11px", color:"#888", marginTop:"2px" }}>
+                          締め期間 {billingPeriod?.start}〜{billingPeriod?.end}：
                           {unbilledRecs.length}件 / 小計¥{unbilledSubtotal.toLocaleString()} / 税¥{unbilledTax.toLocaleString()} / 合計¥{unbilledTotal.toLocaleString()}
                           {unbilledRecs.length < recsForThisCustomer.length && (
                             <span style={{ color:"#999" }}> （全{recsForThisCustomer.length}件中、請求済み{recsForThisCustomer.length - unbilledRecs.length}件は除外）</span>
@@ -14008,12 +15116,23 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                           // 締め日・支払サイトから発行日と支払期日を決める。
                           // 発行日は「その月の末日」。月をまたぐ判定をブラウザ任せにすると
                           // 環境によってずれるため、年と月から末日を計算する。
-                          const [selYear, selMonthNum] = selectedMonth.split("-");
-                          const lastDayOfSelectedMonth = new Date(Number(selYear), Number(selMonthNum), 0).getDate();
-                          const issueDate = `${selectedMonth}-${String(lastDayOfSelectedMonth).padStart(2, "0")}`;
+                          // 発行日は、その取引先の締め日（締め期間の最終日）にする。
+                          const issueDate = billingPeriod?.end || `${selectedMonth}-${String(new Date(Number(selectedMonth.slice(0, 4)), Number(selectedMonth.slice(5, 7)), 0).getDate()).padStart(2, "0")}`;
                           const dueDate = calcDueDateByTerms(issueDate, customer?.closingDay ?? 31, customer?.paymentSite || "翌月末払い");
-                          const amount = Math.round(Number(s.sales) || 0);
-                          const tax = calcTax(amount);
+                          // 【重要・不具合修正】以前は存在しない項目（s.sales）を読んでいたため、
+                          // 画面には金額が表示されているのに、作成される請求書が
+                          // 必ず ¥0 になっていた。さらに請求済み・未承認の実績や
+                          // 非課税の仕事も区別していなかった。
+                          // 上に表示している「未請求の実績」と全く同じ明細・金額で作る。
+                          if (unbilledRecs.length === 0 || unbilledSubtotal === 0) {
+                            window.alert("この顧客には、請求書にできる（承認済み・未請求の）実績がありません。");
+                            finishGuard();
+                            return;
+                          }
+                          const amount = Math.round(unbilledSubtotal);
+                          const tax = unbilledTax;
+                          const invoiceItems = unbilledItems;
+                          const targetRecordIds = new Set(unbilledRecs.map((r) => r?.id).filter(Boolean));
 
                           // 【重要】同じ月・同じ顧客の請求書が既にあるのに、
                           // もう一度押せてしまうと、同じ売上を2回請求することになる。
@@ -14036,10 +15155,16 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                           // 何がいくらで作られるのかを示してから作る。
                           if (!window.confirm(
                             `${customer.name} の請求書を作成します。\n\n` +
-                            `　対象月　： ${selectedMonth}\n` +
+                            `　対象期間： ${billingPeriod?.start} 〜 ${billingPeriod?.end}（締め日 ${custClosingDay >= 31 ? "月末" : custClosingDay + "日"}）\n` +
                             `　請求金額： ${yen(amount + tax)}（税抜 ${yen(amount)}）\n` +
                             `　発行日　： ${issueDate}\n` +
                             `　支払期日： ${dueDate}\n\n` +
+                            // 【検証8回目で追加】締め日より前に作ると、この後に入る実績（締め日までの分）は
+                            // この請求書に入らない。気づかずに早く出してしまわないよう知らせる。
+                            (billingPeriod?.end && billingPeriod.end > getTodayLocalStr()
+                              ? `⚠ まだ締め日（${billingPeriod.end}）前です。今日より後に入る実績は、この請求書に含まれません\n` +
+                                `（あとから「実績入力ぶんの未請求」として別に請求することになります）。\n\n`
+                              : "") +
                             `作成しますか？`
                           )) { finishGuard(); return; }
 
@@ -14060,7 +15185,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                               tax,
                               total: amount + tax,
                               status: "unpaid",
-                              note: `${selectedMonth} 分`,
+                              note: `${billingPeriod?.start || selectedMonth}〜${billingPeriod?.end || ""} 分`,
                               // 【重要・不具合修正】この請求書が「もう作成済みです」と
                               // 判定するための目印（salesMgmtMonth）が、判定する側の
                               // コードにしか無く、実際に新規作成するときに一度も
@@ -14072,13 +15197,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                               // 開くたびに「まだ未請求」に見えてしまい、気づかずに
                               // 何度もボタンを押せてしまう状態だった。
                               salesMgmtMonth: selectedMonth,
-                              lineItems: [{
-                                id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                                name: `${selectedMonth} 配送業務`,
-                                qty: 1,
-                                unitPrice: amount,
-                                subtotal: amount,
-                              }],
+                              lineItems: invoiceItems,
                             };
                             const baseEv = Array.isArray(d?.events) ? d.events : [];
                             const alreadyHasEvent = baseEv.some((ev) =>
@@ -14101,9 +15220,12 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                                 // 別配列（qualityRecords）に対して同じ処理をもう一度
                                 // 行っていたが、実績データを統合したため、この1回の
                                 // map だけで両方カバーできるようになった。
-                                (!r?.deleted && !r?.invoicedInvoiceId && isApprovedRecord(r) &&
-                                 r?.customerId === customer.id &&
-                                 String(r?.date || "").startsWith(selectedMonth))
+                                // 【重要・不具合修正】印を付けるのは、この請求書の金額に
+                                // 実際に含めた実績だけにする。以前は「その月・その顧客の
+                                // 承認済み実績すべて」に印を付けていたため、受注経由で
+                                // 別の請求書に含まれている実績まで、この請求書の番号で
+                                // 上書きされてしまう恐れがあった。
+                                (targetRecordIds.has(r?.id) && !r?.deleted && !r?.invoicedInvoiceId)
                                   ? { ...r, invoicedInvoiceId: invId }
                                   : r
                               ),
@@ -14119,7 +15241,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
                           });
                           window.alert(`${customer.name} の請求書を作成しました。\n請求管理ページで確認できます。`);
                           finishGuard();
-                        }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>
+                        }} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff", whiteSpace:"nowrap", flexShrink:0 }}>
                           請求書を生成
                         </RetroBtn>
                       )}
@@ -14181,7 +15303,17 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
             <Fl label="日付"><RetroInput type="date" value={recordForm.date} onChange={e=>updateRecordCalc({...recordForm,date:e.target.value})}/></Fl>
             <Fl label="ドライバー">
-              <RetroSelect value={recordForm.driverId} onChange={e=>updateRecordCalc({...recordForm,driverId:e.target.value})}>
+              <RetroSelect value={recordForm.driverId} onChange={e=>{
+                // 仕事種別を先に選んでいた場合も、選んだドライバーの個別単価に合わせ直す
+                const next = {...recordForm, driverId:e.target.value};
+                if (recordForm.jobTypeId) {
+                  const jt = jobTypes.find(j=>j?.id===recordForm.jobTypeId);
+                  const route = findDriverRoute(drivers.find(d=>d?.id===e.target.value), recordForm.jobTypeId, recordForm.customerId);
+                  next.unitPrice = String(pickRoutePrice(route?.unitPrice, jt?.unitPrice));
+                  next.driverUnitPrice = String(pickRoutePrice(route?.driverPrice ?? route?.driverUnitPrice, jt?.driverUnitPrice));
+                }
+                updateRecordCalc(next);
+              }}>
                 <option value="">選択</option>
                 {drivers.map(d=>{
                   const isContractEnded = d?.contractEnd && d.contractEnd < getTodayLocalStr();
@@ -14222,18 +15354,45 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
               </div>
             )}
             <Fl label="顧客">
-              <RetroSelect value={recordForm.customerId} onChange={e=>updateRecordCalc({...recordForm,customerId:e.target.value})}>
+              <RetroSelect value={recordForm.customerId} onChange={e=>{
+                // 【検証8回目で修正】仕事種別を先に選んでから顧客を変えると、前の顧客の個別単価のまま
+                // 残っていた（例：A社のルート単価のまま、B社の実績が保存される）。
+                // ドライバー・仕事種別を変えたときと同じく、顧客を変えたら単価を合わせ直す。
+                const next = {...recordForm, customerId:e.target.value};
+                if (recordForm.jobTypeId) {
+                  const jt = jobTypes.find(j=>j?.id===recordForm.jobTypeId);
+                  const route = findDriverRoute(drivers.find(d=>d?.id===recordForm.driverId), recordForm.jobTypeId, e.target.value);
+                  next.unitPrice = String(pickRoutePrice(route?.unitPrice, jt?.unitPrice));
+                  next.driverUnitPrice = String(pickRoutePrice(route?.driverPrice ?? route?.driverUnitPrice, jt?.driverUnitPrice));
+                }
+                updateRecordCalc(next);
+              }}>
                 <option value="">選択</option>
                 {customers.map(c=><option key={c?.id} value={c?.id}>{c?.name}</option>)}
               </RetroSelect>
             </Fl>
             <Fl label="仕事種別">
-              <RetroSelect value={recordForm.jobTypeId} onChange={e=>{ const jt=jobTypes.find(j=>j?.id===e.target.value); updateRecordCalc({...recordForm,jobTypeId:e.target.value,unitPrice:String(jt?.unitPrice||""),driverUnitPrice:String(jt?.driverUnitPrice||"")}); }}>
+              <RetroSelect value={recordForm.jobTypeId} onChange={e=>{
+                const jt=jobTypes.find(j=>j?.id===e.target.value);
+                // 【重要・不具合修正】以前は仕事種別の標準単価しか入らず、ドライバーごとに
+                // 設定した個別単価（担当ルート）が無視されていた（ハコログから入力した場合と金額が変わる）。
+                const drv = drivers.find(d=>d?.id===recordForm.driverId);
+                const route = findDriverRoute(drv, e.target.value, recordForm.customerId);
+                updateRecordCalc({...recordForm,jobTypeId:e.target.value,
+                  customerId: recordForm.customerId || route?.customerId || "",
+                  unitPrice:String(pickRoutePrice(route?.unitPrice, jt?.unitPrice)),
+                  driverUnitPrice:String(pickRoutePrice(route?.driverPrice ?? route?.driverUnitPrice, jt?.driverUnitPrice))});
+              }}>
                 <option value="">選択</option>
                 {jobTypes.map(j=><option key={j?.id} value={j?.id}>{j?.name}</option>)}
               </RetroSelect>
             </Fl>
           </div>
+          {jt?.name === "デカ宅" && (
+            <div style={{ background:"#fff3e0", border:"1px solid #ffb74d", borderRadius:"6px", padding:"8px 10px", fontSize:"12px", color:"#e65100", marginBottom:"8px" }}>
+              デカ宅はサイズごとに単価が違うため、この画面では金額を計算できません。「個建実績入力」画面（またはハコログ）から、サイズ別の個数を入力してください。
+            </div>
+          )}
           {jt && <div style={{ background:"#e8f5f4", border:"1px solid #00a09a", borderRadius:"6px", padding:"8px 10px", fontSize:"12px", color:"#007a74", marginBottom:"8px" }}>計算パターン：{calcPatternLabel[pattern]} / 売上単価：¥{Number(recordForm.unitPrice||jt?.unitPrice).toLocaleString()} / 支払単価：¥{Number(recordForm.driverUnitPrice||jt?.driverUnitPrice).toLocaleString()}</div>}
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap:"6px 12px" }}>
             {/* 固定制（fixed）は計算上「個数」を一切使わず常に単価そのものが売上・支払額になる。
@@ -14275,7 +15434,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
               現場で分からず、入力ミスの発見が遅れるため。 */}
           {(() => {
             const n = (v) => Number(v) || 0;
-            const yen = (v) => `¥${n(v).toLocaleString()}`;
+            const yen = (v) => { const x = n(v); return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
             const allowance = n(recordForm.highwayFee) + n(recordForm.parkingFee) + n(recordForm.fuelAllowance) + n(recordForm.otherAllowance);
             const line = (label, val, color) => (
               <div style={{ display:"flex", justifyContent:"space-between", padding:"2px 0", color: color || "#666" }}>
@@ -14418,7 +15577,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   const orders = (Array.isArray(data?.orders) ? data.orders : []).filter(o => !o?.deleted);
   // 【重要】金額を表示する箇所で使う。定義が無いまま参照していたため、
   // 請求管理の画面全体がエラーで表示できなくなっていた。
-  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
   const drivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(d => !d?.deleted);
   const allInvoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => !i?.deleted);
   // 【重要】顧客への請求書（お金が入ってくる）と、ドライバーからの請求書
@@ -14431,7 +15590,8 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   const [visibleInvoiceCount, setVisibleInvoiceCount] = useState(100);
   const invoices = allInvoices.filter((inv) => inv?.type !== "driver_invoice");
   const driverInvoicesAll = allInvoices.filter((inv) => inv?.type === "driver_invoice");
-  const events = Array.isArray(data?.events) ? data.events : [];
+  // 【重要・不具合修正】削除済みの予定（お知らせ配信で削除したもの等）が「本日の予定」に出ていた。
+  const events = (Array.isArray(data?.events) ? data.events : []).filter((e) => e && !e.deleted);
   const customers = Array.isArray(data?.customers) ? data.customers : [];
   const companyInfo = data?.companyInfo || {};
   const [selectedInvoiceId, setSelectedInvoiceId] = useState(null);
@@ -14493,13 +15653,29 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     const fmt = (n) => String(Math.round(Number(n) || 0));
 
     // --- 荷主への請求（売上計上）と、その入金 ---
+    // 【重要・不具合修正】以前は「発行日がこの月の請求書」だけを見て、その請求書の
+    // 入金・貸倒もまとめて出力していた。そのため、8月発行・9月入金の請求書は
+    // 8月のCSVにしか入金が出ず、8月分を入金前に出力済みだと、その入金は
+    // どの月のCSVにも出ない（会計ソフトに永久に取り込まれない）状態になっていた。
+    // 仕訳は「その取引が起きた日」の月のCSVに出す：
+    //   売上計上＝発行日、入金＝入金日（1回ずつ）、貸倒＝貸倒処理日。
+    const inMonth = (dateStr) => String(dateStr || "").slice(0, 7) === targetMonth;
     allInvoices
-      .filter((inv) => inv?.type !== "driver_invoice" && !inv?.deleted && (inv?.issueDate || "").slice(0, 7) === targetMonth)
+      .filter((inv) => inv?.type !== "driver_invoice" && !inv?.deleted)
       .forEach((inv) => {
         const name = inv.customerName || inv.customer_name || "";
         const amount = Number(inv.amount) || 0;
         const tax = Number(inv.tax) || 0;
+        if (inMonth(inv.issueDate)) {
         // 売上計上
+        // 【重要・不具合修正】赤伝（マイナスの請求書）をマイナス金額のまま出力すると、
+        // 会計ソフトの多くが取り込めない。借方・貸方を入れ替えてプラスの金額で出す
+        // （売上の取消：（借）売上高・仮受消費税 ／（貸）売掛金）。
+        const isNegativeInvoice = (Number(inv.total) || 0) < 0;
+        if (isNegativeInvoice) {
+          rows.push([inv.issueDate, "売上高", fmt(-amount), "売掛金", fmt(-(Number(inv.total) || 0)), `${name} ${inv.id} 売上取消（赤伝）`]);
+          if (tax !== 0) rows.push([inv.issueDate, "仮受消費税", fmt(-tax), "", "", `${name} ${inv.id} 消費税（赤伝）`]);
+        } else {
         rows.push([inv.issueDate, "売掛金", fmt(inv.total), "売上高", fmt(amount), `${name} ${inv.id} 売上計上`]);
         // 【重要】赤伝（マイナスの請求書）では税額もマイナスになる。
         // 条件を「tax > 0」にしていると赤伝の消費税行が出力されず、
@@ -14507,34 +15683,84 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         // その結果、消費税の申告額が実際より多くなる（納めすぎになる）。
         // 0以外なら、プラス・マイナスどちらでも必ず出力する。
         if (tax !== 0) rows.push([inv.issueDate, "", "", "仮受消費税", fmt(tax), `${name} ${inv.id} 消費税`]);
-        // 入金
+        }
+        }
+        // 入金（入金日の月に出す）
         const paid = Number(inv.paidAmount ?? inv.paid_amount ?? 0) || 0;
         if (paid > 0) {
           const fee = Number(inv.transferFee) || 0;
-          rows.push([inv.paidDate || inv.issueDate, "普通預金", fmt(paid), "売掛金", fmt(paid), `${name} ${inv.id} 入金`]);
-          if (fee > 0) rows.push([inv.paidDate || inv.issueDate, "支払手数料", fmt(fee), "売掛金", fmt(fee), `${name} ${inv.id} 振込手数料`]);
+          // 【重要・不具合修正】一部入金が複数回あった場合、以前は最後の入金日に合計額を1行で
+          // 出していたため、通帳の入金記録と仕訳が合わなかった。入金履歴があれば1回ずつ出す。
+          const hist = (Array.isArray(inv.paymentHistory) ? inv.paymentHistory : []).filter((h) => (Number(h?.amount) || 0) > 0);
+          const histSum = hist.reduce((s2, h) => s2 + (Number(h.amount) || 0), 0);
+          // 【重要・不具合修正】請求額より多く入金された分（過入金）まで「売掛金」の減少にすると、
+          // 売掛金がマイナスになり帳簿が合わなくなる。過入金の分は「仮受金」として出す
+          // （返金するか次回請求で相殺するかは、経理で判断する）。
+          const over = Math.max(0, Number(inv.overpaidAmount) || 0);
+          const pushPay = (d, amt, label, isLast) => {
+            const toAr = isLast && over > 0 ? Math.max(0, amt - over) : amt;
+            rows.push([d, "普通預金", fmt(amt), "売掛金", fmt(toAr), `${name} ${inv.id} ${label}`]);
+            if (isLast && over > 0) rows.push([d, "", "", "仮受金", fmt(amt - toAr), `${name} ${inv.id} 過入金（返金または次回相殺）`]);
+          };
+          if (hist.length > 0 && Math.abs(histSum - paid) < 1) {
+            hist.forEach((h, idx) => {
+              const d = h.date || inv.paidDate || inv.issueDate;
+              if (inMonth(d)) pushPay(d, Number(h.amount) || 0, `入金${hist.length > 1 ? `（${idx + 1}回目）` : ""}`, idx === hist.length - 1);
+            });
+          } else if (inMonth(inv.paidDate || inv.issueDate)) {
+            pushPay(inv.paidDate || inv.issueDate, paid, "入金", true);
+          }
+          if (fee > 0 && inMonth(inv.paidDate || inv.issueDate)) rows.push([inv.paidDate || inv.issueDate, "支払手数料", fmt(fee), "売掛金", fmt(fee), `${name} ${inv.id} 振込手数料`]);
         }
         if (inv.status === "bad_debt") {
           // 貸倒処理した日付・金額を正確に使う（未設定の古いデータは推定で補う）。
           const badAmount = Number(inv.badDebtAmount) || Math.max(0, (Number(inv.total) || 0) - paid);
           const badDate = inv.badDebtDate || inv.paidDate || inv.issueDate;
-          if (badAmount > 0) rows.push([badDate, "貸倒損失", fmt(badAmount), "売掛金", fmt(badAmount), `${name} ${inv.id} 貸倒処理`]);
+          if (badAmount > 0 && inMonth(badDate)) rows.push([badDate, "貸倒損失", fmt(badAmount), "売掛金", fmt(badAmount), `${name} ${inv.id} 貸倒処理`]);
         }
       });
 
     // --- 委託ドライバーへの外注費と、その支払 ---
+    // 外注費の計上は「報酬の対象月」のCSV、支払は「実際に支払った日」の月のCSVに出す
+    // （顧客の入金と同じ理由：対象月のCSVを支払前に出力すると、支払が永久に漏れるため）。
     allInvoices
-      .filter((inv) => inv?.type === "driver_invoice" && !inv?.deleted && inv?.payoutMonth === targetMonth)
+      .filter((inv) => inv?.type === "driver_invoice" && !inv?.deleted)
       .forEach((inv) => {
         const name = inv.driverName || "";
         const amount = Number(inv.amount) || 0;
         const tax = Number(inv.tax) || 0;
-        rows.push([inv.issueDate, "外注費", fmt(amount), "買掛金", fmt(inv.total), `${name} ${inv.id} 外注費計上`]);
+        if (inv?.payoutMonth === targetMonth) {
+        // 【検証8回目で修正】ドライバー請求書は翌月に発行することが多く、発行日（例：9/25）で
+        // 仕訳を出すと、8月分のCSVの中に9月の日付の行が入り、会計ソフトでは外注費が9月に
+        // 計上されてしまっていた（8月の利益が実際より多く見える）。
+        // 報酬の対象月の中の日付（発行日が月をまたぐ場合は対象月の末日）で計上する。
+        const [py, pm] = String(inv.payoutMonth).split("-").map(Number);
+        const payoutMonthEnd = formatDate(new Date(py, pm, 0));
+        const accrualDate = (inv.issueDate && inv.issueDate <= payoutMonthEnd) ? inv.issueDate : payoutMonthEnd;
+        rows.push([accrualDate, "外注費", fmt(amount), "買掛金", fmt(inv.total), `${name} ${inv.id} 外注費計上`]);
         // 顧客請求書と同じ理由で、0以外なら必ず出力する
         // （将来ドライバー側にも減額処理を入れた場合に備える）。
-        if (tax !== 0) rows.push([inv.issueDate, "仮払消費税", fmt(tax), "", "", `${name} ${inv.id} 消費税`]);
-        if (inv.status === "paid") {
-          rows.push([inv.paidDate || inv.issueDate, "買掛金", fmt(inv.total), "普通預金", fmt(inv.total), `${name} ${inv.id} 支払`]);
+        if (tax !== 0) rows.push([accrualDate, "仮払消費税", fmt(tax), "", "", `${name} ${inv.id} 消費税`]);
+        }
+        if (inv.status === "paid" && inMonth(inv.paidDate || inv.issueDate)) {
+          // 【重要・不具合修正】実際に銀行から出ていくのは、控除（ロイヤリティ・リース料など）を
+          // 差し引いた振込額。以前は請求額の全額を普通預金から支払った仕訳にしていたため、
+          // 通帳と合わず、控除で会社が受け取った収入も記録されていなかった。
+          const payDate = inv.paidDate || inv.issueDate;
+          const total = Number(inv.total) || 0;
+          if (inv.transferAmount != null) {
+            const transfer = Number(inv.transferAmount) || 0;
+            const deduction = Number(inv.deductionTotal) || 0;
+            const shortfall = deduction - total; // プラスなら控除が請求額を上回った分（ドライバーから回収）
+            // 控除で全額相殺した（振込0円の）場合は、普通預金0円の行を出さない
+            rows.push(transfer > 0
+              ? [payDate, "買掛金", fmt(total), "普通預金", fmt(transfer), `${name} ${inv.id} 支払（振込）`]
+              : [payDate, "買掛金", fmt(total), "", "", `${name} ${inv.id} 控除で相殺（振込なし）`]);
+            if (deduction !== 0) rows.push([payDate, "", "", "雑収入", fmt(deduction), `${name} ${inv.id} 報酬からの控除（ロイヤリティ・リース料等）`]);
+            if (shortfall > 0) rows.push([payDate, "未収入金", fmt(shortfall), "", "", `${name} ${inv.id} 控除超過分（ドライバーから回収）`]);
+          } else {
+            rows.push([payDate, "買掛金", fmt(total), "普通預金", fmt(total), `${name} ${inv.id} 支払`]);
+          }
         }
       });
 
@@ -14565,10 +15791,20 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     // 開始日・終了日が指定されていればその期間、無ければ従来どおり月全体を対象にする。
     const targetOrders = orders.filter((o) => {
       if (o?.status !== "delivered" || o?.invoicedInvoiceId) return false;
+      // 【重要・二重請求防止】この受注から作られた実績が、既に別の請求書
+      // （実績入力ぶん・売上管理の月次請求書）に含まれている場合は対象外。
+      const recs = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : []);
+      if (recs.some((r) => r && !r.deleted && r.orderId === o?.id && r.invoicedInvoiceId)) return false;
       const d = (o?.deliveryDate || "").slice(0, 10);
       if (!d) return false;
       if (batchFrom && batchTo) return d >= batchFrom && d <= batchTo;
-      return d.slice(0, 7) === targetMonth;
+      // 【重要・不具合修正】以前は暦の月（1日〜末日）で選んでいたため、
+      // 20日締めの取引先では、9/21〜9/30の配送が「9/20付け」の請求書に入り、
+      // 8/21〜8/31の配送は9月分から漏れていた。取引先の締め期間
+      // （20日締めなら 8/21〜9/20）で、この月に締める分を選ぶ。
+      const cust = customers.find((c) => c?.id === o?.customerId);
+      const period = closingPeriodOf(d, cust?.closingDay ?? 31);
+      return (period ? period.end : d).slice(0, 7) === targetMonth;
     });
     if (targetOrders.length === 0) return [];
 
@@ -14713,6 +15949,12 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
       orders: (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
         orderIdToInvoiceId.has(o?.id) ? { ...o, invoicedInvoiceId: orderIdToInvoiceId.get(o.id) } : o
       ),
+      // 【重要・二重請求防止】受注から作られた実績にも同じ請求書番号の印を付ける
+      // （実績側の請求候補に残り続けないようにするため）。
+      dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+        (r?.orderId && orderIdToInvoiceId.has(r.orderId) && !r?.deleted && !r?.invoicedInvoiceId)
+          ? { ...r, invoicedInvoiceId: orderIdToInvoiceId.get(r.orderId) } : r
+      ),
     }));
     return newInvoices;
   };
@@ -14740,6 +15982,8 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     }
 
     const targetCustomers = historyCustomerId ? customers.filter((c) => c?.id === historyCustomerId) : customers;
+    // 赤伝で減額した分を差し引くための集計（未回収の共通計算に使う）
+    const creditTotalsForHistory = buildCreditNoteTotals(invoices);
 
     return months.map((m) => {
       let billedTotal = 0, unpaidTotal = 0, invoiceCount = 0;
@@ -14748,7 +15992,10 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         invoiceCount += monthInvoices.length;
         monthInvoices.forEach((inv) => {
           billedTotal += Number(inv?.total) || 0;
-          if (inv?.status !== "paid") unpaidTotal += Number(inv?.total) || 0;
+          // 【重要・不具合修正】以前は「入金済み以外」の請求書の請求額をそのまま足していたため、
+          // 一部入金で受け取った分・貸倒処理した分・赤伝で減額した分も「未回収」に含まれていた。
+          // 他の画面の「未回収」と同じ共通計算にそろえる。
+          unpaidTotal += calcInvoiceOutstanding(inv, creditTotalsForHistory);
         });
       });
       return { month: m, invoiceCount, billedTotal, unpaidTotal };
@@ -14800,6 +16047,8 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     );
   };
   const filteredInvoices = invoices.filter((inv) => matchesSearch(inv, invoiceSearch));
+  // 赤伝で減額した分を、元の請求書の未回収から差し引くための集計
+  const creditTotalsForList = buildCreditNoteTotals(invoices);
   const filteredDriverInvoices = driverInvoicesAll
     .filter((inv) => matchesSearch(inv, invoiceSearch))
     .sort((a, b) => String(b.payoutMonth || "").localeCompare(String(a.payoutMonth || "")));
@@ -14881,7 +16130,19 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   // 受注済みの請求書に紐づく orderId を先にSetにしておき、
   // 各受注ではそのSetを参照するだけ（O(1)）にする。
   const invoicedOrderIds = new Set(invoices.map(i => i?.orderId).filter(Boolean));
-  const deliveredNoInv = orders.filter(o=>o?.status==="delivered" && !o?.invoicedInvoiceId && !invoicedOrderIds.has(o?.id));
+  // 【重要・二重請求防止】受注から作られた実績が、既に「実績入力ぶん」や
+  // 売上管理の月次請求書で請求済みになっている場合も、請求済みとして扱う。
+  const invoicedViaRecordOrderIds = new Set(
+    (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
+      .filter((r) => r && !r.deleted && r.orderId && r.invoicedInvoiceId)
+      .map((r) => r.orderId)
+  );
+  const billedOrderIdsAll = new Set([
+    ...invoicedOrderIds,
+    ...invoicedViaRecordOrderIds,
+    ...orders.filter((o) => o?.invoicedInvoiceId).map((o) => o.id),
+  ]);
+  const deliveredNoInv = orders.filter(o=>o?.status==="delivered" && !billedOrderIdsAll.has(o?.id));
 
   /**
    * ===== 実績入力ぶんの未請求分（顧客・仕事種別ごとにまとめる）=====
@@ -14903,17 +16164,32 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     // 実績データを dailyRecords に統合したため、この1つの配列だけで
     // 両方をカバーできるようになった。
     const records = (Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])
-      .filter((r) => r && !r.deleted && !r.invoicedInvoiceId && isApprovedRecord(r) && (Number(r.salesAmount) || 0) !== 0);
+      .filter((r) => r && !r.deleted && !r.invoicedInvoiceId && isApprovedRecord(r) && (Number(r.salesAmount) || 0) !== 0)
+      // 【重要・二重請求防止】元の受注が既に請求済みの実績は除外する
+      // （以前の版で、受注側にだけ印が付いたまま残っているデータへの対策）。
+      .filter((r) => !r.orderId || !billedOrderIdsAll.has(r.orderId));
     const groups = new Map();
+    const todayForGroups = getTodayLocalStr();
     records.forEach((r) => {
-      const key = `${r.customerId || "none"}__${r.jobTypeId || "none"}__${String(r.date || "").slice(0, 7)}`;
+      // 【重要・不具合修正】暦の月ではなく、取引先の締め期間ごとにまとめる
+      // （20日締めなら 8/21〜9/20 で1つ）。暦の月でまとめると、2つの締め期間が
+      // 1枚の請求書に混ざり、前の期間の分まで支払期日が1か月遅れてしまっていた。
+      const cust = customers.find((c) => c?.id === r.customerId);
+      const period = closingPeriodOf(r.date, cust?.closingDay ?? 31);
+      const periodKey = period ? period.end : String(r.date || "").slice(0, 7);
+      const key = `${r.customerId || "none"}__${r.jobTypeId || "none"}__${periodKey}`;
       if (!groups.has(key)) {
         groups.set(key, {
           key,
           customerId: r.customerId || "",
           jobTypeId: r.jobTypeId || "",
-          month: String(r.date || "").slice(0, 7),
+          month: period ? period.end.slice(0, 7) : String(r.date || "").slice(0, 7),
+          periodStart: period?.start || "",
+          periodEnd: period?.end || "",
+          // 締め日がまだ来ていない期間（請求するには早い）
+          beforeClosing: !!period && period.end > todayForGroups,
           recordIds: [],
+          orderIds: [],
           amount: 0,
           count: 0,
           firstDate: r.date,
@@ -14922,14 +16198,15 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
       }
       const g = groups.get(key);
       g.recordIds.push(r.id);
+      if (r.orderId && !g.orderIds.includes(r.orderId)) g.orderIds.push(r.orderId);
       g.amount += Number(r.salesAmount) || 0;
       g.count += 1;
       if (String(r.date || "") < String(g.firstDate || "")) g.firstDate = r.date;
       if (String(r.date || "") > String(g.lastDate || "")) g.lastDate = r.date;
     });
-    // 新しい月から順に、金額の大きいものを上に並べる
+    // 新しい締め期間から順に、金額の大きいものを上に並べる
     return [...groups.values()].sort((a, b) =>
-      b.month.localeCompare(a.month) || b.amount - a.amount
+      String(b.periodEnd || b.month).localeCompare(String(a.periodEnd || a.month)) || b.amount - a.amount
     );
   })();
 
@@ -14938,7 +16215,19 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     const customer = customers.find((c) => c?.id === group.customerId);
     const jobType = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).find((j) => j?.id === group.jobTypeId);
     const amount = Math.round(group.amount);
-    const tax = calcTax(amount);
+    // 【重要・不具合修正】以前は仕事種別が「非課税」でも一律に10%の税を乗せていた。
+    // 明細に課税区分を持たせ、請求書全体の税計算（calcInvoiceTaxFromItems）で求める。
+    const groupItem = {
+      id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: `${jobType?.name || "配送業務"}（${group.firstDate}〜${group.lastDate}・${group.count}件）`,
+      // 数量×単価で小計を作ると、単価を平均で丸めた分だけ、請求書を開いて
+      // 保存し直したときに金額が変わってしまうため、数量1・単価＝合計額にする。
+      qty: 1,
+      unitPrice: amount,
+      subtotal: amount,
+      taxable: jobType?.taxable !== false,
+    };
+    const tax = calcInvoiceTaxFromItems([groupItem]);
     const issueDate = group.lastDate || getTodayLocalStr();
     const dueDate = calcDueDateByTerms(issueDate, customer?.closingDay ?? 31, customer?.paymentSite || "翌月末払い");
     const allInvoicesNow = Array.isArray(data?.invoices) ? data.invoices : [];
@@ -14946,6 +16235,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
 
     if (!window.confirm(
       `${customer?.name || "顧客未設定"} の「${jobType?.name || "種別未設定"}」ぶんで請求書を作成します。\n\n` +
+      (group.beforeClosing ? `⚠ この締め期間（${group.periodStart}〜${group.periodEnd}）は、まだ締め日前です。\n　締め日より前に請求する場合のみ作成してください。\n\n` : "") +
       `　対象期間： ${group.firstDate} 〜 ${group.lastDate}\n` +
       `　実績件数： ${group.count}件\n` +
       `　請求金額： ${yen(amount + tax)}（税抜 ${yen(amount)}）\n` +
@@ -14969,13 +16259,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
           total: amount + tax,
           status: "unpaid",
           note: `${group.month} ${jobType?.name || ""}（${group.firstDate}〜${group.lastDate}）`,
-          lineItems: [{
-            id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            name: `${jobType?.name || "配送業務"}（${group.firstDate}〜${group.lastDate}）`,
-            qty: group.count,
-            unitPrice: group.count > 0 ? Math.round(amount / group.count) : amount,
-            subtotal: amount,
-          }],
+          lineItems: [groupItem],
         }, ...(Array.isArray(d?.invoices) ? d.invoices : [])],
         // 【重要】請求書に含めた実績には印を付ける。
         // これをしないと、同じ実績が何度でも請求候補に出てきて
@@ -14985,6 +16269,12 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         // 実績データを統合したため、この1回の map だけで両方カバーできる。
         dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
           ids.has(r?.id) ? { ...r, invoicedInvoiceId: invId } : r
+        ),
+        // 【重要・二重請求防止】受注から作られた実績を請求した場合は、元の受注にも
+        // 同じ印を付ける。付けないと、受注側は「請求書未発行」のまま残り、
+        // 「発行」ボタンや一括発行から同じ売上をもう一度請求できてしまう。
+        orders: (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
+          (group.orderIds.includes(o?.id) && !o?.invoicedInvoiceId) ? { ...o, invoicedInvoiceId: invId } : o
         ),
       };
     });
@@ -15041,6 +16331,10 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         orders: (Array.isArray(d?.orders) ? d.orders : []).map((x) =>
           x?.id === o?.id ? { ...x, invoicedInvoiceId: inv.id } : x
         ),
+        // 【重要・二重請求防止】この受注から作られた実績にも同じ印を付ける。
+        dailyRecords: (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+          (r?.orderId === o?.id && !r?.deleted && !r?.invoicedInvoiceId) ? { ...r, invoicedInvoiceId: inv.id } : r
+        ),
         events: alreadyHasEvent ? baseEv : [...baseEv, {
           id: `EV-INV${Date.now()}`,
           date: dueDate,
@@ -15085,7 +16379,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
       .filter((r) => !r?.deleted && r?.invoicedInvoiceId === invoiceDraft.id).length;
     const nextAmount = Math.round(
       (Array.isArray(invoiceDraft?.lineItems) ? invoiceDraft.lineItems : [])
-        .reduce((s, it) => s + (Number(it?.qty) || 0) * (Number(it?.unitPrice) || 0), 0)
+        .reduce((s, it) => s + roundYen((Number(it?.qty) || 0) * (Number(it?.unitPrice) || 0)), 0)
     );
     if (linkedCount > 0 && nextAmount !== (Number(original?.amount) || 0)) {
       if (!window.confirm(
@@ -15122,14 +16416,19 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     const normalizedItems = meaningfulItems.map((item) => {
       const qty = Number(item?.qty) || 0;
       const unitPrice = Number(item?.unitPrice) || 0;
-      return { ...item, qty, unitPrice, subtotal: qty * unitPrice };
+      // 【重要・不具合修正】単価に小数（例：1,234.5円）があると、明細の小計が「¥3,703.5」のように
+      // 小数のまま請求書に印字され、明細の合計と請求額も1円ずれることがあった。明細ごとに円単位にする。
+      return { ...item, qty, unitPrice, subtotal: roundYen(qty * unitPrice) };
     });
     // previewAmount と同様、円単位（整数）に丸めて保存する。
-    const amount = Math.round(normalizedItems.reduce((s, item) => s + (Number(item?.subtotal) || 0), 0));
+    const amount = roundYen(normalizedItems.reduce((s, item) => s + (Number(item?.subtotal) || 0), 0));
     // 消費税・合計は必ず明細の合計から再計算する。
     // 以前は invoiceDraft.tax / invoiceDraft.total を手入力でそのまま保存していたため、
     // 明細を編集しても税額・合計が古い値のまま残り、請求書が不整合になる恐れがあった。
-    const tax = calcTax(amount);
+    // 【重要・不具合修正】非課税の明細（taxable:false）は税の計算から除く。
+    // 以前は全額に10%をかけていたため、非課税の請求書を開いて保存し直すだけで
+    // 税が乗ってしまっていた。
+    const tax = calcInvoiceTaxFromItems(normalizedItems);
     const total = amount + tax;
     // 値引き等のマイナス単価を許可したことで、合計が0円未満になる
     // （値引きが本体価格を超えてしまった）ケースが起こり得る。
@@ -15152,6 +16451,18 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
               tax,
               total,
               lineItems: normalizedItems,
+              // 【重要・不具合修正】現金・手形など、口座照合を通さずに手動で
+              // 「入金済み」にした請求書には入金額（paidAmount）が記録されず、
+              // ダッシュボードや請求管理の「入金済」に計上されないまま、
+              // 「未回収」からも消える（どこにも数えられない）状態になっていた。
+              // 手動で入金済みにしたら請求額全額の入金として、
+              // 未払いに戻したら入金0円として記録する。
+              ...(invoiceDraft.status === "paid" && !(Number(invoiceDraft.paidAmount ?? invoiceDraft.paid_amount) > 0)
+                ? { paidAmount: total, paid_amount: total, remainingAmount: 0 }
+                : {}),
+              ...(invoiceDraft.status === "unpaid" && inv?.status === "paid"
+                ? { paidAmount: 0, paid_amount: 0, remainingAmount: total, paidDate: null, transferFee: undefined }
+                : {}),
             }
           : inv
       ),
@@ -15185,13 +16496,19 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         const nextItem = { ...item, [key]: value };
         const qty = Number(nextItem?.qty) || 0;
         const unitPrice = Number(nextItem?.unitPrice) || 0;
-        return { ...nextItem, subtotal: qty * unitPrice };
+        // 明細ごとに円単位に丸める（保存時と同じ）
+        return { ...nextItem, subtotal: roundYen(qty * unitPrice) };
       }),
     }));
   };
 
   const buildInvoiceHtml = (inv) => {
     const customer = customers.find((c) => c?.id === inv?.customerId);
+    // 【検証8回目で修正】入金の照合をすると「振込手数料 ¥440 差引」「一部入金…」「まとめ入金…」などの
+    // 社内向けの記録が備考に追記され、それが取引先に送る請求書PDFの備考にそのまま印刷されていた。
+    // 請求書には取引先向けの備考だけを出す（画面上の記録はそのまま残る）。
+    const INTERNAL_NOTE = /^(照合解除|一部入金|振込手数料|過入金|貸倒処理|まとめ入金|\d{4}-\d{2}-\d{2} のまとめ入金)/;
+    const customerNote = String(inv?.note || "").split(" / ").map((x) => x.trim()).filter((x) => x && !INTERNAL_NOTE.test(x)).join(" / ");
     const co = {
       name: companyInfo?.name || "",
       address: companyInfo?.address || "",
@@ -15207,10 +16524,16 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     };
     const items = Array.isArray(inv?.lineItems) && inv.lineItems.length > 0
       ? inv.lineItems
-      : [{ name: "配送費", qty: 1, unitPrice: Number(inv?.amount) || 0, subtotal: Number(inv?.amount) || 0 }];
+      : [{ name: "配送費", qty: 1, unitPrice: Number(inv?.amount) || 0, subtotal: Number(inv?.amount) || 0,
+           // 明細の無い古い請求書で、税が0円のものは非課税として表示する
+           taxable: !((Number(inv?.tax) || 0) === 0 && (Number(inv?.amount) || 0) !== 0) }];
     const taxRatePct = Math.round(TAX_RATE * 100);
+    // 【重要・不具合修正】税率内訳の「非課税」欄が常に ¥0 の固定表示だった。
+    // インボイス制度では税率ごとの税抜金額の記載が必要なため、明細から実際の金額を出す。
+    const exemptAmount = Math.round(items.filter((it) => it?.taxable === false).reduce((s, it) => s + (Number(it?.subtotal) || 0), 0));
+    const taxableAmount = (Number(inv?.amount) || 0) - exemptAmount;
     const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const yenStr = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+    const yenStr = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
     const asLines = (s) => esc(s).split("\n").map((l) => `<div>${l || "&nbsp;"}</div>`).join("");
 
     const rows = items.map((it) => `
@@ -15220,7 +16543,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
         <td class="c">${Number(it.qty) || 0}</td>
         <td class="c">${esc(it.unit || "式")}</td>
         <td class="r">${yenStr(it.unitPrice)}</td>
-        <td class="c">${taxRatePct}%</td>
+        <td class="c">${it.taxable === false ? "非課税" : `${taxRatePct}%`}</td>
         <td class="r">${yenStr(it.subtotal)}</td>
       </tr>`).join("");
 
@@ -15493,8 +16816,8 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
   <div class="taxbreak">
     <table>
       <tr><th>税率内訳</th><th>税抜金額</th><th>消費税額</th></tr>
-      <tr><td>${taxRatePct}%対象</td><td>${yenStr(inv?.amount)}</td><td>${yenStr(inv?.tax)}</td></tr>
-      <tr><td>非課税</td><td>¥0</td><td>¥0</td></tr>
+      <tr><td>${taxRatePct}%対象</td><td>${yenStr(taxableAmount)}</td><td>${yenStr(inv?.tax)}</td></tr>
+      <tr><td>非課税</td><td>${yenStr(exemptAmount)}</td><td>¥0</td></tr>
     </table>
   </div>
   <div class="grand">
@@ -15503,7 +16826,7 @@ const InvoicesPage = ({ data, setData, tenantId, userRole, isMobile, autoOpenCom
     <div class="final"><span>合計金額</span><span>${yenStr(inv?.total)}</span></div>
   </div>
 </div>
-${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
+${customerNote ? `<div class="footnote">備考：${esc(customerNote)}</div>` : ""}
 </div>
 
 </div>
@@ -15528,13 +16851,16 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
     };
     const mergedCompany = { ...fallbackCompany, ...companyInfo };
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
-    const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+    const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
 
-    const items = (Array.isArray(inv?.lineItems) ? inv.lineItems : []).map((item) => `
+    const lineItemsForHtml = Array.isArray(inv?.lineItems) ? inv.lineItems : [];
+    const items = lineItemsForHtml.map((item) => `
       <tr>
-        <td>${esc(item.name)}</td>
+        <td>${esc(item.name)}${item.taxable === false ? "（非課税）" : ""}</td>
         <td style="text-align:right">${yen(item.subtotal)}</td>
       </tr>`).join("");
+    // 立替金（非課税）がある請求書は、税率ごとの内訳（10%対象・非課税）も出す
+    const nonTaxableTotal = lineItemsForHtml.filter((it) => it?.taxable === false).reduce((s2, it) => s2 + (Number(it?.subtotal) || 0), 0);
 
     return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>請求書 ${esc(inv?.id)}</title>
 <style>
@@ -15575,7 +16901,7 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
         発行日：${esc(inv?.issueDate)}<br/>
         お支払期限：${esc(inv?.dueDate)}<br/><br/>
         <b>${esc(inv?.driverName)}</b><br/>
-        ${inv?.registered && inv?.invoiceRegNo ? `登録番号：${esc(inv.invoiceRegNo)}` : "（適格請求書発行事業者登録なし）"}
+        ${inv?.registered ? (inv?.invoiceRegNo ? `登録番号：${esc(inv.invoiceRegNo)}` : "登録番号：未設定（ドライバー管理で登録番号を入力してください）") : "（適格請求書発行事業者登録なし）"}
       </div>
     </div>
 
@@ -15586,6 +16912,7 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
 
     <div class="totals">
       <div><span>小計</span><span>${yen(inv?.amount)}</span></div>
+      ${nonTaxableTotal > 0 ? `<div style="color:#666"><span>　10%対象</span><span>${yen((Number(inv?.amount) || 0) - nonTaxableTotal)}</span></div><div style="color:#666"><span>　非課税（立替金）</span><span>${yen(nonTaxableTotal)}</span></div>` : ""}
       ${inv?.registered
         ? `<div><span>消費税（${Math.round(TAX_RATE * 100)}%）</span><span>${yen(inv?.tax)}</span></div>`
         : `<div style="color:#999"><span>消費税</span><span>対象外</span></div>`
@@ -15682,13 +17009,24 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
     const customerName = inv?.customerName || customer?.name || "";
     const senderName = companyInfo?.name || "（会社名未設定）";
     const isOverdue = (inv?.dueDate || "") < getTodayLocalStr();
+    // 【重要・不具合修正】一部入金済みや赤伝で減額済みの請求書でも、メールには
+    // 請求額の全額しか書かれず、既に払った分まで請求しているように読めてしまっていた。
+    // 入金済み額・減額分・残額を明記する。
+    const paidSoFar = Number(inv?.paidAmount ?? inv?.paid_amount ?? 0) || 0;
+    const creditForThis = buildCreditNoteTotals(invoices).get(inv?.id) || 0;
+    const remainingForMail = calcInvoiceOutstanding(inv, buildCreditNoteTotals(invoices));
+    const amountLines =
+      `ご請求金額: ¥${(Number(inv?.total) || 0).toLocaleString()}\n` +
+      (paidSoFar > 0 ? `ご入金済み: ¥${paidSoFar.toLocaleString()}\n` : "") +
+      (creditForThis !== 0 ? `減額（赤伝）: ¥${creditForThis.toLocaleString()}\n` : "") +
+      ((paidSoFar > 0 || creditForThis !== 0) ? `お支払い残高: ¥${remainingForMail.toLocaleString()}\n` : "");
     const subject = encodeURIComponent(`【お支払いのお願い】${inv?.id} ${customerName}`);
     const body = encodeURIComponent(
       `いつもお世話になっております。\n${senderName}でございます。\n\n` +
       (isOverdue
         ? `下記請求書のお支払期日が過ぎておりますが、まだお支払いの確認ができておりません。\nご多用のところ恐れ入りますが、お支払い状況のご確認をお願いいたします。\n\n`
         : `下記請求書のお支払期日が近づいております。\nお手数をおかけいたしますが、お支払いのご準備をお願いいたします。\n\n`) +
-      `請求書番号: ${inv?.id}\n発行日: ${inv?.issueDate || ""}\n支払期日: ${inv?.dueDate || ""}\n合計: ¥${(Number(inv?.total) || 0).toLocaleString()}\n\n` +
+      `請求書番号: ${inv?.id}\n発行日: ${inv?.issueDate || ""}\n支払期日: ${inv?.dueDate || ""}\n${amountLines}\n` +
       `既にお支払いいただいている場合は本メールにご返信いただけますと幸いです。\nご確認よろしくお願いいたします。`
     );
     const mailtoUrl = `https://mail.google.com/mail/?view=cm&to=${customerEmail}&su=${subject}&body=${body}`;
@@ -15712,18 +17050,13 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
     // 赤伝で全額（またはそれ以上）訂正済みの請求書が、実際の残額はゼロなのに
     // 督促対象として残り続けてしまう可能性があった。元の請求書に紐づく
     // 赤伝の合計を差し引いた「実質の残額」で、督促が必要かどうかを判断する。
-    const creditNoteTotalByOriginal = new Map();
-    invoices.forEach((inv) => {
-      if (!inv?.isCreditNote || !inv?.originalInvoiceId || inv?.deleted) return;
-      const prev = creditNoteTotalByOriginal.get(inv.originalInvoiceId) || 0;
-      creditNoteTotalByOriginal.set(inv.originalInvoiceId, prev + (Number(inv.total) || 0));
-    });
+    // 【重要・不具合修正】以前は貸倒処理済みの請求書も対象になり、入金済み額も
+    // 差し引いていなかった。共通の延滞判定（isInvoiceOverdue）に統一する。
+    const creditTotalsForReminder = buildCreditNoteTotals(invoices);
     const targets = invoices.filter((inv) => {
-      if (inv?.status === "paid" || inv?.isCreditNote || inv?.deleted) return false;
-      if ((inv?.dueDate || "") >= getTodayLocalStr()) return false;
+      if (inv?.deleted) return false;
       if (!customers.find((c) => c?.id === inv?.customerId)?.email) return false;
-      const netRemaining = (Number(inv?.total) || 0) + (creditNoteTotalByOriginal.get(inv?.id) || 0);
-      return netRemaining > 0;
+      return isInvoiceOverdue(inv, getTodayLocalStr(), creditTotalsForReminder);
     });
     if (targets.length === 0) {
       window.alert("督促が必要な請求書はありません。");
@@ -15870,7 +17203,7 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
       <Panel title="顧客請求書の一括発行">
         <p style={{ fontSize:"11px", color:"#666", marginBottom:"8px" }}>
           配送完了した受注は、個別に請求書を発行するのではなく、顧客ごとに登録された締め日・支払いサイトに合わせて、
-          対象月分をまとめて1通の請求書として発行します（法人契約の一般的な運用に合わせています）。
+          対象月に締め日が来る分（例：20日締めの顧客は前月21日〜当月20日、月末締めは1日〜末日）をまとめて1通の請求書として発行します（法人契約の一般的な運用に合わせています）。
         </p>
         <div style={{ display:"flex", gap:"8px", alignItems:"flex-end", flexWrap:"wrap" }}>
           <Fl label="対象月"><RetroInput type="month" value={batchMonth} onChange={e=>setBatchMonth(e.target.value)}/></Fl>
@@ -16016,7 +17349,7 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
             以前は「入金済でない請求書の請求額を全部足す」計算だったため、
             一部入金があっても全額未回収として表示されていた。
             貸倒は回収を諦めた分なので、未回収からは除く。 */}
-        {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#7b1fa2"],["入金済","¥"+invoices.reduce((s,i)=>s+(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0),0).toLocaleString(),"#4caf50"],["未回収","¥"+invoices.filter(i=>i?.status!=="paid" && i?.status!=="bad_debt").reduce((s,i)=>s+Math.max(0,(Number(i?.total)||0)-(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0)),0).toLocaleString(),"#e63946"]].map(([l,v,c])=>(
+        {[["請求総額","¥"+invoices.reduce((s,i)=>s+(Number(i?.total)||0),0).toLocaleString(),"#7b1fa2"],["入金済","¥"+invoices.reduce((s,i)=>s+(Number(i?.paidAmount ?? i?.paid_amount ?? 0)||0),0).toLocaleString(),"#4caf50"],["未回収","¥"+invoices.reduce((s,i)=>s+calcInvoiceOutstanding(i, creditTotalsForList),0).toLocaleString(),"#e63946"]].map(([l,v,c])=>(
           <div key={l} style={{ background:"#fff", border:cardBorder, borderRadius:"6px", padding:"12px" }}>
             <div style={{ fontSize:"11px", color:"#888", fontWeight:700 }}>{l}</div>
             <div style={{ fontSize:"20px", fontWeight:700, color:c }}>{v}</div>
@@ -16045,6 +17378,14 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
                   <span style={{ color:"#888", marginLeft:"6px" }}>
                     {g.firstDate}〜{g.lastDate}／{g.count}件
                   </span>
+                  {g.periodEnd && (
+                    <span style={{ color:"#888", marginLeft:"6px" }}>
+                      （締め期間 {g.periodStart}〜{g.periodEnd}）
+                    </span>
+                  )}
+                  {g.beforeClosing && (
+                    <span style={{ marginLeft:"6px", fontSize:"10px", color:"#e65100", border:"1px solid #ffcc80", background:"#fff3e0", borderRadius:"3px", padding:"0 4px", whiteSpace:"nowrap" }}>締め日前</span>
+                  )}
                 </div>
                 <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
                   <span style={{ fontSize:"12px", fontWeight:700, color:"#00695c" }}>{yen(g.amount)}</span>
@@ -16086,10 +17427,19 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
           <span style={{color:"#00a09a",fontWeight:700, cursor:"pointer"}} onClick={()=>openInvoiceModal(inv)}>{inv?.id||"—"}</span>,
           inv?.customerName||"", inv?.dueDate||"",
           <span style={{fontWeight:700}}>¥{(Number(inv?.total)||0).toLocaleString()}</span>,
-          <StatusPill s={inv?.status}/>,
+          // 赤伝は「支払ってもらう請求書」ではないため、未払い／入金済みではなく「赤伝」と表示する
+          inv?.isCreditNote
+            ? <span style={{ fontSize:"11px", fontWeight:700, color:"#e65100", background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:"999px", padding:"2px 8px" }}>赤伝</span>
+            // 赤伝で全額減額され、もう回収する残額が無い請求書は「未払い」ではなく「相殺済」と表示する
+            : (inv?.status !== "paid" && inv?.status !== "bad_debt" && (creditTotalsForList.get(inv?.id) || 0) < 0 && calcInvoiceOutstanding(inv, creditTotalsForList) === 0)
+              ? <span style={{ fontSize:"11px", fontWeight:700, color:"#555", background:"#f1f3f5", border:"1px solid #d0d0d0", borderRadius:"999px", padding:"2px 8px", whiteSpace:"nowrap" }}>赤伝で相殺済</span>
+              : <StatusPill s={inv?.status}/>,
           inv?.sentAt ? <span style={{ color:"#2e7d32", fontWeight:700 }}>送付済</span> : <span style={{ color:"#999" }}>未送付</span>,
           <span style={{fontSize:"11px",color:"#999"}}>{inv?.note||"—"}</span>,
-          inv?.status!=="paid"
+          // 【重要・不具合修正】以前は「入金済み以外」すべてに督促／支払い案内ボタンを出していたため、
+          // 貸倒処理済みの請求書や、赤伝（マイナスの請求書）にまで督促メールを送れてしまっていた。
+          // 実際に回収すべき残額（赤伝での減額後）がある請求書にだけ出す。
+          calcInvoiceOutstanding(inv, creditTotalsForList) > 0
             ? (customers.find((c) => c?.id === inv?.customerId)?.email
                 ? <RetroBtn small onClick={()=>sendReminderMail(inv)} style={{ background:(inv?.dueDate||"")<getTodayLocalStr() ? "#e63946" : "#fff", borderColor:"#e63946", color:(inv?.dueDate||"")<getTodayLocalStr() ? "#fff" : "#e63946" }}>
                     {/* 「督促」は本来、支払期日を過ぎた請求に対して使う言葉。
@@ -16120,13 +17470,13 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
             const previewItems = (invoiceDraft.lineItems || []).map((item) => {
               const qty = Number(item?.qty) || 0;
               const unitPrice = Number(item?.unitPrice) || 0;
-              return { ...item, subtotal: qty * unitPrice };
+              return { ...item, subtotal: roundYen(qty * unitPrice) };
             });
             // 日本のビジネス慣習上、請求金額は円単位（整数）で扱うため、
             // 数量×単価が小数になるケース（距離・時間制など）でも
             // 合計時点で四捨五入し、小数のまま表示・保存されないようにする。
-            const previewAmount = Math.round(previewItems.reduce((s, item) => s + (Number(item?.subtotal) || 0), 0));
-            const previewTax = calcTax(previewAmount);
+            const previewAmount = roundYen(previewItems.reduce((s, item) => s + (Number(item?.subtotal) || 0), 0));
+            const previewTax = calcInvoiceTaxFromItems(previewItems);
             const previewTotal = previewAmount + previewTax;
             return (
               <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"8px 12px" }}>
@@ -16179,7 +17529,7 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
           })()}
           <Panel title="明細" icon={fileIcon} style={{ marginTop:"8px" }}>
             {(invoiceDraft.lineItems || []).map((item)=>(
-              <div key={item.id} style={{ display:"grid", gridTemplateColumns:"2fr 70px 120px 120px auto", gap:"6px", alignItems:"end", marginBottom:"6px" }}>
+              <div key={item.id} style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "2fr 70px 120px 120px 92px auto", gap:"6px", alignItems:"end", marginBottom:"6px" }}>
                 <Fl label="品目"><RetroInput value={item.name || ""} onChange={(e)=>updateLineItem(item.id, "name", e.target.value)}/></Fl>
                 <Fl label="数量"><RetroInput type="number" min="0" value={item.qty ?? 0} onChange={(e)=>updateLineItem(item.id, "qty", Math.max(0, Number(e.target.value)||0))}/></Fl>
                 {/* 単価は以前マイナス値が常に0に丸められていたため、「値引き」「返金」のような
@@ -16188,6 +17538,13 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
                     単価だけはマイナス値を許可する（数量は個数として0未満が不自然なため従来通り）。 */}
                 <Fl label="単価（値引きは負の数で入力可）"><RetroInput type="number" value={item.unitPrice ?? 0} onChange={(e)=>updateLineItem(item.id, "unitPrice", Number(e.target.value)||0)}/></Fl>
                 <Fl label="小計"><RetroInput type="number" value={item.subtotal ?? 0} readOnly/></Fl>
+                {/* 非課税の仕事（仕事種別で「非課税」にしたもの）を請求書でも区別できるようにする */}
+                <Fl label="税区分">
+                  <RetroSelect value={item.taxable === false ? "no" : "yes"} onChange={(e)=>updateLineItem(item.id, "taxable", e.target.value !== "no")}>
+                    <option value="yes">課税</option>
+                    <option value="no">非課税</option>
+                  </RetroSelect>
+                </Fl>
                 <RetroBtn small onClick={()=>removeLineItem(item.id)} style={{ background:"#fff", color:"#e63946", borderColor:"#e63946" }}>{trashIcon}</RetroBtn>
               </div>
             ))}
@@ -16212,7 +17569,9 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
             )}
           </div>
           <div style={{ display:"flex", justifyContent:"space-between", gap:"6px", marginTop:"10px", flexWrap:"wrap" }}>
-            <div style={{ display:"flex", gap:"6px" }}>
+            {/* 【見た目の不具合修正】スマホ幅でボタンが横に詰め込まれ、
+                「メ／ー／ル／送／付」のように1文字ずつ縦に折り返していた。折り返して並べる。 */}
+            <div style={{ display:"flex", gap:"6px", flexWrap:"wrap" }}>
               <RetroBtn onClick={openPreview} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>PDFプレビュー</RetroBtn>
               <RetroBtn onClick={openMailModal} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>{mailIcon}メール送付</RetroBtn>
               {/* 「削除」は破壊的な操作のため、「保存」のすぐ隣に置くと
@@ -16246,7 +17605,16 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
                 // 請求し損ねたまま消えてしまう。印も一緒に外す。
                 setData(d=>({
                   ...d,
-                  invoices:(Array.isArray(d?.invoices)?d.invoices:[]).map(i=>i?.id===invoiceDraft?.id?{...i,deleted:true}:i),
+                  // 【重要】復元したときに「この請求書に含まれていた実績・受注」へ
+                  // 正確に印を戻せるよう、外す前の対象を請求書側に控えておく。
+                  // （以前は復元時に「同じ顧客・同じ月の実績すべて」に印を付けていたため、
+                  // 未承認の実績や、別の請求書で請求すべき実績まで請求済み扱いになっていた）
+                  invoices:(Array.isArray(d?.invoices)?d.invoices:[]).map(i=>i?.id===invoiceDraft?.id?{
+                    ...i,
+                    deleted:true,
+                    unmarkedRecordIds:(Array.isArray(d?.dailyRecords)?d.dailyRecords:[]).filter(r=>r?.invoicedInvoiceId===invoiceDraft?.id).map(r=>r.id),
+                    unmarkedOrderIds:(Array.isArray(d?.orders)?d.orders:[]).filter(o=>o?.invoicedInvoiceId===invoiceDraft?.id).map(o=>o.id),
+                  }:i),
                   dailyRecords:(Array.isArray(d?.dailyRecords)?d.dailyRecords:[]).map(r=>r?.invoicedInvoiceId===invoiceDraft?.id?{...r,invoicedInvoiceId:null}:r),
                   orders:(Array.isArray(d?.orders)?d.orders:[]).map(o=>o?.invoicedInvoiceId===invoiceDraft?.id?{...o,invoicedInvoiceId:null}:o),
                 }));
@@ -16265,15 +17633,25 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
                   const original = invoices.find((i) => i?.id === invoiceDraft?.id);
                   if (!original) { window.alert("元の請求書が見つかりませんでした。"); return; }
                   setCreditNoteTarget(original);
-                  setCreditNoteForm({ amount: String(Math.round(Number(original.amount) || 0)), reason: "請求金額訂正のため" });
+                  // 【重要・不具合修正】非課税の明細（保管料・立替金など）を含む請求書でも、
+                  // 減額分すべてに10%の税を付けていたため、全額の赤伝を出しても
+                  // 元の請求書と打ち消し合わず、税の分だけマイナスの残高が残っていた。
+                  // 課税分と非課税分を分けて入力できるようにする。
+                  const items = Array.isArray(original.lineItems) ? original.lineItems : [];
+                  const nonTaxable = items.length > 0
+                    ? Math.round(items.filter((it) => it && it.taxable === false).reduce((s2, it) => s2 + (Number(it.subtotal) || 0), 0))
+                    : 0;
+                  const taxablePart = Math.round(Number(original.amount) || 0) - nonTaxable;
+                  setCreditNoteForm({ amount: String(taxablePart), nonTaxableAmount: nonTaxable > 0 ? String(nonTaxable) : "", hasNonTaxable: nonTaxable > 0, reason: "請求金額訂正のため" });
                 }} style={{ background:"#fff", color:"#e65100", borderColor:"#e65100" }}>赤伝を発行</RetroBtn>
               )}
               {invoiceDraft?.total > 0 && invoiceDraft?.status !== "paid" && invoiceDraft?.status !== "bad_debt" && (
                 <RetroBtn onClick={()=>{
                   const original = invoices.find((i) => i?.id === invoiceDraft?.id);
                   if (!original) { window.alert("元の請求書が見つかりませんでした。"); return; }
-                  const paid = Number(original.paidAmount ?? original.paid_amount ?? 0) || 0;
-                  const rest = Math.max(0, (Number(original.total) || 0) - paid);
+                  // 【重要・不具合修正】赤伝で減額した分を差し引かずに貸倒額を出していたため、
+                  // 本来より多い金額が「貸倒損失」として記録されていた。未回収の共通計算を使う。
+                  const rest = calcInvoiceOutstanding(original, buildCreditNoteTotals(invoices));
                   if (rest <= 0) { window.alert("未回収の残額がありません。"); return; }
                   setBadDebtTarget({ ...original, _rest: rest });
                   setBadDebtReason("取引先倒産のため回収不能");
@@ -16314,13 +17692,23 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
             元の請求書：<b>{creditNoteTarget.id}</b>（{yen(creditNoteTarget.total)}）<br/>
             返金・減額する金額を、<b>税抜き</b>で入力してください。
           </div>
-          <Fl label="減額する金額（税抜・円）">
+          <Fl label={creditNoteForm.hasNonTaxable ? "減額する金額：課税分（税抜・円）" : "減額する金額（税抜・円）"}>
             <RetroInput
               type="number" min="0"
               value={creditNoteForm.amount}
               onChange={(e)=>setCreditNoteForm(v=>({ ...v, amount:e.target.value }))}
             />
           </Fl>
+          {creditNoteForm.hasNonTaxable && (
+            <Fl label="減額する金額：非課税分（保管料・立替金など／円）">
+              <RetroInput
+                type="number" min="0"
+                value={creditNoteForm.nonTaxableAmount || ""}
+                onChange={(e)=>setCreditNoteForm(v=>({ ...v, nonTaxableAmount:e.target.value }))}
+                placeholder="0"
+              />
+            </Fl>
+          )}
           <Fl label="理由（請求書に記載されます）">
             <RetroInput
               value={creditNoteForm.reason}
@@ -16330,15 +17718,16 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
           </Fl>
           {(() => {
             const base = Math.abs(Number(creditNoteForm.amount) || 0);
+            const nonTax = Math.abs(Number(creditNoteForm.nonTaxableAmount) || 0);
             const tax = calcTax(base);
             return (
               <div style={{ background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:"6px", padding:"10px", fontSize:"12px", marginTop:"6px" }}>
                 <div style={{ display:"flex", justifyContent:"space-between" }}>
-                  <span>赤伝の金額</span><b style={{ color:"#e65100" }}>{yen(-(base + tax))}</b>
+                  <span>赤伝の金額{nonTax > 0 ? `（うち非課税 ${yen(-nonTax)}）` : ""}</span><b style={{ color:"#e65100" }}>{yen(-(base + nonTax + tax))}</b>
                 </div>
                 <div style={{ display:"flex", justifyContent:"space-between", color:"#888", marginTop:"2px" }}>
                   <span>差引後の実質請求額</span>
-                  <span>{yen((Number(creditNoteTarget.total)||0) - (base + tax))}</span>
+                  <span>{yen((Number(creditNoteTarget.total)||0) - (base + nonTax + tax))}</span>
                 </div>
               </div>
             );
@@ -16353,12 +17742,15 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
               isProcessingInvoiceOpRef.current = true;
               try {
                 const original = creditNoteTarget;
-                const refundBase = Math.abs(Number(creditNoteForm.amount) || 0);
+                const refundTaxable = Math.abs(Number(creditNoteForm.amount) || 0);
+                const refundNonTaxable = creditNoteForm.hasNonTaxable ? Math.abs(Number(creditNoteForm.nonTaxableAmount) || 0) : 0;
+                const refundBase = refundTaxable + refundNonTaxable;
                 if (refundBase <= 0) { window.alert("金額を入力してください。"); return; }
                 if (refundBase > (Number(original.amount) || 0) &&
                     !window.confirm(`元の請求額（税抜 ${yen(original.amount)}）を超えています。このまま発行しますか？`)) return;
                 const reason = creditNoteForm.reason || "請求金額訂正";
-                const tax = calcTax(refundBase);
+                // 消費税は課税分にだけかける（非課税分には税を付けない）
+                const tax = calcTax(refundTaxable);
                 const creditId = `${original.id}-R`;
                 if (invoices.some((i) => i?.id === creditId && !i?.deleted)) {
                   window.alert(`この請求書の赤伝（${creditId}）は既に発行されています。`);
@@ -16389,13 +17781,24 @@ ${inv?.note ? `<div class="footnote">備考：${esc(inv.note)}</div>` : ""}
                     originalInvoiceId: original.id,
                     issuedBy,
                     note: `${original.id} に対する赤伝（${reason}）`,
-                    lineItems: [{
-                      id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                      name: `${original.id} 訂正分（${reason}）`,
-                      qty: 1,
-                      unitPrice: -refundBase,
-                      subtotal: -refundBase,
-                    }],
+                    lineItems: [
+                      ...(refundTaxable > 0 ? [{
+                        id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        name: `${original.id} 訂正分（${reason}）`,
+                        qty: 1,
+                        unitPrice: -refundTaxable,
+                        subtotal: -refundTaxable,
+                        taxable: true,
+                      }] : []),
+                      ...(refundNonTaxable > 0 ? [{
+                        id: `LI-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-n`,
+                        name: `${original.id} 訂正分・非課税（${reason}）`,
+                        qty: 1,
+                        unitPrice: -refundNonTaxable,
+                        subtotal: -refundNonTaxable,
+                        taxable: false,
+                      }] : []),
+                    ],
                   }, ...(Array.isArray(d?.invoices) ? d.invoices : [])],
                 }));
                 setCreditNoteTarget(null);
@@ -16880,8 +18283,9 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
     const name = d?.name || "";
     const id = d?.id || "";
     const phone = d?.phone || "";
-    const kana = d?.nameKana || "";
-    return name.includes(driverSearch) || id.includes(driverSearch) || phone.includes(driverSearch) || kana.includes(driverSearch);
+    const kana = driverKanaOf(d);
+    return name.includes(driverSearch) || id.includes(driverSearch) || phone.includes(driverSearch) || kana.includes(driverSearch)
+      || (driverSearch && normalizeKanaForCompare(kana).includes(normalizeKanaForCompare(driverSearch)));
   });
   const jobTypes = (Array.isArray(data?.jobTypes) ? data.jobTypes : []).filter(Boolean);
   const allCustomers = (Array.isArray(data?.customers) ? data.customers : []).filter(c => !c?.deleted);
@@ -17700,6 +19104,13 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
           )}
 
           {sectionTitle("ロイヤリティ（報酬からの控除）")}
+          {form.royaltyType !== "none" && (
+            <p style={{ fontSize:"11px", color:"#7b1fa2", background:"#f3e5f5", border:"1px solid #e1bee7", borderRadius:"4px", padding:"6px 8px", margin:"0 0 6px", lineHeight:1.6 }}>
+              仕事種別・担当ルートの支払単価や、受注ごとの報酬額で会社の取り分（売上との差額）が確保されている仕事は、
+              支払単価を優先し、ロイヤリティは引きません（二重取り防止）。ロイヤリティは、報酬が売上と同額の仕事
+              （ロイヤリティ優先の定期便など）にかかります。固定額の場合も、その月にロイヤリティ対象の仕事が無ければ引きません。
+            </p>
+          )}
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:"6px 12px" }}>
             <Fl label="計算方法">
               <RetroSelect value={form.royaltyType||"rate"} onChange={e=>setForm(v=>({...v,royaltyType:e.target.value}))}>
@@ -17823,7 +19234,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
                         {resetCodeResult.code}
                       </div>
                       <div style={{ fontSize: "11px", color: "#999", marginTop: "4px" }}>
-                        有効期限：{new Date(resetCodeResult.expiresAt).toLocaleString("ja-JP")}まで
+                        有効期限：{new Date(resetCodeResult.expiresAt).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}まで
                       </div>
                     </div>
                   )}
@@ -18024,11 +19435,11 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
             )}
             {activeTab==="payout" && !restrictedTabIds.includes("payout") && (() => {
               const d = selectedDriver;
-              const yen = (v) => `¥${(Number(v)||0).toLocaleString()}`;
+              const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
               const royaltyLabel =
-                d?.royaltyType === "fixed" ? `固定 ${yen(d?.royaltyFixed)}／月`
+                d?.royaltyType === "fixed" ? `固定 ${yen(d?.royaltyFixed)}／月（支払単価で取り分を確保済みの仕事だけの月は引かない）`
                 : d?.royaltyType === "none" ? "なし"
-                : (d?.royaltyRate ? `売上の ${d.royaltyRate}％` : "—");
+                : (d?.royaltyRate ? `売上の ${d.royaltyRate}％（支払単価で取り分を確保済みの仕事は対象外）` : "—");
               // 毎月かならず発生する定額控除の合計（ロイヤリティは売上依存なのでここには含めない）
               const fixedDeductionTotal =
                 (Number(d?.leaseMonthly)||0) + (Number(d?.insuranceMonthly)||0) +
@@ -18152,7 +19563,7 @@ const DriversPage = ({ data, setData, tenantId, userRole, isMobile, requestOpenT
                         {resetCodeResult.code}
                       </div>
                       <div style={{ fontSize: "11px", color: "#999", marginTop: "4px" }}>
-                        有効期限：{new Date(resetCodeResult.expiresAt).toLocaleString("ja-JP")}まで
+                        有効期限：{new Date(resetCodeResult.expiresAt).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}まで
                       </div>
                     </div>
                   )}
@@ -20091,7 +21502,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   // 見つかった、まさにその瞬間に、"yen is not defined" という
   // JavaScriptエラーで、機能全体が停止してしまっていた
   // （実際にブラウザで、削除済みドライバーの実績を作って、再現した）。
-  const yen = (v) => `¥${(Number(v) || 0).toLocaleString()}`;
+  const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
   // 変更履歴（監査ログ）に「誰が」を記録するため、ログイン中の本人を
   // グローバルに保持する。logHistoryEntry はコンポーネント外の関数のため、
   // props を渡せない箇所からも参照できるようにしておく。
@@ -20394,6 +21805,32 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
       alive = false;
     };
   }, [profileResolved, tenantId]);
+
+  // 【重要・不具合修正】入出金（bank_transactions）は「口座・入金」画面を開いたときにしか
+  // 読み込まれていなかったため、アプリを開いた直後は、ダッシュボードの
+  // 「口座照合が必要な入金」「未照合入金があります」や画面下の「未照合入金」が、
+  // 実際には未照合の入金があっても空（0件）のままだった。
+  // データの読み込みが終わった時点で、経理を見られる役割のときだけ読み込んでおく。
+  useEffect(() => {
+    if (!isLoaded || !tenantId) return;
+    if (userRole === "dispatcher" || userRole === "driver") return;
+    let alive = true;
+    (async () => {
+      try {
+        const { data: rows, error } = await supabase
+          .from("bank_transactions")
+          .select("*")
+          .eq("tenant_id", tenantId)
+          .order("transaction_date", { ascending: false });
+        if (error || !alive) return;
+        const mapped = (rows || []).map(mapBankTransactionRow);
+        setData((d) => ({ ...d, bankTransactions: mapped }));
+      } catch (err) {
+        console.warn("Failed to preload bank_transactions:", err);
+      }
+    })();
+    return () => { alive = false; };
+  }, [isLoaded, tenantId, userRole]);
 
   /**
    * ===== 実績データの軽量な定期更新 =====
@@ -20719,10 +22156,16 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
   }, [isLoaded, tenantId]);
 
 
-  const pendingCount = (Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="pending").length;
-  const unmatchedCount = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched").length;
+  // 【重要・不具合修正】画面下のステータスバーの件数が、削除済みの受注・ドライバー・
+  // 請求書まで数えていたため、ダッシュボードの件数と食い違っていた。
+  const activeOrdersForStatus = (Array.isArray(data?.orders) ? data.orders : []).filter(o => o && !o.deleted);
+  const pendingCount = activeOrdersForStatus.filter(o=>o?.status==="pending").length;
+  const unmatchedCount = (Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).filter(b=>b?.status==="unmatched" && (Number(b?.deposit_amount) > 0 || (!(Number(b?.withdrawal_amount) > 0) && Number(b?.amount) > 0))).length;
   const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
-  const overdueCount = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i=>i?.status==="overdue"||((i?.status==="unpaid"||i?.status==="partial")&&(i?.dueDate||"")<todayStr)).length;
+  // 延滞は「顧客からの入金が遅れている請求書」。ドライバーからの請求書（こちらが払う側）は含めない。
+  const invoicesForStatus = (Array.isArray(data?.invoices) ? data.invoices : []).filter(i => i && !i.deleted);
+  const creditTotalsForStatus = buildCreditNoteTotals(invoicesForStatus);
+  const overdueCount = invoicesForStatus.filter(i => isInvoiceOverdue(i, todayStr, creditTotalsForStatus)).length;
 
   // 【重要・利用者フィードバックで修正】以前は、ダッシュボードの期限接近
   // アラートと同じ判定をメニューのバッジ用に別途計算していたが（下記の
@@ -21015,7 +22458,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
               <div key={n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #f5f5f5", background: n.read ? "#fff" : "#f0fffe" }}>
                 <div style={{ fontSize:"12px", color:"#333", marginBottom:"4px" }}>{n.message}</div>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:"8px" }}>
-                  <div style={{ fontSize:"10px", color:"#999" }}>{n.createdAt?.slice(0,10)}</div>
+                  <div style={{ fontSize:"10px", color:"#999" }}>{toJstDateStr(n.createdAt)}</div>
                   {!n.read && (
                     <button
                       onClick={() =>
@@ -21168,10 +22611,10 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
 
       <div style={{ borderTop:cardBorder, background:"#fff", padding:"6px 12px", display:"flex", gap:"8px", alignItems:"center", flexWrap:"wrap" }}>
         <div style={{ fontSize:"11px", color:"#666", flex:1 }}>
-          稼働案件：{(Array.isArray(data?.orders) ? data.orders : []).filter(o=>o?.status==="in_transit").length}件　未配車：{pendingCount}件　ドライバー待機：{(Array.isArray(data?.drivers) ? data.drivers : []).filter(d=>d?.status==="available").length}名
+          稼働案件：{activeOrdersForStatus.filter(o=>o?.status==="in_transit").length}件　未配車：{pendingCount}件　ドライバー待機：{(Array.isArray(data?.drivers) ? data.drivers : []).filter(d=>d && !d.deleted && d.status==="available").length}名
         </div>
         {unmatchedCount>0&&<span style={{ fontSize:"11px", color:"#e65100", background:"#fff3e0", border:"1px solid #ff9800", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>未照合入金：{unmatchedCount}件</span>}
-        {overdueCount>0&&<span style={{ fontSize:"11px", color:"#c62828", background:"#ffebee", border:"1px solid #e63946", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>延滞：{overdueCount}件</span>}
+        {overdueCount>0&&<span style={{ fontSize:"11px", color:"#c62828", background:"#ffebee", border:"1px solid #e63946", borderRadius:"999px", padding:"2px 8px", fontWeight:700 }}>入金延滞：{overdueCount}件</span>}
         <span style={{ fontSize:"11px", color:"#999" }}>Ver.2.0</span>
       </div>
 
@@ -21366,13 +22809,26 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                               // 「請求済み」の印を外している。復元時に印を戻さないと、
                               // 請求書は存在するのに実績は未請求のままとなり、
                               // そこからもう1枚請求書を作れてしまう（＝二重請求）。
-                              if (key === "invoices") {
+                              if (key === "invoices" && Array.isArray(item?.unmarkedRecordIds)) {
+                                // 削除時に控えておいた「この請求書に含まれていた実績・受注」だけに印を戻す。
+                                const invId = item?.id;
+                                const recIds = new Set(item.unmarkedRecordIds);
+                                const ordIds = new Set(Array.isArray(item?.unmarkedOrderIds) ? item.unmarkedOrderIds : []);
+                                next.dailyRecords = (Array.isArray(d?.dailyRecords) ? d.dailyRecords : []).map((r) =>
+                                  (recIds.has(r?.id) && !r?.deleted && !r?.invoicedInvoiceId) ? { ...r, invoicedInvoiceId: invId } : r
+                                );
+                                next.orders = (Array.isArray(d?.orders) ? d.orders : []).map((o) =>
+                                  (ordIds.has(o?.id) && !o?.deleted && !o?.invoicedInvoiceId) ? { ...o, invoicedInvoiceId: invId } : o
+                                );
+                              } else if (key === "invoices") {
+                                // 控えが無い（この修正より前に削除された）請求書は、従来どおり
+                                // 同じ顧客・同じ月で推定する。ただし未承認の実績には印を付けない。
                                 const invId = item?.id;
                                 const inMonth = (r) =>
                                   r?.customerId === item?.customerId &&
                                   String(r?.date || "").startsWith(String(item?.issueDate || "").slice(0, 7));
                                 const remark = (list) => (Array.isArray(list) ? list : []).map((r) =>
-                                  (!r?.deleted && !r?.invoicedInvoiceId && inMonth(r))
+                                  (!r?.deleted && !r?.invoicedInvoiceId && isApprovedRecord(r) && inMonth(r))
                                     ? { ...r, invoicedInvoiceId: invId }
                                     : r
                                 );
@@ -21540,9 +22996,10 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                 // 赤伝は返金額を手入力で決めるため、むしろ誤りが起きやすい。
                 // 符号にかかわらず検証する（税額0＝非課税は意図的なので対象外）。
                 if (amount !== 0 && tax !== 0) {
-                  const expected = calcTax(amount);
+                  // 非課税の明細がある請求書は、課税分だけに税がかかるので、明細から正しい税額を求める
+                  const expected = items.length > 0 ? calcInvoiceTaxFromItems(items) : calcTax(amount);
                   if (Math.abs(expected - tax) >= 1) {
-                    problems.push(`・${inv.id}：消費税が ${yen(tax)} ですが、税抜${yen(amount)} なら ${yen(expected)} のはずです`);
+                    problems.push(`・${inv.id}：消費税が ${yen(tax)} ですが、税抜${yen(amount)}（非課税分を除く）なら ${yen(expected)} のはずです`);
                   }
                 }
 
@@ -21598,7 +23055,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                     }
                     const roleLabel = { super_admin:"システム管理者", admin:"管理者", office:"事務", dispatcher:"配車担当", driver:"ドライバー" };
                     const lines = rows.map((r) => {
-                      const when = String(r.logged_in_at || "").replace("T", " ").slice(0, 16);
+                      const when = fmtJstDateTime(r.logged_in_at);
                       // 端末の種類だけを簡潔に示す（長い技術情報は読みにくいため）
                       const ua = String(r.user_agent || "");
                       const device = /iPhone|Android|Mobile/i.test(ua) ? "スマホ" : /iPad|Tablet/i.test(ua) ? "タブレット" : "パソコン";
@@ -21687,7 +23144,7 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                       `ドライバー ${(b.drivers || []).length}名`,
                       `顧客 ${(b.customers || []).length}社`,
                     ].join("\n・");
-                    const when = String(parsed._exportedAt || "").slice(0, 16).replace("T", " ");
+                    const when = fmtJstDateTime(parsed._exportedAt);
                     // 【重要】復元は現在のデータを完全に置き換える破壊的操作。
                     // 誤って実行すると今のデータが全て失われるため、
                     // 中身と件数を必ず提示し、二段階で確認する。
@@ -21882,10 +23339,31 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                             );
                             return;
                           }
+                          // 【検証7回目で追加】受注CSVには顧客IDの列が無く「顧客（会社名）」しか無いため、
+                          // CSVで追加・変更した受注が顧客に紐づかず、請求書の対象から漏れていた。
+                          // 会社名が完全に一致する顧客に紐づけ、見つからない行は取り込み前に知らせる。
+                          const activeCustomers = (Array.isArray(data?.customers) ? data.customers : []).filter((c) => c && !c.deleted);
+                          const customerIdByName = new Map(activeCustomers.map((c) => [String(c.name || "").trim(), c.id]));
+                          const custCol = key === "orders" ? head.indexOf("顧客") : -1;
+                          const unknownCustomers = custCol < 0 ? [] : body
+                            .map((r, ri) => ({ ri, name: String(r[custCol] ?? "").trim() }))
+                            .filter(({ ri, name }) => {
+                              if (!name || customerIdByName.has(name)) return false;
+                              // 既に顧客に紐づいている受注は、会社名の表記が違っても紐づけはそのまま残るので対象外
+                              const cur = existing.find((x) => String(x?.id ?? "") === String(body[ri][0] ?? "").trim());
+                              return !cur?.customerId;
+                            })
+                            .map(({ ri, name }) => `${ri + 2}行目： ${name}`);
                           if (!window.confirm(
                             `${label} を取り込みます。\n\n` +
                             `　既存を上書き： ${willUpdate}件\n` +
                             `　新しく追加　： ${willAdd}件\n\n` +
+                            (unknownCustomers.length > 0
+                              ? `⚠ 顧客管理に登録されていない会社名があります（請求書の対象になりません）：\n` +
+                                unknownCustomers.slice(0, 5).join("\n") +
+                                (unknownCustomers.length > 5 ? `\n…他 ${unknownCustomers.length - 5}件` : "") +
+                                `\n先に顧客管理へ登録するか、会社名を顧客管理と同じ表記に直してください。\n\n`
+                              : "") +
                             `※CSVに無い項目は、既存の値がそのまま残ります。\n` +
                             `※取り込み前に「バックアップを保存」しておくことをおすすめします。\n\n` +
                             `続けますか？`
@@ -21966,10 +23444,17 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
                                 const field = fieldMap[h];
                                 if (!field) return;
                                 const raw = String(r[ci] ?? "").trim();
+                                // 【検証7回目で修正】数値の欄が空のまま取り込むと 0 が入り、
+                                // 「締め日0」「年式0」「金額0円」に書き換わっていた（ダウンロード→そのまま取り込み でも発生）。
+                                // 空欄の数値は「入力なし」として扱い、既存の値をそのまま残す。
+                                if (numericFields.has(field) && raw === "") return;
                                 obj[field] = numericFields.has(field) ? (toNumber(raw) ?? 0) : raw;
                               });
                               const id = String(obj.id ?? "").trim();
                               if (!id) return;
+                              if (key === "orders" && obj.customerName && customerIdByName.has(String(obj.customerName).trim())) {
+                                obj.customerId = customerIdByName.get(String(obj.customerName).trim());
+                              }
                               const at = indexById.get(id);
                               // 既にあるものは上書き。CSVに無い項目は消さずに残す。
                               if (at != null) {
