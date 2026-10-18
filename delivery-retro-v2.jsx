@@ -1300,7 +1300,7 @@ const HistoryPanel = ({ data, entityType, entityId, labelMap = {}, hideKeys = []
  * それより古いデータを見たい場合に、ここから明示的に読み込む。
  * 一度読み込めば、そのセッション中は再度読み込む必要はない。
  */
-const LoadOlderDataBanner = ({ type, data, setData, tenantId }) => {
+const LoadOlderDataBanner = ({ type, data, setData, tenantId, userRole }) => {
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
@@ -1315,7 +1315,7 @@ const LoadOlderDataBanner = ({ type, data, setData, tenantId }) => {
     try {
       const cutoff = defaultLoadCutoff();
       const older = type === "dailyRecords"
-        ? await fetchOlderDailyRecords(tenantId, cutoff)
+        ? await fetchOlderDailyRecords(tenantId, cutoff, userRole)
         : await fetchOlderChangeHistory(tenantId, cutoff);
       setData((d) => {
         const current = Array.isArray(d?.[type]) ? d[type] : [];
@@ -1468,6 +1468,9 @@ class PageErrorBoundary extends Component {
   }
 }
 
+// 【顧客の仕事履歴の追加に合わせて修正】モーダルの上に別のモーダルを重ねたとき、Escキーで下のモーダルまで
+// 一緒に閉じていた（Ctrl+S も下のモーダルの「保存」まで押してしまう）。キー操作は一番上のモーダルだけが受け取る。
+const openModalStack = [];
 const Modal = ({ title, icon, onClose, children, width=480, confirmClose }) => {
   const dialogRef = useRef(null);
   // 【重要】これまでモーダルは、入力途中でも×ボタンやEscapeキーひとつで
@@ -1533,7 +1536,10 @@ const Modal = ({ title, icon, onClose, children, width=480, confirmClose }) => {
     };
     focusFirst();
 
+    const stackToken = {};
+    openModalStack.push(stackToken);
     const handleKeyDown = (e) => {
+      if (openModalStack[openModalStack.length - 1] !== stackToken) return;
       if (e.key === "Escape" && typeof onCloseRef.current === "function") {
         // 【重要】モーダル内で候補リスト（SearchableSelect）が開いている場合、
         // Escは「候補を閉じる」ためのものであって、モーダルを閉じる意図ではない。
@@ -1596,6 +1602,8 @@ const Modal = ({ title, icon, onClose, children, width=480, confirmClose }) => {
     document.addEventListener("keydown", handleKeyDown);
 
     return () => {
+      const idx = openModalStack.indexOf(stackToken);
+      if (idx >= 0) openModalStack.splice(idx, 1);
       document.body.style.overflow = prevOverflow;
       document.removeEventListener("keydown", handleKeyDown);
       // モーダルを閉じたら、開く前のスクロール位置に戻す。
@@ -2433,6 +2441,7 @@ const CalendarPage = ({ data, setData, isMobile=false, tenantId, userRole, authE
 // ===== BANK PAGE =====
 const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [bankTransactions, setBankTransactions] = useState(Array.isArray(data?.bankTransactions) ? data.bankTransactions : []);
+  const [showMoneyHistory, setShowMoneyHistory] = useState(false);
   // 【重要】削除済みの請求書・顧客を除外しないと、入金の照合候補として
   // 表示されてしまい、誤って削除済みの請求書に入金を紐付ける事故が起きる。
   // その入金は帳簿のどこにも現れず、原因不明の差異になる。
@@ -2523,12 +2532,18 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
       // 効かない。fetch自体が例外を投げるケースを捕まえられず、
       // 未処理のPromise拒否になっていた。
       try {
-        const { data: rows, error } = await supabase
-          .from("bank_transactions")
-          .select("*")
-          .eq("tenant_id", tenantId)
-          .order("transaction_date", { ascending: false });
-        if (error) {
+        // 【入出金・支払いの履歴の追加に合わせて修正】Supabase は1回で最大1,000件しか返さないため、
+        // 明細が1,000件を超えると古い方が表示されなかった。1,000件ずつ区切って最後まで読み込む。
+        // （入出金は1件ずつ個別に保存する表なので、全件読み込んでも保存の重さは変わらない）
+        let rows;
+        try {
+          rows = await fetchAllPages(() => supabase
+            .from("bank_transactions")
+            .select("*")
+            .eq("tenant_id", tenantId)
+            .order("transaction_date", { ascending: false })
+            .order("id", { ascending: true }));
+        } catch (error) {
           console.warn("Failed to load bank_transactions:", error);
           return;
         }
@@ -3528,7 +3543,12 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:"8px" }}>
         <div style={{ fontSize:"12px", color:"#666" }}>SMBC銀行CSVから取引明細を取り込み</div>
-        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:"8px", flexWrap:"wrap" }}>
+          {userRole !== "dispatcher" && (
+            <RetroBtn onClick={() => setShowMoneyHistory(true)} style={{ background:"#f0fbfa", color:"#00695c", borderColor:"#b2dfdb" }}>
+              入出金・支払いの履歴を見る
+            </RetroBtn>
+          )}
           <RetroBtn onClick={() => { setRematchVersion((v) => v + 1); showUploadToast("再マッチングを実行しました"); }} style={{ background:"#fff", color:"#00a09a", borderColor:"#00a09a" }}>
             再マッチング
           </RetroBtn>
@@ -3545,6 +3565,9 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         </div>
       )}
 
+      {showMoneyHistory && (
+        <MoneyHistory data={data} tenantId={tenantId} userRole={userRole} isMobile={isMobile} onClose={() => setShowMoneyHistory(false)} />
+      )}
       <Panel title="アップロード済み銀行取引明細" icon={bankIcon}>
         <RetroTable
           headers={["取引日","摘要","振込名義","入金額","出金額","ステータス"]}
@@ -3690,13 +3713,16 @@ const BankPage = ({ data, setData, tenantId, userRole, isMobile }) => {
         </div>
         <RetroTable
           headers={["日付","内容（振込名義等）","金額","照合状況","照合先","操作"]}
-          rows={bankTransactions.slice(0, visibleTxCount).map((b) => {
+          rows={transactionRows.slice(0, visibleTxCount).map((b) => {
             const matchedInv = b.matchedInvoice != null ? invoiceByKey.get(b.matchedInvoice) : undefined;
             const matchedName = getEntityPayload(matchedInv || {}).customerName || "";
             return [
               b?.date||"",
               <span style={{ fontSize:"12px" }}>{b?.description||""}</span>,
-              <span style={{ color:"#007a74", fontWeight:700 }}>¥{(Number(b?.amount)||0).toLocaleString()}</span>,
+              // 【修正】以前は入金も出金も同じ緑の「¥○○」で、どちらか見分けがつかなかった
+              (Number(b?.withdrawal_amount) || 0) > 0 && !((Number(b?.deposit_amount) || 0) > 0)
+                ? <span style={{ color:"#c62828", fontWeight:700 }}>出金 －¥{(Number(b?.withdrawal_amount)||0).toLocaleString()}</span>
+                : <span style={{ color:"#007a74", fontWeight:700 }}>入金 ＋¥{(Number(b?.deposit_amount) || Number(b?.amount) || 0).toLocaleString()}</span>,
               <StatusPill s={b?.status}/>,
               b?.matchedInvoice ? (
                 <span style={{ color:"#2e7d32", fontSize:"11px" }}>
@@ -6564,6 +6590,666 @@ const DispatchPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   );
 };
 
+/**
+ * ===== 顧客ごとの仕事の履歴（ユーザー要望で追加） =====
+ * 顧客詳細から開き、その顧客から請けた仕事（単発・チャーター等の受注と、
+ * ルート・個建・定期便・ハコログの配送実績）を日付の範囲で絞って一覧する。
+ * ・指定した期間・この顧客の分だけを、毎回サーバーから取り寄せる（1,000件ずつ区切って全件）。
+ *   画面全体の読み込みは直近15ヶ月分・件数の上限の影響を受けるため、それに頼らない。
+ *   取り寄せた分は表示専用で、保存データには混ぜない。まだ保存されていない画面上の変更は、
+ *   読み込み済みのデータの方を優先して表示する。
+ * ・受注から作られた実績（orderId あり）は、その受注が一覧に出ているときは受注の行にまとめ、二重に数えない。
+ * ・配車担当（dispatcher）には金額を出さない（他画面と同じ方針）。
+ */
+const fetchAllPages = async (makeQuery, pageSize = 1000) => {
+  // Supabase は1回の問い合わせで返す件数に上限（初期設定1,000件）があるため、区切って最後まで取る
+  const out = [];
+  for (let start = 0; ; start += pageSize) {
+    const { data: rows, error } = await makeQuery().range(start, start + pageSize - 1);
+    if (error) throw error;
+    out.push(...(rows || []));
+    if (!rows || rows.length < pageSize) break;
+  }
+  return out;
+};
+const fetchCustomerHistoryRange = async (tenantId, customer, from, to, userRole) => {
+  const recTable = userRole === "dispatcher" ? "daily_records_masked" : "daily_records";
+  const payloads = (rows) => rows.map((row) => row?.payload).filter(Boolean);
+  const [recs, ordersById, ordersByName] = await Promise.all([
+    fetchAllPages(() => supabase.from(recTable).select("id,payload").eq("tenant_id", tenantId)
+      .eq("payload->>customerId", customer.id).gte("payload->>date", from).lte("payload->>date", to).order("id", { ascending: true })),
+    fetchAllPages(() => supabase.from("orders").select("id,payload").eq("tenant_id", tenantId)
+      .eq("payload->>customerId", customer.id).gte("payload->>deliveryDate", from).lte("payload->>deliveryDate", to).order("id", { ascending: true })),
+    // 顧客IDが入っていない古い受注（取り込みデータ等）は、会社名で拾う
+    customer.name
+      ? fetchAllPages(() => supabase.from("orders").select("id,payload").eq("tenant_id", tenantId)
+          .eq("payload->>customerName", customer.name).gte("payload->>deliveryDate", from).lte("payload->>deliveryDate", to).order("id", { ascending: true }))
+      : Promise.resolve([]),
+  ]);
+  const orders = [...payloads(ordersById), ...payloads(ordersByName).filter((o) => !o.customerId)];
+  // 受注の日と実績の日がずれている場合（10/31の受注を11/1に実績登録など）、期間外の日付の実績も受注に結び付けて取り寄せる
+  const recIds = new Set(recs.map((r) => r?.id));
+  const orderIds = [...new Set(orders.map((o) => o?.id).filter(Boolean))];
+  const linked = [];
+  for (let i = 0; i < orderIds.length; i += 100) {
+    const chunk = orderIds.slice(i, i + 100);
+    const rows = await fetchAllPages(() => supabase.from(recTable).select("id,payload").eq("tenant_id", tenantId)
+      .in("payload->>orderId", chunk).order("id", { ascending: true }));
+    rows.forEach((r) => { if (!recIds.has(r?.id)) { recIds.add(r?.id); linked.push(r); } });
+  }
+  // 逆に、期間内の実績が期間外の日付の受注に結び付いている場合は、その受注を取り寄せる
+  // （実績は受注の日で数えるため。期間をまたいで同じ売上を二重に数えないように）
+  const knownOrderIds = new Set(orderIds);
+  const outsideIds = [...new Set(payloads(recs).map((r) => r?.orderId).filter((id) => id && !knownOrderIds.has(id)))];
+  const outsideOrders = [];
+  for (let i = 0; i < outsideIds.length; i += 100) {
+    const chunk = outsideIds.slice(i, i + 100);
+    outsideOrders.push(...await fetchAllPages(() => supabase.from("orders").select("id,payload").eq("tenant_id", tenantId)
+      .in("id", chunk).order("id", { ascending: true })));
+  }
+  return { records: [...payloads(recs), ...payloads(linked)], orders, outsideOrders: payloads(outsideOrders) };
+};
+
+const CustomerJobHistory = ({ data, customer, tenantId, userRole, isMobile, onClose }) => {
+  const showMoney = userRole !== "dispatcher";
+  const today = getTodayLocalStr();
+  const shiftDate = (base, { y = 0, m = 0, d = 0 }) => {
+    const [yy, mm, dd] = base.split("-").map(Number);
+    // 月末から月をずらすと日があふれる（5/31の3ヶ月前→2/31→3/3）ため、ずらした先の月末にそろえてから日をずらす
+    const lastDay = new Date(yy + y, mm - 1 + m + 1, 0).getDate();
+    return formatDate(new Date(yy + y, mm - 1 + m, Math.min(dd, lastDay) + d));
+  };
+  const monthStart = today.slice(0, 7) + "-01";
+  const presets = [
+    { key: "month", label: "今月", from: monthStart, to: today },
+    { key: "3m", label: "過去3ヶ月", from: shiftDate(today, { m: -3, d: 1 }), to: today },
+    { key: "year", label: "今年", from: `${today.slice(0, 4)}-01-01`, to: today },
+    { key: "lastyear", label: "昨年", from: `${Number(today.slice(0, 4)) - 1}-01-01`, to: `${Number(today.slice(0, 4)) - 1}-12-31` },
+    { key: "5y", label: "過去5年", from: shiftDate(today, { y: -5, d: 1 }), to: today },
+    { key: "future", label: "これからの予定", from: today, to: shiftDate(today, { y: 1 }) },
+  ];
+  const [from, setFrom] = useState(presets[1].from);
+  const [to, setTo] = useState(today);
+  const [kind, setKind] = useState("all"); // all | order | record
+  const [keyword, setKeyword] = useState("");
+  const [visible, setVisible] = useState(100);
+  const [openRowKey, setOpenRowKey] = useState(null);
+  const cacheRef = useRef(new Map()); // `${from}|${to}` → { records, orders }
+  const [fetched, setFetched] = useState({ key: "", records: [], orders: [], error: false });
+  const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || "");
+  const rangeValid = isDate(from) && isDate(to) && from <= to;
+  const rangeKey = rangeValid ? `${from}|${to}` : "";
+  const loading = rangeValid && fetched.key !== rangeKey;
+
+  // 期間が決まったら（日付を打っている途中で何度も問い合わせないよう少し待ってから）取り寄せる
+  useEffect(() => {
+    if (!rangeValid || !customer?.id) return;
+    const cached = cacheRef.current.get(rangeKey);
+    if (cached) { setFetched({ key: rangeKey, ...cached, error: false }); return; }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      fetchCustomerHistoryRange(tenantId, customer, from, to, userRole)
+        .then((res) => { if (cancelled) return; cacheRef.current.set(rangeKey, res); setFetched({ key: rangeKey, ...res, error: false }); })
+        .catch(() => { if (!cancelled) setFetched({ key: rangeKey, records: [], orders: [], error: true }); });
+    }, 350);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rangeKey, customer?.id]);
+
+  useEffect(() => { setVisible(100); setOpenRowKey(null); }, [from, to, kind, keyword]);
+
+  const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
+  const jobTypes = Array.isArray(data?.jobTypes) ? data.jobTypes : [];
+  const driverName = (id) => drivers.find((d) => d?.id === id)?.name || (id ? id : "未配車");
+  const jobName = (id) => jobTypes.find((j) => j?.id === id)?.name || "";
+  const orderStatusLabel = { pending: "未配車", scheduled: "配車済", in_transit: "配送中", delivered: "完了", cancelled: "キャンセル" };
+  const approvalLabel = { draft: "下書き", submitted: "承認待ち", approved: "承認済み", rejected: "差し戻し" };
+
+  const rows = useMemo(() => {
+    if (!rangeValid || loading) return [];
+    const inRange = (d) => !!d && d >= from && d <= to;
+    const isMine = (o) => o.customerId === customer?.id || (!o.customerId && customer?.name && o.customerName === customer.name);
+    // サーバーから取り寄せた分に、画面に読み込み済みの分（未保存の変更を含む）を上書きで重ねる
+    const orderMap = new Map();
+    [...fetched.orders, ...(Array.isArray(data?.orders) ? data.orders : [])].forEach((o) => { if (o && o.id) orderMap.set(o.id, o); });
+    const orders = [...orderMap.values()].filter((o) => !o.deleted && isMine(o) && inRange(o.deliveryDate));
+    const shownOrderIds = new Set(orders.map((o) => o.id));
+    const recMap = new Map();
+    [...fetched.records, ...(Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])].forEach((r) => {
+      if (r && r.id && r.customerId === customer?.id) recMap.set(r.id, r);
+    });
+    const allRecs = [...recMap.values()].filter((r) => !r.deleted);
+    const recs = allRecs.filter((r) => inRange(r.date));
+    // 受注に紐づく実績は、日付が期間外でも受注の行の売上として数える（受注の日と実績の日がずれる場合がある）
+    const recsByOrder = new Map();
+    allRecs.forEach((r) => { if (r.orderId && shownOrderIds.has(r.orderId)) { const a = recsByOrder.get(r.orderId) || []; a.push(r); recsByOrder.set(r.orderId, a); } });
+    const orderIds = shownOrderIds;
+    const out = [];
+    orders.forEach((o) => {
+      const linked = recsByOrder.get(o.id) || [];
+      const approvedRecs = linked.filter((r) => isApprovedRecord(r));
+      const approvedSales = approvedRecs.reduce((a, r) => a + (Number(r.salesAmount) || 0), 0);
+      // 実績はあるがまだ承認されていない（承認待ち・下書き）だけのときは、その売上を「見込み」として出す（確定の¥0にしない）
+      const pendingRecs = linked.filter((r) => !isApprovedRecord(r) && r.approvalStatus !== "rejected");
+      const pendingOnly = linked.length > 0 && approvedRecs.length === 0 && pendingRecs.length > 0;
+      const pendingSales = pendingRecs.reduce((a, r) => a + (Number(r.salesAmount) || 0), 0);
+      out.push({
+        key: `o-${o.id}`, type: "order", date: o.deliveryDate,
+        typeLabel: DELIVERY_TYPE_LABEL[o.deliveryType] || "受注",
+        title: [o.from && o.to ? `${o.from} → ${o.to}` : (o.from || o.to || ""), o.cargo ? `荷物：${o.cargo}` : ""].filter(Boolean).join("　"),
+        qty: o.weight ? `${o.weight}` : "",
+        driver: o.driverId ? driverName(o.driverId) : "未配車",
+        status: orderStatusLabel[o.status] || o.status || "",
+        cancelled: o.status === "cancelled",
+        // 売上：配送実績があれば承認済み実績の売上。実績が無いまま「完了」になっている古い受注は受注金額で確定扱い。
+        // まだ終わっていない受注は受注金額を「見込み」とする。
+        sales: o.status === "cancelled" ? 0 : (pendingOnly ? pendingSales : linked.length ? approvedSales : Number(o.amount) || 0),
+        rawSales: Number(o.amount) || 0,
+        salesIsEstimate: o.status !== "cancelled" && (linked.length ? pendingOnly : o.status !== "delivered"),
+        pay: Number(o.driverPayAmount) || 0,
+        detail: [
+          ["受注番号", o.id], ["時間", [o.pickupTime, o.deliveryTime].filter(Boolean).join("〜")], ["重量・数量", o.weight],
+          ["受注金額", showMoney && o.amount !== "" && o.amount != null ? yenFmt(o.amount) : ""], ["ドライバー報酬", showMoney && o.driverPayAmount ? yenFmt(o.driverPayAmount) : ""],
+          ["備考", o.notes],
+          ["配送実績", linked.length ? linked.map((r) => `${r.date} ${jobName(r.jobTypeId) || ""} ${approvalLabel[r.approvalStatus] || "承認済み"}`).join(" / ") : (o.status === "delivered" ? "（配送実績の記録なし。受注金額で表示しています）" : "")],
+        ],
+      });
+    });
+    // 期間外の日付の受注（この取引先のもの）に結び付いた実績は、受注の日の方で数える
+    const outsideMap = new Map();
+    [...(fetched.outsideOrders || []), ...(Array.isArray(data?.orders) ? data.orders : [])].forEach((o) => { if (o && o.id) outsideMap.set(o.id, o); });
+    const countedElsewhere = (r) => { const o = r.orderId ? outsideMap.get(r.orderId) : null; return !!o && !o.deleted && isMine(o) && !!o.deliveryDate && !inRange(o.deliveryDate); };
+    recs.forEach((r) => {
+      if (r.orderId && orderIds.has(r.orderId)) return; // 受注の行にまとめた
+      if (countedElsewhere(r)) return; // 受注の日が期間外：そちらの期間の受注の行で数える
+      const st = r.approvalStatus || "approved";
+      out.push({
+        key: `r-${r.id}`, type: "record", date: r.date,
+        typeLabel: r.recurringId ? "定期便" : "配送実績",
+        title: [jobName(r.jobTypeId), r.note || r.memo || ""].filter(Boolean).join("　"),
+        qty: recordQtyLabel(r),
+        driver: driverName(r.driverId),
+        status: approvalLabel[st] || st,
+        cancelled: st === "rejected",
+        sales: isApprovedRecord(r) ? Number(r.salesAmount) || 0 : 0,
+        salesIsEstimate: !isApprovedRecord(r),
+        rawSales: Number(r.salesAmount) || 0,
+        pay: Number(r.driverAmount) || 0,
+        detail: [
+          ["実績ID", r.id], ["仕事の種類", jobName(r.jobTypeId)], ["数量", recordQtyLabel(r)],
+          ["売上", showMoney ? yenFmt(r.salesAmount) : ""], ["ドライバー報酬", showMoney ? yenFmt(r.driverAmount) : ""],
+          ["高速代・駐車場代", showMoney && (Number(r.highwayFee) || Number(r.parkingFee)) ? `${yenFmt(r.highwayFee)} / ${yenFmt(r.parkingFee)}` : ""],
+          ["差し戻し理由", r.rejectReason], ["メモ", r.note || r.memo],
+        ],
+      });
+    });
+    const kw = keyword.trim().toLowerCase();
+    return out
+      .filter((x) => kind === "all" || x.type === kind)
+      .filter((x) => !kw || [x.title, x.driver, x.typeLabel, x.status, x.qty, ...x.detail.map((d) => d[1])].join(" ").toLowerCase().includes(kw))
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(a.key).localeCompare(String(b.key)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.orders, data?.dailyRecords, fetched, loading, from, to, kind, keyword, customer?.id, rangeValid]);
+
+  const orderRows = rows.filter((x) => x.type === "order");
+  const recordRows = rows.filter((x) => x.type === "record");
+  const totalSales = rows.reduce((a, x) => a + (x.salesIsEstimate ? 0 : x.sales), 0);
+  const estimateSales = rows.reduce((a, x) => a + (x.salesIsEstimate && !x.cancelled && x.type === "order" ? x.sales : 0), 0);
+
+  const exportCsv = () => {
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const head = ["日付", "種類", "内容", "数量", "担当ドライバー", "状態", ...(showMoney ? ["売上", "売上の区分"] : [])];
+    const lines = [head.map(esc).join(",")].concat(rows.map((x) => [x.date, x.typeLabel, x.title, x.qty, x.driver, x.status,
+      ...(showMoney ? [x.cancelled || (x.type === "record" && x.salesIsEstimate) ? x.rawSales : x.sales, x.cancelled ? "計上しない（キャンセル・差し戻し）" : x.salesIsEstimate ? "見込み（未確定）" : "確定"] : [])].map(esc).join(",")));
+    downloadCsvLines(lines, `仕事履歴_${customer?.name || customer?.id}_${from}_${to}`);
+  };
+
+  const cell = { padding: "7px 8px", borderBottom: "1px solid #f0f0f0", fontSize: "12px", verticalAlign: "top" };
+  const headers = ["日付", "種類", "内容", "数量", "担当", "状態", ...(showMoney ? ["売上"] : [])];
+  return (
+    <Modal title={`仕事の履歴　${customer?.name || ""}`} onClose={onClose} width={isMobile ? 480 : 980}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginBottom: "8px" }}>
+        {presets.map((p) => (
+          <RetroBtn key={p.key} small onClick={() => { setFrom(p.from); setTo(p.to); }}
+            style={from === p.from && to === p.to ? { background: "#00a09a", borderColor: "#00a09a", color: "#fff" } : {}}>{p.label}</RetroBtn>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "150px 150px 150px 1fr", gap: "6px 8px", alignItems: "end", marginBottom: "8px" }}>
+        <Fl label="開始日"><RetroInput type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></Fl>
+        <Fl label="終了日"><RetroInput type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></Fl>
+        <Fl label="種類">
+          <RetroSelect value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="all">すべて</option><option value="order">受注（単発・チャーター等）</option><option value="record">配送実績（ルート・個建・定期便）</option>
+          </RetroSelect>
+        </Fl>
+        <Fl label="キーワード（行き先・荷物・ドライバー・メモ）"><RetroInput value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="例：梅田、家具、山田" /></Fl>
+      </div>
+      {!rangeValid && <div style={{ fontSize: "12px", color: "#c62828", marginBottom: "8px" }}>{isDate(from) && isDate(to) ? "開始日が終了日より後になっています。期間を指定し直してください。" : "開始日と終了日を入力してください。"}</div>}
+      {loading && <div style={{ fontSize: "12px", color: "#00695c", marginBottom: "8px" }}>この期間の履歴を読み込み中です…</div>}
+      {!loading && fetched.error && <div style={{ fontSize: "12px", color: "#c62828", marginBottom: "8px" }}>サーバーから履歴を読み込めなかったため、画面に読み込み済みの分だけを仮に表示しています（件数・金額が実際より少ない場合があります）。通信環境をご確認のうえ、期間を指定し直してください。</div>}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center", justifyContent: "space-between", background: "#f7fafa", border: cardBorder, borderRadius: "6px", padding: "8px 10px", marginBottom: "8px", fontSize: "12px", color: "#333" }}>
+        <span>
+          <b>{rows.length.toLocaleString()}件</b>（受注 {orderRows.length.toLocaleString()}件{orderRows.some((x) => x.cancelled) ? `・うちキャンセル ${orderRows.filter((x) => x.cancelled).length}件` : ""}／配送実績 {recordRows.length.toLocaleString()}件）
+          {showMoney && <>　売上（確定分）<b style={{ color: "#007a74" }}>{yenFmt(totalSales)}</b>{estimateSales > 0 && <span style={{ color: "#888" }}>　＋ 未完了・承認待ちの受注の見込み {yenFmt(estimateSales)}</span>}</>}
+        </span>
+        <RetroBtn small onClick={exportCsv} disabled={!rows.length}>CSV出力</RetroBtn>
+      </div>
+      <div style={{ border: cardBorder, borderRadius: "6px", overflow: "auto", maxHeight: isMobile ? "55vh" : "60vh" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Noto Sans JP', sans-serif" }}>
+          <thead>
+            <tr style={{ background: "#fafbfc", position: "sticky", top: 0 }}>
+              {headers.map((h) => <th key={h} style={{ ...cell, color: "#666", fontSize: "11px", fontWeight: 700, textAlign: h === "売上" ? "right" : "left", whiteSpace: "nowrap", borderBottom: cardBorder }}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, visible).map((x) => (
+              <Fragment key={x.key}>
+                <tr onClick={() => setOpenRowKey(openRowKey === x.key ? null : x.key)} style={{ cursor: "pointer", background: openRowKey === x.key ? "#f0fbfa" : "#fff", color: x.cancelled ? "#999" : "#222" }}>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>{x.date}</td>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>{x.typeLabel}</td>
+                  <td style={{ ...cell, minWidth: "180px" }}>{x.title || "—"}</td>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>{x.qty || "—"}</td>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>{x.driver}</td>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>{x.status}</td>
+                  {showMoney && (
+                    <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap", color: x.salesIsEstimate ? "#999" : "#007a74", fontWeight: 700 }}>
+                      <span style={{ textDecoration: x.cancelled ? "line-through" : "none" }}>{x.cancelled || (x.type === "record" && x.salesIsEstimate) ? yenFmt(x.rawSales) : yenFmt(x.sales)}</span>
+                      {x.cancelled && <div style={{ fontSize: "10px", fontWeight: 400 }}>計上しない</div>}
+                      {x.salesIsEstimate && !x.cancelled && <div style={{ fontSize: "10px", fontWeight: 400 }}>見込み</div>}
+                    </td>
+                  )}
+                </tr>
+                {openRowKey === x.key && (
+                  <tr><td colSpan={headers.length} style={{ ...cell, background: "#f7fafa" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: "3px 8px", fontSize: "12px" }}>
+                      {x.detail.filter(([, v]) => v !== "" && v != null).map(([k, v]) => <Fragment key={k}><div style={{ color: "#888" }}>{k}</div><div style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{v}</div></Fragment>)}
+                    </div>
+                  </td></tr>
+                )}
+              </Fragment>
+            ))}
+            {rangeValid && !loading && rows.length === 0 && (
+              <tr><td colSpan={headers.length} style={{ ...cell, textAlign: "center", color: "#999", padding: "20px" }}>この期間の仕事はありません</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {rows.length > visible && (
+        <div style={{ textAlign: "center", marginTop: "8px" }}>
+          <RetroBtn small onClick={() => setVisible((v) => v + 100)}>さらに表示（残り {(rows.length - visible).toLocaleString()}件）</RetroBtn>
+        </div>
+      )}
+      <div style={{ fontSize: "11px", color: "#888", marginTop: "8px", lineHeight: 1.6 }}>
+        行をクリックすると詳細が開きます。受注から作られた配送実績は受注の行にまとめて表示しています（実績の日付が受注の日とずれていても受注の日で数え、二重には数えません）。
+        {showMoney && " 売上（確定分）は承認済みの配送実績の合計です。未完了の受注は受注金額を、実績が承認待ちの受注はその実績の売上を「見込み」として別に表示します。"}
+        データは自動では削除されないため、5年以上前の分も期間を指定すれば表示できます。
+      </div>
+    </Modal>
+  );
+};
+/**
+ * ===== 入出金・支払いの履歴（ユーザー要望で追加） =====
+ * 取引先からの入金・口座からの出金・ドライバーへの支払いを、期間・種類・相手で絞って一覧し、
+ * 日付・金額・相手の名前で並べ替えられるようにする。顧客の「仕事の履歴」と同じ作り。
+ * ・入出金：口座の明細（bank_transactions）を期間で取り寄せる。明細と照合していない
+ *   「請求書だけで入金を記録したもの」も入金として出す（明細と照合済みの入金は二重に数えない）。
+ * ・ドライバーへの支払い：ドライバー請求書があればその振込額・支払済みの記録を使い、
+ *   無い月は報酬画面と同じ計算（calcDriverPayout）で月ごとの振込額を出す（予定・見込みとして区別）。
+ * ・取り寄せた分は表示専用で、保存データには混ぜない。1,000件ずつ区切って最後まで取る。
+ */
+const fetchMoneyHistoryRange = async (tenantId, from, to, recFrom, recTo) => {
+  const [bank, invoices, records, matchedRows, payables] = await Promise.all([
+    fetchAllPages(() => supabase.from("bank_transactions").select("*").eq("tenant_id", tenantId)
+      .gte("transaction_date", from).lte("transaction_date", to).order("id", { ascending: true })),
+    fetchAllPages(() => supabase.from("invoices").select("id,payload").eq("tenant_id", tenantId).order("id", { ascending: true })),
+    fetchAllPages(() => supabase.from("daily_records").select("id,payload").eq("tenant_id", tenantId)
+      .gte("payload->>date", recFrom).lte("payload->>date", recTo).order("id", { ascending: true })),
+    // 明細と照合済みの請求書（期間外の明細と照合されているものも含む）。請求書側の入金記録と二重に数えないために使う
+    fetchAllPages(() => supabase.from("bank_transactions").select("id,matched_invoice_id").eq("tenant_id", tenantId)
+      .eq("match_status", "matched").order("id", { ascending: true })),
+    // 支払予定（燃料費・高速代・協力会社への支払いなど）。口座の明細を取り込んでいなくても支払いを辿れるように
+    fetchAllPages(() => supabase.from("payables").select("id,payload").eq("tenant_id", tenantId).order("id", { ascending: true })),
+  ]);
+  return {
+    matchedInvoiceIds: matchedRows.map((r) => r?.matched_invoice_id).filter((v) => v != null),
+    bank: bank.map(mapBankTransactionRow),
+    invoices: invoices.map((row) => (row?.payload ? { ...row.payload, _dbId: row.id } : null)).filter(Boolean),
+    records: records.map((row) => row?.payload).filter(Boolean),
+    payables: payables.map((row) => row?.payload).filter(Boolean),
+  };
+};
+
+const MoneyHistory = ({ data, tenantId, userRole, isMobile, onClose, initialKind = "all" }) => {
+  const today = getTodayLocalStr();
+  const shiftDate = (base, { y = 0, m = 0, d = 0 }) => {
+    const [yy, mm, dd] = base.split("-").map(Number);
+    // 月末から月をずらすと日があふれる（5/31の3ヶ月前→2/31→3/3）ため、ずらした先の月末にそろえてから日をずらす
+    const lastDay = new Date(yy + y, mm - 1 + m + 1, 0).getDate();
+    return formatDate(new Date(yy + y, mm - 1 + m, Math.min(dd, lastDay) + d));
+  };
+  const presets = [
+    { key: "month", label: "今月", from: today.slice(0, 7) + "-01", to: today },
+    { key: "3m", label: "過去3ヶ月", from: shiftDate(today, { m: -3, d: 1 }), to: today },
+    { key: "year", label: "今年", from: `${today.slice(0, 4)}-01-01`, to: today },
+    { key: "lastyear", label: "昨年", from: `${Number(today.slice(0, 4)) - 1}-01-01`, to: `${Number(today.slice(0, 4)) - 1}-12-31` },
+    { key: "5y", label: "過去5年", from: shiftDate(today, { y: -5, d: 1 }), to: today },
+    { key: "future", label: "これからの予定", from: today, to: shiftDate(today, { m: 3 }) },
+  ];
+  const [from, setFrom] = useState(presets[1].from);
+  const [to, setTo] = useState(today);
+  const [kind, setKind] = useState(initialKind); // all | in | out | driver
+  const [party, setParty] = useState(""); // "c:顧客ID" | "d:ドライバーID"
+  const [keyword, setKeyword] = useState("");
+  const [sortKey, setSortKey] = useState("date");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [visible, setVisible] = useState(100);
+  const [openRowKey, setOpenRowKey] = useState(null);
+  const cacheRef = useRef(new Map());
+  const [fetched, setFetched] = useState({ key: "", bank: [], invoices: [], records: [], error: false });
+  const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || "");
+  const rangeValid = isDate(from) && isDate(to) && from <= to;
+  const rangeKey = rangeValid ? `${from}|${to}` : "";
+  const loading = rangeValid && fetched.key !== rangeKey;
+  // 請求書の無い月のドライバーへの支払いは「○月分を翌月15日に支払う」目安で並べるため、期間の1ヶ月前の実績から計算する
+  const recFrom = rangeValid ? shiftDate(from.slice(0, 7) + "-01", { m: -1 }) : "";
+  const recTo = rangeValid ? formatDate(new Date(Number(to.slice(0, 4)), Number(to.slice(5, 7)), 0)) : "";
+
+  useEffect(() => {
+    if (!rangeValid) return;
+    const cached = cacheRef.current.get(rangeKey);
+    if (cached) { setFetched({ key: rangeKey, ...cached, error: false }); return; }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      fetchMoneyHistoryRange(tenantId, from, to, recFrom, recTo)
+        .then((res) => { if (cancelled) return; cacheRef.current.set(rangeKey, res); setFetched({ key: rangeKey, ...res, error: false }); })
+        .catch(() => { if (!cancelled) setFetched({ key: rangeKey, bank: [], invoices: [], records: [], matchedInvoiceIds: [], payables: [], error: true }); });
+    }, 350);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rangeKey]);
+  useEffect(() => { setVisible(100); setOpenRowKey(null); }, [from, to, kind, party, keyword, sortKey, sortAsc]);
+
+  // 削除した取引先の過去の入金も辿れるよう、削除済みも含める（選択肢には「削除済み」と付ける）
+  const customers = (Array.isArray(data?.customers) ? data.customers : []).filter(Boolean);
+  const allDrivers = (Array.isArray(data?.drivers) ? data.drivers : []).filter(Boolean);
+  const companyInfo = data?.companyInfo || {};
+  // 支払予定：取り寄せた分に画面上の分（未保存の「支払済」操作を含む）を重ねる
+  const payableList = useMemo(() => {
+    const m = new Map();
+    [...(fetched.payables || []), ...(Array.isArray(data?.payables) ? data.payables : [])].forEach((pz) => { if (pz && pz.id) m.set(pz.id, pz); });
+    return [...m.values()].filter((pz) => !pz.deleted);
+  }, [fetched.payables, data?.payables]);
+
+  const rows = useMemo(() => {
+    if (!rangeValid || loading) return [];
+    const inRange = (d) => !!d && d >= from && d <= to;
+    // 取り寄せた分に、画面に読み込み済みの分（未保存の変更を含む）を重ねる
+    const bankMap = new Map();
+    [...fetched.bank, ...(Array.isArray(data?.bankTransactions) ? data.bankTransactions : [])].forEach((t) => { if (t && t.id != null) bankMap.set(t.id, t); });
+    const bank = [...bankMap.values()].filter((t) => inRange(t.transaction_date || t.date));
+    const invMap = new Map();
+    [...fetched.invoices, ...(Array.isArray(data?.invoices) ? data.invoices : [])].forEach((i) => {
+      const pl = i?.payload && typeof i.payload === "object" ? { ...i.payload, _dbId: i._dbId ?? i.id } : i;
+      const k = pl?._dbId || pl?.id; if (k) invMap.set(k, pl);
+    });
+    // 同じ請求書番号の行が二重に入らないよう、請求書番号でもそろえる（後から重ねた画面上の内容を優先）
+    const byBusinessId = new Map();
+    [...invMap.values()].forEach((i) => {
+      if (!i) return;
+      const k = i.id || i._dbId, prev = byBusinessId.get(k);
+      // 画面上の内容に保存先の番号（_dbId）が無いときは、取り寄せた側の番号を引き継ぐ（明細の照合先と結び付けるため）
+      byBusinessId.set(k, !i._dbId && prev?._dbId ? { ...i, _dbId: prev._dbId } : i);
+    });
+    const invoices = [...byBusinessId.values()].filter((i) => i && !i.deleted);
+    const invByKey = new Map(); invoices.forEach((i) => { if (i._dbId) invByKey.set(i._dbId, i); if (i.id) invByKey.set(i.id, i); });
+    const custName = (id) => customers.find((c) => c?.id === id)?.name || "";
+    const out = [];
+    // ① 口座の明細（入金・出金）
+    const matchedInvKeys = new Set();
+    [...(fetched.matchedInvoiceIds || []), ...(Array.isArray(data?.bankTransactions) ? data.bankTransactions : []).map((t) => t?.matchedInvoice)].forEach((k) => {
+      const inv = k != null ? invByKey.get(k) : null;
+      if (inv) { if (inv._dbId) matchedInvKeys.add(inv._dbId); if (inv.id) matchedInvKeys.add(inv.id); }
+    });
+    bank.forEach((t) => {
+      const dep = Number(t.deposit_amount) || 0, wd = Number(t.withdrawal_amount) || 0;
+      const inv = t.matchedInvoice != null ? invByKey.get(t.matchedInvoice) : null;
+      if (inv) { if (inv._dbId) matchedInvKeys.add(inv._dbId); if (inv.id) matchedInvKeys.add(inv.id); }
+      const statusLabel = { matched: "照合済み", candidate: "候補あり", unmatched: "未照合" }[t.status] || "未照合";
+      const base = { date: t.transaction_date || t.date, cancelled: false, estimate: false };
+      if (dep > 0) out.push({ ...base, key: `b-${t.id}-in`, kind: "in", kindLabel: "入金",
+        party: inv ? (inv.customerName || custName(inv.customerId) || inv.driverName || t.counterparty || "") : (t.counterparty || "（振込名義なし）"),
+        partyKey: inv?.customerId ? `c:${inv.customerId}` : inv?.type === "driver_invoice" && inv.driverId ? `d:${inv.driverId}` : "",
+        title: [t.description, inv ? `請求書 ${inv.id}` : ""].filter(Boolean).join("　"), status: statusLabel, amount: dep,
+        detail: [["取引日", t.transaction_date || t.date], ["摘要", t.description], ["振込名義", t.counterparty], ["照合先の請求書", inv ? `${inv.id}（${inv.customerName || custName(inv.customerId) || inv.driverName || ""}）` : ""], ["記録元", t.bank_name === "手動入力" ? "手動で追加" : "銀行明細の取込"]] });
+      if (wd > 0) out.push({ ...base, key: `b-${t.id}-out`, kind: "out", kindLabel: "出金",
+        party: t.counterparty || t.description || "（相手先なし）", partyKey: "",
+        title: t.description || "", status: t.bank_name === "手動入力" ? "手動で追加" : "明細取込", amount: wd,
+        detail: [["取引日", t.transaction_date || t.date], ["摘要", t.description], ["相手先", t.counterparty], ["記録元", t.bank_name === "手動入力" ? "手動で追加" : "銀行明細の取込"]] });
+    });
+    // ② 明細と照合せずに、請求書の画面で入金を記録したもの
+    invoices.filter((i) => i.type !== "driver_invoice" && !i.isCreditNote).forEach((i) => {
+      const name = i.customerName || custName(i.customerId);
+      const push = (date, amount, idx) => {
+        if (!inRange(date) || !(amount > 0)) return;
+        out.push({ key: `i-${i._dbId || i.id}-${idx}`, kind: "in", kindLabel: "入金", date, party: name, partyKey: i.customerId ? `c:${i.customerId}` : "",
+          title: `請求書 ${i.id} の入金（請求書の画面で記録）`, status: "請求書で記録", amount, cancelled: false, estimate: false,
+          detail: [["請求書番号", i.id], ["請求額", yenFmt(i.total ?? i.total_amount)], ["入金日", date], ["記録元", "請求書の画面で入金を記録（口座の明細とは未照合）"]] });
+      };
+      const hist = Array.isArray(i.paymentHistory) ? i.paymentHistory : [];
+      if (hist.length) hist.forEach((h, idx) => { if (!h?.bankTxId) push(h.date, Number(h.amount) || 0, idx); });
+      // 入金の履歴が無い古い記録：入金済み・一部入金・貸倒（貸倒の前に一部回収していた分）を、入金日で1回だけ数える
+      else if ((i.status === "paid" || i.status === "partial" || i.status === "bad_debt") && !(i._dbId && matchedInvKeys.has(i._dbId)) && !(i.id && matchedInvKeys.has(i.id))) {
+        const amt = Number(i.paidAmount ?? i.paid_amount); push(i.paidDate, Number.isFinite(amt) && amt > 0 ? amt : (i.status === "paid" ? Number(i.total) || 0 : 0), "p");
+      }
+    });
+    // ③ ドライバーへの支払い
+    const driverById = new Map(allDrivers.map((d) => [d.id, d]));
+    const driverInvoices = invoices.filter((i) => i.type === "driver_invoice");
+    // (a) ドライバー請求書がある分：支払日（未払いなら支払期限）で並べる。何ヶ月後に払った分でも漏れないよう、請求書を直接見る
+    const invoicedKeys = new Set();
+    driverInvoices.forEach((inv) => {
+      const d = driverById.get(inv.driverId);
+      if (d && isEmployeeDriver(d)) return; // 正社員・パートは給与で精算（振込の対象外）
+      const m = String(inv.payoutMonth || "");
+      invoicedKeys.add(`${m}|${inv.driverId}`);
+      const [y, mo] = m.split("-").map(Number);
+      const defaultPayDate = y && mo ? formatDate(new Date(y, mo, 15)) : "";
+      const amount = Math.max(0, Number(inv.transferAmount ?? (Number(inv.total) || 0) - (Number(inv.deductionTotal) || 0)) || 0); // 控除の方が多い月は振込0円（報酬画面と同じ）
+      const paid = inv.status === "paid";
+      const date = paid ? (inv.paidDate || inv.dueDate || defaultPayDate) : (inv.dueDate || defaultPayDate);
+      if (!inRange(date)) return;
+      out.push({ key: `di-${inv._dbId || inv.id}`, kind: "driver", kindLabel: "ドライバー支払", date, party: d?.name || inv.driverName || inv.driverId, partyKey: `d:${inv.driverId}`,
+        title: `${m}分の報酬`, status: paid ? (amount > 0 ? "支払済み" : "支払済み（控除で相殺）") : "未払い（支払予定）", amount, estimate: !paid, cancelled: false,
+        detail: [["対象月", `${m}分`], ["ドライバー請求書", inv.id], ["請求額（控除前）", yenFmt(inv.total)], ["控除合計", yenFmt(inv.deductionTotal)], ["振込額", yenFmt(amount)], ["支払日", paid ? (inv.paidDate || "") : ""], ["支払期限", inv.dueDate], ["記録した人", inv.paidBy]] });
+    });
+    // (b) 請求書が無い月：報酬画面と同じ計算の振込額を、翌月15日（請求書の支払期限の既定と同じ）の目安で並べる
+    const recMap = new Map();
+    [...fetched.records, ...(Array.isArray(data?.dailyRecords) ? data.dailyRecords : [])].forEach((r) => { if (r && r.id) recMap.set(r.id, r); });
+    const byMonthDriver = new Map();
+    [...recMap.values()].forEach((r) => { if (!r || r.deleted || !r.driverId) return; const k = `${String(r.date || "").slice(0, 7)}|${r.driverId}`; if (!byMonthDriver.has(k)) byMonthDriver.set(k, []); byMonthDriver.get(k).push(r); });
+    const months = []; for (let m = recFrom.slice(0, 7); m <= to.slice(0, 7); ) { months.push(m); const [y, mo] = m.split("-").map(Number); const nx = new Date(y, mo, 1); m = `${nx.getFullYear()}-${String(nx.getMonth() + 1).padStart(2, "0")}`; }
+    months.forEach((m) => {
+      const [y, mo] = m.split("-").map(Number);
+      const date = formatDate(new Date(y, mo, 15));
+      if (!inRange(date)) return;
+      const snapMonth = companyInfo?.monthSnapshots?.[m] || null;
+      const closed = isMonthClosed(companyInfo, m);
+      allDrivers.forEach((d) => {
+        if (isEmployeeDriver(d) || invoicedKeys.has(`${m}|${d.id}`)) return;
+        const recs = byMonthDriver.get(`${m}|${d.id}`) || [];
+        if (!recs.length) return;
+        const payout = calcDriverPayout(d, recs, m, snapMonth?.[d.id] || null);
+        if (!(payout.workDays > 0)) return;
+        const amount = Math.max(0, Number(payout.netPay) || 0);
+        out.push({ key: `d-${d.id}-${m}`, kind: "driver", kindLabel: "ドライバー支払", date, party: d.name || d.id, partyKey: `d:${d.id}`,
+          title: `${m}分の報酬（稼働${payout.workDays}日）`,
+          // 締めた月は金額が確定しているので確定として数える（支払った記録＝ドライバー請求書の「支払済み」は無い）
+          status: closed ? "締め済み（支払の記録なし）" : "未締め（見込み）", amount, estimate: !closed, cancelled: false,
+          detail: [["対象月", `${m}分`], ["支給合計", yenFmt(payout.grossPay)], ["消費税", payout.consumptionTax ? yenFmt(payout.consumptionTax) : ""], ["控除合計", yenFmt(payout.totalDeduction)], ["振込額", yenFmt(amount)], ["日付", `${date}（目安：翌月15日）`],
+            ["備考", closed ? "締め済みの月の振込額です（報酬画面と同じ計算）。ドライバー請求書が発行されていないため、実際に振り込んだ日・記録はありません。振込を記録するには報酬・振込画面で請求書を発行し「支払済み」にしてください。" : "まだ締めていない月のため、金額が変わる可能性があります。"]] });
+      });
+    });
+    // ④ 経費・取引先への支払い（支払予定）：支払済みは支払った日、未払いは期日で並べる
+    payableList.forEach((pz) => {
+      const paid = pz.status === "paid";
+      const date = paid ? String(pz.paidAt || pz.dueDate || "").slice(0, 10) : String(pz.dueDate || "").slice(0, 10);
+      const amount = Number(pz.amount) || 0;
+      if (!inRange(date) || !(amount > 0)) return;
+      const vendor = String(pz.vendor || "").trim(); // 前後の空白違いで同じ支払先が別々にならないように
+      out.push({ key: `p-${pz.id}`, kind: "payable", kindLabel: "経費・外注費", date, party: vendor || "（支払先なし）", partyKey: vendor ? `v:${vendor}` : "",
+        title: pz.category || "", status: paid ? "支払済み" : "未払い（支払予定）", amount, estimate: !paid, cancelled: false,
+        detail: [["支払先", pz.vendor], ["区分", pz.category], ["期日", pz.dueDate], ["支払った日", paid ? String(pz.paidAt || "").slice(0, 10) : ""], ["記録した人", paid ? pz.paidBy : ""], ["記録元", "口座・入金画面の支払予定"]] });
+    });
+    const kw = keyword.trim().toLowerCase();
+    const list = out
+      .filter((x) => kind === "all" || x.kind === kind)
+      .filter((x) => !party || x.partyKey === party)
+      .filter((x) => !kw || [x.party, x.title, x.status, x.kindLabel, String(x.amount), yenFmt(x.amount), x.date, ...x.detail.map((d) => d[1])].join(" ").toLowerCase().includes(kw));
+    const dir = sortAsc ? 1 : -1;
+    const cmp = {
+      date: (a, b) => String(a.date).localeCompare(String(b.date)),
+      amount: (a, b) => (a.amount - b.amount),
+      party: (a, b) => String(a.party).localeCompare(String(b.party), "ja"),
+      kind: (a, b) => String(a.kindLabel).localeCompare(String(b.kindLabel), "ja"),
+    }[sortKey];
+    // 並べ替えの値が同じときは、日付の新しい順→キーで並びを固定する（並べ替えるたびに順番が揺れないように）
+    return list.sort((a, b) => cmp(a, b) * dir || String(b.date).localeCompare(String(a.date)) || String(a.key).localeCompare(String(b.key)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetched, loading, payableList, data?.bankTransactions, data?.invoices, data?.dailyRecords, data?.drivers, data?.companyInfo, from, to, kind, party, keyword, sortKey, sortAsc, rangeValid]);
+
+  const sum = (pred) => rows.filter(pred).reduce((a, x) => a + (Number(x.amount) || 0), 0);
+  const totalIn = sum((x) => x.kind === "in");
+  const totalOut = sum((x) => x.kind === "out");
+  const totalDriverPaid = sum((x) => x.kind === "driver" && !x.estimate);
+  const totalDriverPlanned = sum((x) => x.kind === "driver" && x.estimate);
+  const totalPayablePaid = sum((x) => x.kind === "payable" && !x.estimate);
+  const totalPayableUnpaid = sum((x) => x.kind === "payable" && x.estimate);
+
+  const toggleSort = (key) => { if (sortKey === key) setSortAsc((v) => !v); else { setSortKey(key); setSortAsc(key === "party" || key === "kind"); } };
+  const exportCsv = () => {
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const lines = [["日付", "種類", "相手", "内容", "状態", "入金", "出金・支払", "区分"].map(esc).join(",")].concat(rows.map((x) => [x.date, x.kindLabel, x.party, x.title, x.status,
+      x.kind === "in" ? x.amount : "", x.kind === "in" ? "" : x.amount, x.estimate ? "未払い・見込み" : "確定"].map(esc).join(",")));
+    downloadCsvLines(lines, `入出金・支払いの履歴_${from}_${to}`);
+  };
+  const cell = { padding: "7px 8px", borderBottom: "1px solid #f0f0f0", fontSize: "12px", verticalAlign: "top" };
+  // スマホでは金額が横にはみ出して見えなくなるため、3列（日付・種類／相手・内容／金額・状態）にまとめる
+  const cols = isMobile
+    ? [["date", "日付"], ["party", "相手"], ["amount", "金額"]]
+    : [["date", "日付"], ["kind", "種類"], ["party", "相手"], [null, "内容"], [null, "状態"], ["amount", "金額"]];
+  const amountColor = (x) => (x.estimate ? "#999" : x.kind === "in" ? "#007a74" : x.kind === "out" ? "#c62828" : x.kind === "payable" ? "#6a1b9a" : "#e65100");
+  const partyOptions = [
+    ...customers.map((c) => ({ v: `c:${c.id}`, l: `取引先：${c.name}${c.deleted ? "（削除済み）" : ""}` })),
+    ...allDrivers.filter((d) => !isEmployeeDriver(d)).map((d) => ({ v: `d:${d.id}`, l: `ドライバー：${d.name}${d.deleted ? "（削除済み）" : ""}` })),
+    ...[...new Set(payableList.map((pz) => String(pz.vendor || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map((v) => ({ v: `v:${v}`, l: `支払先：${v}` })),
+  ];
+  return (
+    <Modal title="入出金・支払いの履歴" onClose={onClose} width={isMobile ? 480 : 1040}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "8px" }}>
+        {presets.map((p) => (
+          <RetroBtn key={p.key} small onClick={() => { setFrom(p.from); setTo(p.to); }}
+            style={from === p.from && to === p.to ? { background: "#00a09a", borderColor: "#00a09a", color: "#fff" } : {}}>{p.label}</RetroBtn>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "150px 150px 170px 230px 1fr", gap: "6px 8px", alignItems: "end", marginBottom: "8px" }}>
+        <Fl label="開始日"><RetroInput type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></Fl>
+        <Fl label="終了日"><RetroInput type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></Fl>
+        <Fl label="種類">
+          <RetroSelect value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="all">すべて</option><option value="in">取引先からの入金</option><option value="out">口座からの出金</option><option value="driver">ドライバーへの支払い</option><option value="payable">経費・外注費の支払い</option>
+          </RetroSelect>
+        </Fl>
+        <Fl label="相手">
+          <RetroSelect value={party} onChange={(e) => setParty(e.target.value)}>
+            <option value="">すべての相手</option>
+            {partyOptions.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+          </RetroSelect>
+        </Fl>
+        <Fl label="キーワード（振込名義・摘要・請求書番号）" style={isMobile ? { gridColumn: "1 / -1" } : undefined}><RetroInput value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="例：カブシキガイシャ、INV-" /></Fl>
+      </div>
+      {!rangeValid && <div style={{ fontSize: "12px", color: "#c62828", marginBottom: "8px" }}>{isDate(from) && isDate(to) ? "開始日が終了日より後になっています。期間を指定し直してください。" : "開始日と終了日を入力してください。"}</div>}
+      {loading && <div style={{ fontSize: "12px", color: "#00695c", marginBottom: "8px" }}>この期間の履歴を読み込み中です…</div>}
+      {!loading && fetched.error && <div style={{ fontSize: "12px", color: "#c62828", marginBottom: "8px" }}>サーバーから履歴を読み込めなかったため、画面に読み込み済みの分だけを仮に表示しています（件数・金額が実際より少ない場合があります）。通信環境をご確認のうえ、期間を指定し直してください。</div>}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 14px", alignItems: "center", justifyContent: "space-between", background: "#f7fafa", border: cardBorder, borderRadius: "6px", padding: "8px 10px", marginBottom: "8px", fontSize: "12px", color: "#333" }}>
+        <span style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
+          <span><b>{rows.length.toLocaleString()}件</b></span>
+          <span>入金 <b style={{ color: "#007a74" }}>{yenFmt(totalIn)}</b></span>
+          <span>出金（口座） <b style={{ color: "#c62828" }}>{yenFmt(totalOut)}</b></span>
+          <span>ドライバーへの支払い（確定） <b style={{ color: "#e65100" }}>{yenFmt(totalDriverPaid)}</b></span>
+          {totalDriverPlanned > 0 && <span style={{ color: "#888" }}>＋ 未払い・見込み {yenFmt(totalDriverPlanned)}</span>}
+          {(totalPayablePaid > 0 || totalPayableUnpaid > 0) && <span>経費・外注費（支払済み） <b style={{ color: "#6a1b9a" }}>{yenFmt(totalPayablePaid)}</b>{totalPayableUnpaid > 0 && <span style={{ color: "#888" }}> ＋ 未払い {yenFmt(totalPayableUnpaid)}</span>}</span>}
+        </span>
+        <RetroBtn small onClick={exportCsv} disabled={!rows.length}>CSV出力</RetroBtn>
+      </div>
+      <div style={{ border: cardBorder, borderRadius: "6px", overflow: "auto", maxHeight: isMobile ? "55vh" : "58vh" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Noto Sans JP', sans-serif" }}>
+          <thead>
+            <tr style={{ background: "#fafbfc", position: "sticky", top: 0 }}>
+              {cols.map(([k, h]) => (
+                <th key={h} onClick={k ? () => toggleSort(k) : undefined} title={k ? "クリックで並べ替え" : undefined}
+                  style={{ ...cell, color: sortKey === k ? "#00695c" : "#666", fontSize: "11px", fontWeight: 700, textAlign: h === "金額" ? "right" : "left", whiteSpace: "nowrap", borderBottom: cardBorder, cursor: k ? "pointer" : "default", userSelect: "none" }}>
+                  {h}{k ? (sortKey === k ? (sortAsc ? " ▲" : " ▼") : " ⇅") : ""}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, visible).map((x) => (
+              <Fragment key={x.key}>
+                <tr onClick={() => setOpenRowKey(openRowKey === x.key ? null : x.key)} style={{ cursor: "pointer", background: openRowKey === x.key ? "#f0fbfa" : "#fff" }}>
+                  {isMobile ? (
+                    <>
+                      <td style={{ ...cell, whiteSpace: "nowrap" }}>{x.date}<div style={{ fontSize: "10px", color: "#888" }}>{x.kindLabel}</div></td>
+                      <td style={{ ...cell, wordBreak: "break-all" }}>{x.party}<div style={{ fontSize: "10px", color: "#888" }}>{x.title}</div></td>
+                      <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap", fontWeight: 700, color: amountColor(x) }}>
+                        {x.kind === "in" ? "＋" : "－"}{yenFmt(x.amount)}
+                        <div style={{ fontSize: "10px", fontWeight: 400, color: x.estimate ? "#999" : "#888" }}>{x.estimate ? "未払い・見込み" : x.status}</div>
+                      </td>
+                    </>
+                  ) : (<>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>{x.date}</td>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>{x.kindLabel}</td>
+                  <td style={{ ...cell, minWidth: "140px" }}>{x.party}</td>
+                  <td style={{ ...cell, minWidth: "180px", color: "#555" }}>{x.title || "—"}</td>
+                  <td style={{ ...cell, whiteSpace: "nowrap", color: x.estimate ? "#999" : "#333" }}>{x.status}</td>
+                  <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap", fontWeight: 700, color: amountColor(x) }}>
+                    {x.kind === "in" ? "＋" : "－"}{yenFmt(x.amount)}
+                    {x.estimate && <div style={{ fontSize: "10px", fontWeight: 400 }}>未払い・見込み</div>}
+                  </td>
+                  </>)}
+                </tr>
+                {openRowKey === x.key && (
+                  <tr><td colSpan={cols.length} style={{ ...cell, background: "#f7fafa" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "3px 8px", fontSize: "12px" }}>
+                      {x.detail.filter(([, v]) => v !== "" && v != null).map(([k, v]) => <Fragment key={k}><div style={{ color: "#888" }}>{k}</div><div style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{v}</div></Fragment>)}
+                    </div>
+                  </td></tr>
+                )}
+              </Fragment>
+            ))}
+            {rangeValid && !loading && rows.length === 0 && (
+              <tr><td colSpan={cols.length} style={{ ...cell, textAlign: "center", color: "#999", padding: "20px" }}>この期間・条件の入出金・支払いはありません</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {rows.length > visible && (
+        <div style={{ textAlign: "center", marginTop: "8px" }}>
+          <RetroBtn small onClick={() => setVisible((v) => v + 100)}>さらに表示（残り {(rows.length - visible).toLocaleString()}件）</RetroBtn>
+        </div>
+      )}
+      <div style={{ fontSize: "11px", color: "#888", marginTop: "8px", lineHeight: 1.6 }}>
+        見出しの「日付・種類・相手・金額」を押すと並べ替えます（もう一度押すと逆順）。行を押すと詳細が開きます。
+        入金は口座の明細と、明細と照合せずに請求書の画面で記録した入金です（照合済みの入金は二重に数えません）。
+        ドライバーへの支払いは、ドライバー請求書があればその振込額と支払日、無い月は報酬画面と同じ計算の振込額（日付は翌月15日の目安）です。締めた月は確定、未払いの請求書とまだ締めていない月は「未払い・見込み」として分けて合計します。
+        経費・外注費は、口座・入金画面の「支払予定」です（支払済みは支払った日、未払いは期日で並べます）。
+        口座の明細を取り込んでいる場合、ドライバーへの振込や経費の支払いは「出金」にも出ます（同じお金なので、合計を足し合わせないでください）。正社員・パートは給与で精算するため対象外です。
+      </div>
+    </Modal>
+  );
+};
+const yenFmt = (v) => { const x = Math.round(Number(v) || 0); return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
+
 const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   // 【重要・不具合修正】「累計売上」が単発受注の金額だけを合計しており、
   // ルート配送・定期便・ハコログからの実績（売上の大半）が入っていなかった。
@@ -6597,6 +7283,7 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [customerEditMode, setCustomerEditMode] = useState(false);
   const [showCustomerHistory, setShowCustomerHistory] = useState(false);
+  const [jobHistoryCustomerId, setJobHistoryCustomerId] = useState(null);
   const [customerDraft, setCustomerDraft] = useState(null);
   const [isEditPayerKanaComposing, setIsEditPayerKanaComposing] = useState(false);
   const [editZipInput, setEditZipInput] = useState("");
@@ -7004,6 +7691,9 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
                   <div>メモ</div><div>{selectedCustomer?.notes || "—"}</div>
                 </div>
               </Panel>
+              <RetroBtn onClick={()=>setJobHistoryCustomerId(selectedCustomer?.id)} style={{ marginTop:"8px", width:"100%", background:"#f0fbfa", color:"#00695c", borderColor:"#b2dfdb" }}>
+                この顧客から請けた仕事の履歴を見る（日付で絞り込み）
+              </RetroBtn>
               <div style={{ marginTop:"8px" }}>
                 <button onClick={()=>setShowCustomerHistory(v=>!v)} style={{
                   border:"none", background:"none", color:"#00a09a", fontSize:"12px", fontWeight:700, cursor:"pointer", padding:"4px 0",
@@ -7033,6 +7723,16 @@ const CustomersPage = ({ data, setData, tenantId, userRole, isMobile }) => {
             </>
           )}
         </Modal>
+      )}
+      {jobHistoryCustomerId && customers.find((c) => c?.id === jobHistoryCustomerId) && (
+        <CustomerJobHistory
+          data={data}
+          customer={customers.find((c) => c?.id === jobHistoryCustomerId)}
+          tenantId={tenantId}
+          userRole={userRole}
+          isMobile={isMobile}
+          onClose={()=>setJobHistoryCustomerId(null)}
+        />
       )}
     </div>
   );
@@ -7800,7 +8500,7 @@ const QualityMgmtPage = ({ data, setData, tenantId, userRole, isMobile }) => {
           何も案内がないと、古い月を開いたときに「実績が0件」と表示され、
           実際にはデータがあるのに「入力されていない」と誤解する事故に
           つながる。他の画面（PayoutPage等）と同じ案内を追加する。 */}
-      <LoadOlderDataBanner type="dailyRecords" data={data} setData={setData} tenantId={tenantId} />
+      <LoadOlderDataBanner type="dailyRecords" data={data} setData={setData} tenantId={tenantId} userRole={userRole} />
       {selectedMonth < defaultLoadCutoff().slice(0, 7) && (
         <div style={{ background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:"6px", padding:"8px 12px", fontSize:"12px", color:"#e65100" }}>
           ⚠ {selectedMonth.replace("-","年")}月は、直近15ヶ月の読み込み範囲より古いため、実績が「0件」と表示されていても、実際にはデータが存在する可能性があります。上の「過去のデータも読み込む」を先に実行してください。
@@ -10283,7 +10983,7 @@ const ChangeHistoryPage = ({ data, setData, tenantId, userRole }) => {
       <div style={{ background: "#f0f2f5", border: "1px solid #dde1e6", borderRadius: "6px", padding: "8px 10px", color: "#666", fontSize: "12px" }}>
         ドライバー・車両・受注・請求書・実績・案件単価・支払・会社設定など、編集されたデータの「変更前」の内容を記録しています。新規作成時は記録されません。
       </div>
-      <LoadOlderDataBanner type="changeHistory" data={data} setData={setData} tenantId={tenantId} />
+      <LoadOlderDataBanner type="changeHistory" data={data} setData={setData} tenantId={tenantId} userRole={userRole} />
 
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "flex-end" }}>
         <Fl label="種別">
@@ -10399,6 +11099,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
   const [showHistory, setShowHistory] = useState(false);
   const [historyDriverId, setHistoryDriverId] = useState("");
   const [historyMonths, setHistoryMonths] = useState(12);
+  const [showMoneyHistory, setShowMoneyHistory] = useState(false);
 
   const yen = (v) => { const x = Number(v) || 0; return `${x < 0 ? "-" : ""}¥${Math.abs(x).toLocaleString()}`; };
 
@@ -11111,7 +11812,7 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
-      <LoadOlderDataBanner type="dailyRecords" data={data} setData={setData} tenantId={tenantId} />
+      <LoadOlderDataBanner type="dailyRecords" data={data} setData={setData} tenantId={tenantId} userRole={userRole} />
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:"8px" }}>
         <div style={{ fontSize:"14px", fontWeight:700, color:"#222" }}>報酬・振込</div>
         <div style={{ display:"flex", gap:"6px", alignItems:"center", flexWrap:"wrap" }}>
@@ -11123,6 +11824,9 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
           />
           <RetroBtn onClick={()=>setShowHistory(v=>!v)} style={{ background: showHistory ? "#00a09a" : "#fff", borderColor:"#00a09a", color: showHistory ? "#fff" : "#00a09a" }}>
             {historyIcon}{showHistory ? "履歴を閉じる" : "履歴を一覧で見る"}
+          </RetroBtn>
+          <RetroBtn onClick={()=>setShowMoneyHistory(true)} style={{ background:"#f0fbfa", color:"#00695c", borderColor:"#b2dfdb" }}>
+            支払いの履歴（期間・金額で並べ替え）
           </RetroBtn>
           <RetroBtn onClick={downloadTransferCsv} style={{ background:"#fff", borderColor:"#00a09a", color:"#00a09a" }}>{csvIcon}振込一覧CSV</RetroBtn>
           <RetroBtn onClick={downloadZenginCsv} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{csvIcon}全銀データCSV</RetroBtn>
@@ -11210,6 +11914,9 @@ const PayoutPage = ({ data, setData, tenantId, userRole, isMobile, setPage }) =>
         </div>
       )}
 
+      {showMoneyHistory && (
+        <MoneyHistory data={data} tenantId={tenantId} userRole={userRole} isMobile={isMobile} initialKind="driver" onClose={() => setShowMoneyHistory(false)} />
+      )}
       {showHistory && (
         <Panel title="支払明細の履歴（月ごとの合計）">
           <p style={{ fontSize:"11px", color:"#888", marginBottom:"8px" }}>
@@ -12258,7 +12965,7 @@ const AnalyticsPage = ({ data, setData, tenantId, userRole, isMobile }) => {
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
-      <LoadOlderDataBanner type="dailyRecords" data={data} setData={setData} tenantId={tenantId} />
+      <LoadOlderDataBanner type="dailyRecords" data={data} setData={setData} tenantId={tenantId} userRole={userRole} />
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:"8px" }}>
         <div style={{ fontSize:"14px", fontWeight:700, color:"#222" }}>経営分析</div>
         <RetroInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={{ width:"150px" }}/>
@@ -14787,7 +15494,7 @@ const SalesMgmtPage = ({ data, setData, tenantId, userRole, isMobile, initialTab
 
       {activeTab === "daily" && (
         <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
-          <LoadOlderDataBanner type="dailyRecords" data={data} setData={setData} tenantId={tenantId} />
+          <LoadOlderDataBanner type="dailyRecords" data={data} setData={setData} tenantId={tenantId} userRole={userRole} />
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <div style={{ fontSize:"14px", fontWeight:700, color:"#222" }}>日次配送実績入力</div>
             <RetroBtn onClick={openAddRecord} style={{ background:"#00a09a", borderColor:"#00a09a", color:"#fff" }}>{plusIcon}実績を追加</RetroBtn>
@@ -21107,9 +21814,10 @@ const fetchDataFromSupabase = async (tenantId, userRole) => {
  * 過去の月の実績を確認したい／古い変更履歴を遡って見たい、といった
  * ニーズは実際にあるため、必要になった時点でボタン一つで読み込めるようにする。
  */
-const fetchOlderDailyRecords = async (tenantId, beforeDate) => {
+const fetchOlderDailyRecords = async (tenantId, beforeDate, userRole) => {
+  // 配車担当は、起動時の読み込みと同じく支払額を伏せたビューから読む（daily_records は読めない設定のため）
   const { data: rows, error } = await supabase
-    .from("daily_records")
+    .from(userRole === "dispatcher" ? "daily_records_masked" : "daily_records")
     .select("id,payload")
     .eq("tenant_id", tenantId)
     .lt("payload->>date", beforeDate)
@@ -21817,12 +22525,17 @@ export function DeliveryManagementApp({ onLogout, authRole, authEmail, isMobile:
     let alive = true;
     (async () => {
       try {
-        const { data: rows, error } = await supabase
-          .from("bank_transactions")
-          .select("*")
-          .eq("tenant_id", tenantId)
-          .order("transaction_date", { ascending: false });
-        if (error || !alive) return;
+        // 1,000件を超えると古い明細が欠けたまま、口座・入金画面で全件読み込んだ一覧を上書きしてしまうため、区切って最後まで読む
+        let rows;
+        try {
+          rows = await fetchAllPages(() => supabase
+            .from("bank_transactions")
+            .select("*")
+            .eq("tenant_id", tenantId)
+            .order("transaction_date", { ascending: false })
+            .order("id", { ascending: true }));
+        } catch (error) { return; }
+        if (!alive) return;
         const mapped = (rows || []).map(mapBankTransactionRow);
         setData((d) => ({ ...d, bankTransactions: mapped }));
       } catch (err) {
