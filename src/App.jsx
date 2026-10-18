@@ -67,6 +67,59 @@ const tabBtn = (active) => ({
   fontSize: "13px",
 });
 
+// Supabase のログイン・パスワード関係のエラーは英語で返ってくるため、
+// 何が原因で、どうすればよいかが分かる日本語に置き換える。
+const CHAR_CLASS_LABELS = [
+  [/abcdefghijklmnopqrstuvwxyz/, "英小文字（a〜z）"],
+  [/ABCDEFGHIJKLMNOPQRSTUVWXYZ/, "英大文字（A〜Z）"],
+  [/0123456789/, "数字（0〜9）"],
+  [/[!@#$%^&*()_+\-=[\]{};':"|<>?,./`~]{5,}/, "記号（!や#など）"],
+];
+const toJapaneseAuthError = (err) => {
+  const code = err?.code || "";
+  const msg = String(err?.message || err || "");
+  const reasons = Array.isArray(err?.reasons) ? err.reasons : [];
+  if (code === "same_password" || /different from the old password/i.test(msg)) {
+    return "今までと同じパスワードは使えません。別のパスワードを入力してください。";
+  }
+  if (code === "weak_password" || /password should/i.test(msg) || reasons.length) {
+    const parts = [];
+    const len = msg.match(/at least (\d+) characters/i);
+    if (reasons.includes("length") || len) parts.push(`${len ? len[1] : "決められた"}文字以上にしてください。`);
+    if (reasons.includes("characters") || /contain at least one character of each/i.test(msg)) {
+      const need = CHAR_CLASS_LABELS.filter(([re]) => re.test(msg)).map(([, label]) => label);
+      parts.push(need.length ? `${need.join("・")}をそれぞれ1文字以上入れてください。` : "英大文字・英小文字・数字・記号を組み合わせてください。");
+    }
+    if (reasons.includes("pwned") || /pwned|leaked|compromised|known to be weak|easy to guess/i.test(msg)) {
+      parts.push("過去に流出したことのある、よく使われるパスワードのため使えません。別のパスワードにしてください。");
+    }
+    return `このパスワードは使えません。${parts.length ? parts.join("") : "もっと長く、推測されにくいパスワードにしてください。"}`;
+  }
+  if (code === "invalid_credentials" || /invalid login credentials/i.test(msg)) {
+    return "メールアドレスまたはパスワードが違います。パスワードを忘れた場合は、下の「パスワードを忘れた場合はこちら」から再設定してください。";
+  }
+  if (code === "email_not_confirmed" || /email not confirmed/i.test(msg)) {
+    return "メールアドレスの確認がまだ終わっていません。届いている確認メールのリンクを開いてから、もう一度ログインしてください。";
+  }
+  if (/rate limit|too many requests|for security purposes, you can only request this after/i.test(msg) || /over_(email_send|request)_rate_limit/.test(code)) {
+    const sec = msg.match(/after (\d+) seconds/i);
+    return sec
+      ? `短い時間に続けて操作されたため、いったん止めています。${sec[1]}秒ほど待ってから、もう一度お試しください。`
+      : "短い時間に何度も操作されたため、いったん止めています。しばらく（数分〜1時間ほど）待ってから、もう一度お試しください。";
+  }
+  if (code === "session_not_found" || code === "otp_expired" || /auth session missing|session.*(expired|not found)|link is invalid or has expired|token has expired/i.test(msg)) {
+    return "再設定用のリンクの有効期限が切れたか、すでに使われています。ログイン画面の「パスワードを忘れた場合はこちら」から、もう一度再設定メールを送ってください。";
+  }
+  if (code === "email_address_invalid" || /unable to validate email address|invalid email/i.test(msg)) {
+    return "メールアドレスの形が正しくありません。入力をご確認ください。";
+  }
+  if (/failed to fetch|networkerror|network request failed|load failed/i.test(msg)) {
+    return "サーバーにつながりませんでした。インターネットの接続を確認してから、もう一度お試しください。";
+  }
+  // 想定外のエラーは、原因を調べられるよう元の英語も添える
+  return `エラーが発生しました。もう一度お試しください。（詳細：${msg}）`;
+};
+
 const ResetPasswordPage = ({ onComplete }) => {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -86,7 +139,7 @@ const ResetPasswordPage = ({ onComplete }) => {
     setLoading(true);
     const { error: updateErr } = await supabase.auth.updateUser({ password });
     if (updateErr) {
-      setError(updateErr.message);
+      setError(toJapaneseAuthError(updateErr));
     } else {
       alert("パスワードを設定しました！ログインしてください。");
       onComplete();
@@ -129,8 +182,8 @@ const ResetPasswordPage = ({ onComplete }) => {
         >
           ハコマネ - パスワード設定
         </div>
-        <p style={{ fontSize: "13px", color: "#666", marginBottom: "20px" }}>
-          新しいパスワードを設定してください
+        <p style={{ fontSize: "13px", color: "#666", marginBottom: "20px", lineHeight: 1.6 }}>
+          新しいパスワードを設定してください（8文字以上。英大文字・英小文字・数字・記号を混ぜると安全です）
         </p>
         <div style={{ marginBottom: "16px" }}>
           <label style={{ fontSize: "12px", fontWeight: 600, color: "#333", display: "block" }}>
@@ -212,6 +265,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
+  // 「パスワードを忘れた場合」の画面（再設定メールを送る）
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -325,11 +381,36 @@ export default function App() {
       setSession(data.session);
       setPassword("");
     } catch (err) {
-      setError(err.message || String(err));
+      setError(toJapaneseAuthError(err));
     } finally {
       setBusy(false);
     }
   };
+
+  const handleSendReset = async (e) => {
+    e.preventDefault();
+    setError("");
+    const addr = email.trim();
+    if (!addr) {
+      setError("ログインに使っているメールアドレスを入力してください。");
+      return;
+    }
+    setBusy(true);
+    try {
+      // メールのリンクから戻る先は、今開いているハコマネ（本番・検証どちらでも同じ画面に戻る）
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(addr, {
+        redirectTo: typeof window !== "undefined" ? window.location.origin : "https://haisokanri.vercel.app",
+      });
+      if (resetErr) throw resetErr;
+      setForgotSent(true);
+    } catch (err) {
+      setError(toJapaneseAuthError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const openForgot = () => { setForgotMode(true); setForgotSent(false); setError(""); setPassword(""); };
+  const closeForgot = () => { setForgotMode(false); setForgotSent(false); setError(""); };
 
   const handleLogout = async () => {
     setError("");
@@ -369,6 +450,38 @@ export default function App() {
           <div style={{ marginBottom: "12px", color: "#555", fontSize: "12px", fontWeight: 500 }}>
             配送管理システム - ログイン
           </div>
+          {forgotMode ? (
+            <form onSubmit={handleSendReset}>
+              <div style={{ fontSize: "14px", fontWeight: 700, color: "#333", marginBottom: "6px" }}>パスワードの再設定</div>
+              {forgotSent ? (
+                <div style={{ fontSize: "12px", color: "#333", lineHeight: 1.7, background: "#f0fbfa", border: "1px solid #b2dfdb", borderRadius: "4px", padding: "10px 12px" }}>
+                  <b>{email.trim()}</b> に、パスワード再設定用のメールを送りました（登録されているメールアドレスの場合のみ届きます）。<br />
+                  メールのリンクを開くと、新しいパスワードを設定する画面になります。<br />
+                  数分たっても届かない場合は、迷惑メールフォルダもご確認ください。
+                </div>
+              ) : (
+                <>
+                  <p style={{ fontSize: "12px", color: "#666", lineHeight: 1.6, margin: "0 0 8px" }}>
+                    ログインに使っているメールアドレスを入力してください。パスワードを設定し直すためのメールを送ります。
+                  </p>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "#555" }}>
+                    メールアドレス
+                    <input type="email" autoComplete="username" value={email} onChange={(ev) => setEmail(ev.target.value)} required style={inputStyle} />
+                  </label>
+                  {error && (
+                    <div style={{ marginTop: "10px", fontSize: "12px", color: "#e63946", fontWeight: 600, lineHeight: 1.6 }}>{error}</div>
+                  )}
+                  <button type="submit" disabled={busy} style={{ ...btnStyle, opacity: busy ? 0.7 : 1 }}>
+                    {busy ? "送信中…" : "再設定用のメールを送る"}
+                  </button>
+                </>
+              )}
+              <button type="button" onClick={closeForgot} style={{ marginTop: "12px", background: "none", border: "none", color: "#00a09a", fontSize: "12px", fontWeight: 600, cursor: "pointer", padding: 0, fontFamily: "'Noto Sans JP', sans-serif" }}>
+                ← ログイン画面に戻る
+              </button>
+            </form>
+          ) : (
+          <>
           <div style={{ display: "flex", gap: "6px", marginBottom: "14px" }}>
             <button type="button" style={tabBtn(loginRole === "admin")} onClick={() => { setLoginRole("admin"); setError(""); }}>
               管理者
@@ -387,12 +500,19 @@ export default function App() {
               <input type="password" autoComplete="current-password" value={password} onChange={(ev) => setPassword(ev.target.value)} required style={inputStyle} />
             </label>
             {error && (
-              <div style={{ marginTop: "10px", fontSize: "12px", color: "#e63946", fontWeight: 600 }}>{error}</div>
+              <div style={{ marginTop: "10px", fontSize: "12px", color: "#e63946", fontWeight: 600, lineHeight: 1.6 }}>{error}</div>
             )}
             <button type="submit" disabled={busy} style={{ ...btnStyle, opacity: busy ? 0.7 : 1 }}>
               {busy ? "ログイン中…" : "ログイン"}
             </button>
           </form>
+          <div style={{ marginTop: "12px", textAlign: "center" }}>
+            <button type="button" onClick={openForgot} style={{ background: "none", border: "none", color: "#00a09a", fontSize: "12px", fontWeight: 600, cursor: "pointer", padding: 0, textDecoration: "underline", fontFamily: "'Noto Sans JP', sans-serif" }}>
+              パスワードを忘れた場合はこちら
+            </button>
+          </div>
+          </>
+          )}
           <p style={{ marginTop: "14px", fontSize: "11px", color: "#888", lineHeight: 1.5 }}>
             アカウントは Supabase Auth で作成し、ユーザー metadata に <code>role</code>（<code>admin</code> または <code>driver</code>）を設定してください。初回は SQL のトリガーで <code>profiles</code> に反映されます。
           </p>
